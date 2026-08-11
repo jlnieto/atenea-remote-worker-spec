@@ -42,19 +42,19 @@ blocks the current task without repair or adoption.
 
 ## 3. State-first native composer and history
 
-- [ ] 3.1 Integrate one secondary system image-picker action into the existing
+- [x] 3.1 Integrate one secondary system image-picker action into the existing
   WorkSession composer while keeping Send as the sole primary action
-- [ ] 3.2 Render compact selected image thumbnail/metadata/upload/error/removal/
+- [x] 3.2 Render compact selected image thumbnail/metadata/upload/error/removal/
   retry state plus concise capability reason and next action
-- [ ] 3.3 Render historical attachment metadata on its exact turn and implement
+- [x] 3.3 Render historical attachment metadata on its exact turn and implement
   explicit authenticated temporary-cache viewing through the existing
   non-exported FileProvider with cleanup on failure
-- [ ] 3.4 Add Compose semantics/instrumentation fixtures for ready, blocked,
+- [x] 3.4 Add Compose semantics/instrumentation fixtures for ready, blocked,
   uploading, selected, long-name/error and historical states
-- [ ] 3.5 Verify data/persistence, semantics/DOM-equivalent and real Android
+- [x] 3.5 Verify data/persistence, semantics/DOM-equivalent and real Android
   visual result separately at 390x844 with generated non-secret fixtures;
   inspect hierarchy, first viewport, action priority, clipping and overflow
-- [ ] 3.6 Run focused tests, document, strict-validate, commit and publish the UI
+- [x] 3.6 Run focused tests, document, strict-validate, commit and publish the UI
   slice
 
 ## 4. Integrated validation and candidate
