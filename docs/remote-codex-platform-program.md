@@ -15271,7 +15271,9 @@ configuration or foreign resource was touched.
 Sanitized evidence is retained at
 `/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-rollout-20260811`;
 the SHA-256 of its `SHA256SUMS` is
-`40e8daa23ac7f0fa8a9f1388ee629a353df89f3a0ab63adfa602cf5ff6463998`.
+`70868b20a5a1df93b3a461da414c68ed42082170c5b449ce57fccabd3611af14`.
+The evidence includes a generated abstract PNG fixture with no text, person,
+UI, brand or real data for the bounded on-device selection canary.
 OpenSpec progress is `25/28`; task 5.2 is the exact first pending task. It will
 remain incomplete until the operator installs 0.5.103 and the real Android
 screen proves the eligible Atenea WorkSession attachment state without
