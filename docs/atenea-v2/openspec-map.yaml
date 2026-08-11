@@ -1,0 +1,156 @@
+version: 1
+programme: atenea-v2-remote-development-platform
+plannedAt: 2026-08-11
+scope:
+  initialProject: atenea
+  defaultEnabled: false
+  excludedProjects:
+    - beautips
+  protectedLegacyWorkSessions:
+    - 19
+statusVocabulary:
+  specification:
+    - DRAFT
+    - SPECIFIED
+    - ACCEPTED
+  implementation:
+    - NOT_STARTED
+    - IN_PROGRESS
+    - COMPLETE
+    - BLOCKED
+  activation:
+    - DISABLED
+    - SHADOW
+    - ATENEA_CANARY
+    - ATENEA_ENABLED
+    - ROLLED_BACK
+modules:
+  - order: 0
+    change: bootstrap-atenea-v2-control-contracts
+    capability: atenea-v2-control-contracts
+    dependencies: []
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H3]
+  - order: 1
+    change: harden-atenea-v2-privileged-actions
+    capability: atenea-v2-privileged-action-security
+    dependencies: [bootstrap-atenea-v2-control-contracts]
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H8, H11]
+  - order: 2
+    change: add-atenea-v2-development-change-control
+    capability: atenea-v2-development-change-control
+    dependencies:
+      - bootstrap-atenea-v2-control-contracts
+      - harden-atenea-v2-privileged-actions
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H2, H3, H5]
+  - order: 3
+    change: add-atenea-v2-artifact-evidence
+    capability: atenea-v2-artifact-evidence
+    dependencies:
+      - bootstrap-atenea-v2-control-contracts
+      - add-atenea-v2-development-change-control
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H2, H3]
+  - order: 4
+    change: add-atenea-v2-protected-validation
+    capability: atenea-v2-protected-validation
+    dependencies:
+      - bootstrap-atenea-v2-control-contracts
+      - harden-atenea-v2-privileged-actions
+      - add-atenea-v2-development-change-control
+      - add-atenea-v2-artifact-evidence
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H2, H3]
+  - order: 5
+    change: add-atenea-v2-private-review
+    capability: atenea-v2-private-review
+    dependencies:
+      - harden-atenea-v2-privileged-actions
+      - add-atenea-v2-development-change-control
+      - add-atenea-v2-artifact-evidence
+      - add-atenea-v2-protected-validation
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H2, H3, H6, H8]
+  - order: 6
+    change: add-atenea-v2-reviewed-integration
+    capability: atenea-v2-reviewed-integration
+    dependencies:
+      - harden-atenea-v2-privileged-actions
+      - add-atenea-v2-development-change-control
+      - add-atenea-v2-artifact-evidence
+      - add-atenea-v2-protected-validation
+      - add-atenea-v2-private-review
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H3, H7]
+  - order: 7
+    change: add-atenea-v2-protected-release
+    capability: atenea-v2-protected-release
+    dependencies:
+      - harden-atenea-v2-privileged-actions
+      - add-atenea-v2-artifact-evidence
+      - add-atenea-v2-protected-validation
+      - add-atenea-v2-private-review
+      - add-atenea-v2-reviewed-integration
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H1, H2, H3, H9, H10]
+  - order: 8
+    change: unify-atenea-v2-operator-experience
+    capability: atenea-v2-operator-experience
+    dependencies:
+      - bootstrap-atenea-v2-control-contracts
+      - harden-atenea-v2-privileged-actions
+      - add-atenea-v2-development-change-control
+      - add-atenea-v2-artifact-evidence
+      - add-atenea-v2-protected-validation
+      - add-atenea-v2-private-review
+      - add-atenea-v2-reviewed-integration
+      - add-atenea-v2-protected-release
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H3, H8]
+  - order: 9
+    change: prove-atenea-v2-resilience-and-onboarding
+    capability: atenea-v2-resilience-onboarding
+    dependencies:
+      - bootstrap-atenea-v2-control-contracts
+      - harden-atenea-v2-privileged-actions
+      - add-atenea-v2-development-change-control
+      - add-atenea-v2-artifact-evidence
+      - add-atenea-v2-protected-validation
+      - add-atenea-v2-private-review
+      - add-atenea-v2-reviewed-integration
+      - add-atenea-v2-protected-release
+      - unify-atenea-v2-operator-experience
+    specification: SPECIFIED
+    implementation: NOT_STARTED
+    activation: DISABLED
+    firstTask: "0.1"
+    humanGates: [H0, H2, H3, H12]

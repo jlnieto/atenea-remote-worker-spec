@@ -15684,4 +15684,65 @@ The active change passed strict validation, reached `8/8` and was archived as
 `2026-08-11-fix-reviewed-instruction-sandbox-cleanliness`. Its requirement is
 now part of the canonical `codex-session-operations` specification, and strict
 validation of all 12 canonical specifications passes. No task or human gate
-remains in this change. The separate V2 programme has not begun.
+remains in this change. The separate V2 programme had not begun at that
+closeout point.
+
+## Atenea V2 — planning and specification baseline
+
+The operator separately authorized only the planning/specification phase for
+Atenea V2. A fresh read-only audit found no blocking Git, ownership, runtime,
+backup, RAID, production or foreign-resource divergence. The most complete
+linear programme base before this planning branch is `90b4572c...`; its local
+and remote refs were exact and clean. The accepted application source
+`39d7d737...` is a clean published descendant of canonical main
+`e4287dbc...` and remote-close source `918f3b2e...`. Production remains on the
+accepted `53d4a7f4...` image with exact compose `ec3e3e22...`.
+
+The production read transaction ended in `ROLLBACK`: Flyway remains V66;
+WorkSessions 16, 17 and 19 remain `CLOSED/RELEASED/10`,
+`CLOSED/RELEASED/6` and `OPEN/NOT_STARTED/0`; AgentRun 96 remains failed and
+unretried; all AgentRun, close and fresh-session non-terminal counts are zero.
+WorkSession 19 retains four turns, two successful runs, two attachments, its
+remote session and exact registration/admission/allocation/registry. Its
+tracked instructions remain exact and clean, and only the accepted Android UI
+draft is present. No content was read.
+
+AX42 retains the exact four-file runner generation, journal `3c9f7884...`
+with 56 terminal and zero non-terminal executions, admission `2/4` normal and
+`1/2` heavy, slots `3/0/0/3`, healthy services/timers/backups and passing RAID.
+The excluded allocation/admission and pre-existing Beautips registry remain
+byte-exact. Production, preview, Beautips and Caddy retain their accepted
+images, zero restarts and HTTP 200; Caddy validates, retired Expo routes and
+the activation network remain absent. One active administrator account and
+eight current refresh sessions were observed only as counts/role and become a
+V2 security design input, not a revocation action.
+
+The planning branch defines a master programme under `docs/atenea-v2/` and ten
+independent active OpenSpecs:
+
+1. `bootstrap-atenea-v2-control-contracts`;
+2. `harden-atenea-v2-privileged-actions`;
+3. `add-atenea-v2-development-change-control`;
+4. `add-atenea-v2-artifact-evidence`;
+5. `add-atenea-v2-protected-validation`;
+6. `add-atenea-v2-private-review`;
+7. `add-atenea-v2-reviewed-integration`;
+8. `add-atenea-v2-protected-release`;
+9. `unify-atenea-v2-operator-experience`;
+10. `prove-atenea-v2-resilience-and-onboarding`.
+
+All are `SPECIFIED / NOT_STARTED / DISABLED`; all task checkboxes remain open.
+The design adds `DevelopmentChange` above WorkSession, keeps AgentRun as an
+editing process only, moves validation into a protected rootless AX42 broker,
+uses immutable artifacts/review evidence, separates integration from release,
+and requires action-bound passkey step-up for privileged effects. Every V2
+gate defaults off, and future first enablement is limited to exact project
+`atenea`; legacy Beautips state grants no V2 authority.
+
+WorkSession 19 is explicitly excluded from automatic migration, binding,
+validation, prompt, runtime, close or release. A future `LEGACY_BIND` would
+require its own exact plan and H5 authorization. No implementation, migration,
+deployment, WorkSession, prompt, AgentRun, runtime, preview, APK, AX42 or
+production mutation occurred in this planning phase. The exact first future
+task is `bootstrap-atenea-v2-control-contracts` task 0.1, pending a separate
+implementation authorization naming the reviewed planning HEAD.

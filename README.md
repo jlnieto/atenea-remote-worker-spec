@@ -2,6 +2,9 @@
 
 Documentos clave:
 
+- `docs/atenea-v2/README.md`: programa maestro V2, arquitectura modular,
+  estados, contratos, dependencias, migraciones, pruebas, rollout, rollback y
+  puertas humanas; planificación solamente, sin implementación iniciada
 - `docs/remote-codex-platform-program.md`: ledger canónico del programa para separar Atenea control plane y el worker Codex remoto
 - `docs/remote-codex-platform-baseline.md`: línea base verificada de portátil, Atenea, AX42, repositorios, `dev` y riesgos de migración
 - `docs/remote-codex-platform-phases.md`: gates de entrada, evidencia, rollback y archivo de cada fase del programa remoto
