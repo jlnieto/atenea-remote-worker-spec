@@ -15248,3 +15248,31 @@ the SHA-256 of its `SHA256SUMS` is
 `27f5f07c85a83159ef8d32d3fe8a25b446d7a020e9a0e3af7fbebd54d84b63c0`.
 OpenSpec remains `24/28`; task 5.1 is still pending and now requires separate
 authorization for the corrected APK hash and matching channel certificate.
+
+## Android attachment rollout — exact APK published, installation pending
+
+The operator separately authorized exact commit `39d7d737...`, corrected APK
+`bec7c653...` and channel certificate `a1642a05...`. Publication completed
+through the existing protected Android channel with automatic predecessor
+rollback armed and unused. Public, protected, release-136 and authenticated
+download copies all match exact candidate SHA-256
+`bec7c6539df49bda3a877d47e4010468c4f6f09168348189ac1c6aa48462341e`.
+Both current and archived manifests expose `0.5.103` / versionCode 136 with
+the exact previous release `0.5.102` / versionCode 135 / `6dc6dc1d...`.
+
+The downloaded published APK independently verifies against exact channel
+certificate `a1642a05...`. Publication staging is absent. No Android device was
+available over ADB, so installation and the bounded synthetic-image canary
+remain an explicit operator action. Production, preview, Beautips and Caddy
+retain their accepted images, running state, zero restarts and HTTP 200. No
+backend, AX42, runtime, prompt, turn, attachment, database, routing,
+configuration or foreign resource was touched.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-rollout-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`40e8daa23ac7f0fa8a9f1388ee629a353df89f3a0ab63adfa602cf5ff6463998`.
+OpenSpec progress is `25/28`; task 5.2 is the exact first pending task. It will
+remain incomplete until the operator installs 0.5.103 and the real Android
+screen proves the eligible Atenea WorkSession attachment state without
+sending a prompt.

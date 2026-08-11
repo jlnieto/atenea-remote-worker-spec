@@ -75,7 +75,7 @@ blocks the current task without repair or adoption.
 
 ## 5. Separately authorized rollout and canary
 
-- [ ] 5.1 Obtain separate explicit authorization for the exact Git commit and
+- [x] 5.1 Obtain separate explicit authorization for the exact Git commit and
   APK SHA-256 before publication or installation; otherwise stop
 - [ ] 5.2 Publish/install only the authorized APK, sign in without exposing
   credentials and prove ready/blocked state on the exact eligible Atenea
