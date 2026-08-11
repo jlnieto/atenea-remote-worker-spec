@@ -15278,3 +15278,26 @@ OpenSpec progress is `25/28`; task 5.2 is the exact first pending task. It will
 remain incomplete until the operator installs 0.5.103 and the real Android
 screen proves the eligible Atenea WorkSession attachment state without
 sending a prompt.
+
+## Android attachment rollout — real device ready state verified
+
+Task 5.2 is complete. The operator installed the exact authorized Atenea APK
+`0.5.103` / versionCode `136`; the application settings screen independently
+shows that version as current and retains `0.5.102` as the predecessor. The
+real Android conversation exposes the bounded image-selection affordance for
+canonical Atenea WorkSession 19 without requiring a prompt.
+
+A production transaction declared `READ ONLY` and ended with `ROLLBACK`
+confirms that WorkSession 19 is the sole open canonical Atenea session, remains
+`OPEN/NOT_STARTED`, and uses attachment policy version 1. Since the canary
+began there are zero new turns, zero new AgentRuns and zero attachment
+bindings. No prompt, response, credential or attachment content was read or
+retained. The settings screenshot is retained; the conversation screenshot is
+intentionally not copied because it also contains unrelated retained response
+text.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-rollout-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`fa172351d9872ca48d0fcab5e5f9224a90c59293bcd6da30582846b3af4348e0`.
+OpenSpec progress is `26/28`; task 5.3 is the exact first pending task.

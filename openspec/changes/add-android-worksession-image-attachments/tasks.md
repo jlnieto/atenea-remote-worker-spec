@@ -77,7 +77,7 @@ blocks the current task without repair or adoption.
 
 - [x] 5.1 Obtain separate explicit authorization for the exact Git commit and
   APK SHA-256 before publication or installation; otherwise stop
-- [ ] 5.2 Publish/install only the authorized APK, sign in without exposing
+- [x] 5.2 Publish/install only the authorized APK, sign in without exposing
   credentials and prove ready/blocked state on the exact eligible Atenea
   WorkSession without sending a prompt
 - [ ] 5.3 With separate operator intent, select and upload a generated
