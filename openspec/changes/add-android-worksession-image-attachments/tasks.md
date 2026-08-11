@@ -28,16 +28,16 @@ blocks the current task without repair or adoption.
 
 ## 2. Bounded Android attachment state
 
-- [ ] 2.1 Add a pure state model for READY/BLOCKED, selected/uploading/error,
+- [x] 2.1 Add a pure state model for READY/BLOCKED, selected/uploading/error,
   count/byte limits, stable upload UUIDs and one stable turn request UUID
-- [ ] 2.2 Add bounded content-URI metadata/header/stream reading for PNG, JPEG
+- [x] 2.2 Add bounded content-URI metadata/header/stream reading for PNG, JPEG
   and WebP with no broad storage permission, path acceptance or diagnostic data
-- [ ] 2.3 Upload sequentially, preserve successful selections across later
+- [x] 2.3 Upload sequentially, preserve successful selections across later
   failures, distinguish transport/capacity/validation/policy/ownership errors
   and never send a deterministic 4xx through worker-unavailable handling
-- [ ] 2.4 Preserve exact uncertain submission state and clear only after an
+- [x] 2.4 Preserve exact uncertain submission state and clear only after an
   accepted returned turn echoes the ordered attachment identities
-- [ ] 2.5 Add complete pure-state and bounded-reader tests, run them, document,
+- [x] 2.5 Add complete pure-state and bounded-reader tests, run them, document,
   strict-validate, commit and publish the state slice
 
 ## 3. State-first native composer and history
