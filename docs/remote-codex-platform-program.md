@@ -15449,3 +15449,34 @@ The SHA-256 of its `SHA256SUMS` is
 Task 1.1 is complete and OpenSpec progress is `2/8`; task 1.2 is the exact
 first pending task. Installation and a real prompt remain separate explicit
 gates.
+
+## Reviewed instruction sandbox cleanliness — implementation
+
+Task 1.2 implements the successor boundary. Validation now preserves the exact
+reviewed tracked repository bytes alongside the single explicit developer
+bundle. Each execution materializes a distinct mode-0600 empty ambient mask
+and exact project copy under its temporary result directory. Bubblewrap binds
+only the ambient mask over the two home instruction paths and binds the exact
+project copy read-only over the tracked worktree `AGENTS.md`. The fixed runner
+argument `project_doc_max_bytes=0` prevents a second automatic injection.
+
+Six focused contracts cover new, resumed and image-bearing invocations,
+single injection, exact bytes, Git cleanliness and cleanup. All pass. The
+complete runner contract suite also passes all 23 tests, and in-memory Python
+syntax compilation and `git diff --check` pass.
+
+Read-only non-impact reconfirmed the installed predecessor, clean WorkSession
+19 source and exact ownership fingerprints. AX42 services, successful backup
+and health jobs, active timers, slots `3/0/0/3`, ready admission `2/4` and
+`1/2`, and all three RAID checks remain exact. Production, preview, Beautips
+and Caddy retain their accepted images, zero restarts and HTTP 200; Caddy
+validates and the accepted activation-network absence remains unchanged. No
+live resource was changed.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-1.2-implementation-20260811`.
+The SHA-256 of its `SHA256SUMS` is
+`26a08a0c7319c3cbc5ab8930c14669c761bdb60948ce8f19191269db0b503ea9`.
+Task 1.2 is complete and OpenSpec progress is `3/8`; task 1.3 is the exact
+first pending task. AX42 installation and a real prompt remain separate
+explicit gates.

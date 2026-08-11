@@ -117,6 +117,16 @@ class MaterializedAttachment(NamedTuple):
     sha256: str
 
 
+class ReviewedInstructionBundle(NamedTuple):
+    developer_instructions: str
+    project_bytes: bytes
+
+
+class InstructionProjection(NamedTuple):
+    ambient_mask: Path
+    project_source: Path
+
+
 def reject(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(2)
@@ -933,7 +943,7 @@ def validate_worktree(worktree: Path, record: dict[str, Any]) -> Path:
     return common_dir
 
 
-def validate_instruction_bundle(worktree: Path) -> str:
+def validate_instruction_bundle(worktree: Path) -> ReviewedInstructionBundle:
     project_path = worktree / PROJECT_INSTRUCTION_PATH
     forbidden = (
         worktree / "AGENTS.override.md",
@@ -981,15 +991,33 @@ def validate_instruction_bundle(worktree: Path) -> str:
     if fingerprint != INSTRUCTION_BUNDLE_SHA256:
         reject("instruction bundle rejected")
     try:
-        return (
-            platform.decode("utf-8")
-            + "\n\n# Reviewed repository contract: "
-            + PROJECT_INSTRUCTION_PATH
-            + "\n\n"
-            + project.decode("utf-8")
+        return ReviewedInstructionBundle(
+            developer_instructions=(
+                platform.decode("utf-8")
+                + "\n\n# Reviewed repository contract: "
+                + PROJECT_INSTRUCTION_PATH
+                + "\n\n"
+                + project.decode("utf-8")
+            ),
+            project_bytes=project,
         )
     except UnicodeDecodeError:
         reject("instruction bundle rejected")
+
+
+def prepare_instruction_projection(
+    temporary_root: Path,
+    project_bytes: bytes,
+) -> InstructionProjection:
+    jose = pwd.getpwnam("jose")
+    ambient_mask = temporary_root / "empty-instructions"
+    project_source = temporary_root / "project-instructions"
+    ambient_mask.write_bytes(b"")
+    project_source.write_bytes(project_bytes)
+    for path in (ambient_mask, project_source):
+        os.chmod(path, 0o600)
+        os.chown(path, jose.pw_uid, jose.pw_gid)
+    return InstructionProjection(ambient_mask, project_source)
 
 
 def sandbox_command(
@@ -1003,6 +1031,9 @@ def sandbox_command(
     execution_id: str,
     materialized_attachments: list[MaterializedAttachment] | tuple[MaterializedAttachment, ...] = (),
 ) -> list[str]:
+    project_instruction_path = instruction_mask_path.with_name(
+        "project-instructions"
+    )
     command = [
         "/usr/bin/systemd-run",
         "--wait", "--pipe", "--collect", "--quiet", "--service-type=exec",
@@ -1053,7 +1084,7 @@ def sandbox_command(
         "--dir", "/srv/atenea/workspaces/sessions",
         "--dir", str(worktree.parent),
         "--bind", str(worktree), str(worktree),
-        "--ro-bind", str(instruction_mask_path), str(worktree / PROJECT_INSTRUCTION_PATH),
+        "--ro-bind", str(project_instruction_path), str(worktree / PROJECT_INSTRUCTION_PATH),
         "--dir", "/srv/atenea/repositories",
         "--bind", str(common_dir), str(common_dir),
         "--setenv", "HOME", "/home/jose",
@@ -1066,6 +1097,7 @@ def sandbox_command(
         "--chdir", str(worktree),
         CODEX, "exec",
         "--ignore-user-config", "--ignore-rules",
+        "--config", "project_doc_max_bytes=0",
         "--config", "developer_instructions=" + json.dumps(instruction_bundle),
         # The reviewed Bubblewrap namespace is the workspace-write boundary.
         # A second Codex Bubblewrap namespace is unsupported by this kernel.
@@ -1105,7 +1137,7 @@ def execute(
     workload: dict[str, Any],
     worktree: Path,
     common_dir: Path,
-    instruction_bundle: str,
+    instruction_bundle: ReviewedInstructionBundle,
     execution_id: str,
     timeout: int,
     materialized_attachments: list[MaterializedAttachment] | tuple[MaterializedAttachment, ...] = (),
@@ -1119,21 +1151,21 @@ def execute(
         os.chown(temporary, jose.pw_uid, jose.pw_gid)
         final_path = Path(temporary) / "final.txt"
         resolv_path = Path(temporary) / "resolv.conf"
-        instruction_mask_path = Path(temporary) / "empty-instructions"
         resolv_path.write_text("nameserver 1.1.1.1\noptions timeout:2 attempts:2\n", encoding="ascii")
-        instruction_mask_path.write_bytes(b"")
         os.chmod(resolv_path, 0o600)
-        os.chmod(instruction_mask_path, 0o600)
         os.chown(resolv_path, jose.pw_uid, jose.pw_gid)
-        os.chown(instruction_mask_path, jose.pw_uid, jose.pw_gid)
+        projection = prepare_instruction_projection(
+            Path(temporary),
+            instruction_bundle.project_bytes,
+        )
         command = sandbox_command(
             workload,
             worktree,
             common_dir,
             final_path,
             resolv_path,
-            instruction_mask_path,
-            instruction_bundle,
+            projection.ambient_mask,
+            instruction_bundle.developer_instructions,
             execution_id,
             materialized_attachments,
         )

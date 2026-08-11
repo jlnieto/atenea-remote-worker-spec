@@ -297,6 +297,7 @@ class ProjectCodexContractTest(unittest.TestCase):
                     self.assertEqual(image_paths, bind_sources)
                     self.assertNotIn(str(retained_root), command)
                     self.assertNotIn(str(first_content_path), command)
+                    self.assertEqual(1, command.count("project_doc_max_bytes=0"))
                     self.assertEqual("-", command[-1])
 
                     resumed = json.loads(json.dumps(request["workload"]))
@@ -318,6 +319,10 @@ class ProjectCodexContractTest(unittest.TestCase):
                         if value == "--image"
                     ]
                     self.assertEqual(image_paths, resumed_images)
+                    self.assertEqual(
+                        1,
+                        resumed_command.count("project_doc_max_bytes=0"),
+                    )
                     resume_index = resumed_command.index("resume")
                     self.assertTrue(all(
                         resumed_command.index("--image", resume_index) > resume_index
@@ -444,7 +449,10 @@ class ProjectCodexContractTest(unittest.TestCase):
                             workload,
                             worktree,
                             MODULE.GIT_COMMON_DIR,
-                            "reviewed instructions",
+                            MODULE.ReviewedInstructionBundle(
+                                "reviewed instructions",
+                                b"repository instructions\n",
+                            ),
                             execution_id,
                             30,
                             materialized,
@@ -467,7 +475,10 @@ class ProjectCodexContractTest(unittest.TestCase):
                         request["workload"],
                         worktree,
                         MODULE.GIT_COMMON_DIR,
-                        "reviewed instructions",
+                        MODULE.ReviewedInstructionBundle(
+                            "reviewed instructions",
+                            b"repository instructions\n",
+                        ),
                         timeout_execution,
                         30,
                         materialized,
@@ -802,7 +813,12 @@ class ProjectCodexContractTest(unittest.TestCase):
         self.assertIn("/srv/atenea/repositories", command)
         self.assertIn("/home/jose/.codex", command)
         self.assertIn("developer_instructions=\"reviewed instructions\"", command)
-        self.assertEqual(3, command.count(str(instruction_mask)))
+        self.assertEqual(2, command.count(str(instruction_mask)))
+        self.assertEqual(
+            1,
+            command.count(str(instruction_mask.with_name("project-instructions"))),
+        )
+        self.assertEqual(1, command.count("project_doc_max_bytes=0"))
         self.assertIn(str(worktree / "AGENTS.md"), command)
         self.assertIn("Group=atenea", command)
         self.assertIn("danger-full-access", command)
@@ -938,6 +954,7 @@ class ProjectCodexContractTest(unittest.TestCase):
             "reviewed instructions",
             str(uuid.uuid4()),
         )
+        self.assertEqual(1, command.count("project_doc_max_bytes=0"))
         self.assertEqual(["resume", thread_id, "-"], command[-3:])
 
     def test_profiled_command_uses_only_validated_model_and_effort_flags(self):
@@ -1074,8 +1091,9 @@ class ProjectCodexContractTest(unittest.TestCase):
             ).hexdigest()
             try:
                 bundle = MODULE.validate_instruction_bundle(worktree)
-                self.assertIn("platform contract", bundle)
-                self.assertIn("repository contract", bundle)
+                self.assertIn("platform contract", bundle.developer_instructions)
+                self.assertIn("repository contract", bundle.developer_instructions)
+                self.assertEqual(project_bytes, bundle.project_bytes)
 
                 (worktree / "AGENTS.override.md").write_text("ambient\n", encoding="utf-8")
                 with self.assertRaises(SystemExit):
