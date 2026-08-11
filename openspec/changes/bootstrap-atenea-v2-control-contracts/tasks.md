@@ -3,7 +3,7 @@ and published before the next task begins. Only one task may be in progress.
 
 ## 0. Entry
 
-- [ ] 0.1 Re-read applicable contracts; verify exact local/remote Git and
+- [x] 0.1 Re-read applicable contracts; verify exact local/remote Git and
   sanitized Atenea/AX42 state; select the accepted application base and next
   migration number; document the compatibility and threat model without
   changing runtime

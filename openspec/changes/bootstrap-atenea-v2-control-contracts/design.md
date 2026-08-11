@@ -84,5 +84,11 @@ predecessor image and retains expanded schema/audit records.
 
 ## Open Questions
 
-No product decision is open. Exact migration number, base commit and image
-digest must be resolved at task 0.1 from then-current state.
+No product decision is open. Task 0.1 selected application base
+`39d7d7379423b3da36ce89cc3329cbc6f87f00b3`, reserved V67 as the next free
+Flyway number and required an explicit integration branch because the
+planning and application histories cannot fast-forward. The complete
+compatibility and threat-model decision is recorded in
+`docs/atenea-v2/task-0.1-entry-decision.md`. V67 must be rechecked before it
+is created, and no image digest or production rollout is authorized before
+the later sealed H1 manifest.
