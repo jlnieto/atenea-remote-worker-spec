@@ -15480,3 +15480,37 @@ The SHA-256 of its `SHA256SUMS` is
 Task 1.2 is complete and OpenSpec progress is `3/8`; task 1.3 is the exact
 first pending task. AX42 installation and a real prompt remain separate
 explicit gates.
+
+## Reviewed instruction sandbox cleanliness — complete validation
+
+Task 1.3 passes the complete affected validation surface: 23 Atenea runner
+tests, four disabled Beautips adapter tests, 88 AgentRun worker tests, both
+installer lifecycle suites, Bash syntax and in-memory Python compilation. An
+actual local Bubblewrap check observes exact tracked instructions and clean
+Git, denies a write to the projected file and leaves the host blob unchanged.
+
+The exact installed Codex 0.145.0 isolated marker probe again proves
+explicit/project counts `1/0` with `project_doc_max_bytes=0` and `1/1` at the
+default bound. Only counts were retained and both synthetic temporary roots
+were removed. The source/privacy audit finds no new caller-controlled field,
+path, configuration, endpoint or authority and no credential, content,
+history or environment access. Prompt transport remains stdin-only.
+
+The required shared-runner compatibility trust pins were synchronized so the
+disabled Beautips adapter remains hash-closed rather than becoming internally
+inconsistent. This does not enable or configure Beautips and changes no live
+Beautips resource.
+
+Final read-only non-impact shows the predecessor runner still installed,
+WorkSession 19 clean and its accepted ownership fingerprints exact. Worker
+services, successful jobs, timers, slots `3/0/0/3`, admission `2/4` and `1/2`,
+and RAID remain healthy. Production, preview, Beautips and Caddy retain exact
+accepted images, zero restarts and HTTP 200; Caddy validates and the accepted
+activation-network absence remains unchanged.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-1.3-complete-validation-20260811`.
+The SHA-256 of its `SHA256SUMS` is
+`3d139c7a036ada55f0c2f4c623d66edb0961d51334f3adfccd5785671697033d`.
+Task 1.3 is complete and OpenSpec progress is `4/8`; task 2.1 is the exact
+first pending task. No AX42 installation or real prompt is authorized.

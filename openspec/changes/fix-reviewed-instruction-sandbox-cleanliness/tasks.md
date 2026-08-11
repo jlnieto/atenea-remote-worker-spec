@@ -20,7 +20,7 @@ blocks the current task without repair, adoption or cleanup.
 - [x] 1.2 Implement the exact immutable repository instruction projection and
   fixed automatic-discovery disable for new, resumed and image-bearing runs;
   pass focused tests, document, strict-validate, commit and publish
-- [ ] 1.3 Run complete worker/installer/syntax suites and pinned Codex prompt-
+- [x] 1.3 Run complete worker/installer/syntax suites and pinned Codex prompt-
   input projection checks; audit source/artifacts for privacy and authority,
   reconfirm live non-impact, document, strict-validate, commit and publish
 

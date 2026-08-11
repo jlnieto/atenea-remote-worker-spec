@@ -926,6 +926,40 @@ class ProjectCodexContractTest(unittest.TestCase):
                 ),
             )
             self.assertNotIn(workload["message"], "\n".join(command))
+            if Path("/usr/bin/bwrap").is_file():
+                subprocess.run(
+                    [
+                        "/usr/bin/bwrap",
+                        "--die-with-parent",
+                        "--unshare-all",
+                        "--ro-bind",
+                        "/",
+                        "/",
+                        "--bind",
+                        str(worktree),
+                        str(worktree),
+                        "--ro-bind",
+                        str(projection.project_source),
+                        project_target,
+                        "--chdir",
+                        str(worktree),
+                        "/bin/sh",
+                        "-ceu",
+                        (
+                            'test -z "$(git status --porcelain=v1 '
+                            '--untracked-files=all)"; '
+                            'test "$(git hash-object AGENTS.md)" = '
+                            '"$(git rev-parse HEAD:AGENTS.md)"; '
+                            '! printf changed >AGENTS.md 2>/dev/null; '
+                            'test "$(git hash-object AGENTS.md)" = '
+                            '"$(git rev-parse HEAD:AGENTS.md)"'
+                        ),
+                    ],
+                    check=True,
+                    timeout=30,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
             self.assertEqual(
                 "",
                 subprocess.run(
