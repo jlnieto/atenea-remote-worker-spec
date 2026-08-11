@@ -15554,3 +15554,35 @@ prompt or resource changed. Task 2.1 is complete and OpenSpec progress is
 `5/8`; task 2.2 is the exact first pending task. Stop for separate exact
 installation authorization. The later real Atenea canary remains a second,
 independent operator gate.
+
+## Reviewed instruction sandbox cleanliness — authorized AX42 rollout
+
+Task 2.2 executed the separately authorized manifest `2f51956e...` with exact
+bundle `43f68f0c...`. All sealed preconditions matched. The transaction stopped
+only the AgentRun worker, installed the four exact root-owned successor files,
+started only that worker and completed every postflight check. Automatic
+rollback was not entered. Both internal and transfer staging are absent.
+
+The installed runner is now `669f2f58...`; the compatibility adapter and two
+installer trust chains are exact at `e3d5402f...`, `0ca61d84...` and
+`8a23efc5...`. All remain mode 0755, root-owned and single-linked. The worker,
+preview and attachment services are active with zero automatic restarts;
+successful jobs, timers, slots `3/0/0/3`, admission `2/4` and `1/2`, and RAID
+remain healthy.
+
+The execution journal is byte-exact with 55 terminal and zero non-terminal
+records. WorkSession 19 remains clean with exact instructions and exact
+admission/allocation/registry. The excluded allocation and pre-existing
+Beautips registry remain byte-exact; no Beautips operation or configuration
+changed. Production, preview, Beautips and Caddy retain exact images, zero
+restarts and HTTP 200, and the accepted absent activation network remains
+absent. No prompt, Codex process or runtime started.
+
+Sanitized rollout evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-2.2-rollout-20260811`.
+The SHA-256 of its `SHA256SUMS` is
+`fc3f1343f86d051cf535f7862fee204c2b1a393d52adfeb63345b7338fd1c231`.
+Task 2.2 is complete and OpenSpec progress is `6/8`; task 2.3 is the exact
+first pending task. It requires a separate operator-created real WorkSession
+19 prompt from Atenea; the prompt/response must never be synthesized, replayed
+or read by the rollout operator.

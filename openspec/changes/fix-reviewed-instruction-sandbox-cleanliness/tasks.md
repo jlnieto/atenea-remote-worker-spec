@@ -30,7 +30,7 @@ blocks the current task without repair, adoption or cleanup.
   bundle with finite checks and automatic rollback; retain sanitized evidence,
   strict-validate, commit and publish, then stop for exact installation
   authorization
-- [ ] 2.2 After separate authorization, install only the sealed successor,
+- [x] 2.2 After separate authorization, install only the sealed successor,
   restart only the AgentRun worker and prove WorkSession 19 ownership, Git,
   services, slots, admission, backups, RAID, production, preview and Beautips
   remain exact; do not submit a prompt
