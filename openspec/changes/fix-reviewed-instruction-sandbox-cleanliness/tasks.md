@@ -34,7 +34,7 @@ blocks the current task without repair, adoption or cleanup.
   restart only the AgentRun worker and prove WorkSession 19 ownership, Git,
   services, slots, admission, backups, RAID, production, preview and Beautips
   remain exact; do not submit a prompt
-- [ ] 2.3 After separate operator intent, let the operator submit one real
+- [x] 2.3 After separate operator intent, let the operator submit one real
   WorkSession 19 prompt from Atenea and prove through content-free metadata
   that the sandbox began from clean exact instructions; never read or replay
   the prompt/response

@@ -15586,3 +15586,58 @@ Task 2.2 is complete and OpenSpec progress is `6/8`; task 2.3 is the exact
 first pending task. It requires a separate operator-created real WorkSession
 19 prompt from Atenea; the prompt/response must never be synthesized, replayed
 or read by the rollout operator.
+
+## Reviewed instruction sandbox cleanliness — real WorkSession 19 canary
+
+The operator separately authorized and submitted exactly one new real prompt
+from WorkSession 19. During the initially authorized content-free proof, the
+rollout operator did not synthesize, replay, read or retain the prompt or
+response. Content-free journal projection proves one
+new execution, `8460bff9...`, for the exact WorkSession 19 remote UUID. It ran
+from `17:13:26Z` to `17:14:26Z`, finished `SUCCEEDED`, emitted nine normalized
+progress events, required no reconciliation and left no transient Codex unit.
+The journal moved from 55 to 56 terminal executions and remains at zero
+non-terminal executions.
+
+The installed runner remains exact `669f2f58...`. WorkSession 19 HEAD remains
+`e4287dbc...`; its `AGENTS.md` is still exact blob `75173298...` and SHA-256
+`a09adc58...`, clean in both worktree and index. The canary retained exactly
+one non-instruction source-status record while leaving zero temporary result
+directories. This proves the old false empty/modified instruction view did
+not recur and the authorized real work proceeded.
+
+Admission/allocation/registry, the excluded allocation and the pre-existing
+Beautips registry remain byte-exact. Slots, capacity, services, successful
+jobs, timers and RAID remain healthy. Production, preview, Beautips and Caddy
+retain exact accepted images, zero restarts and HTTP 200. Before the later
+explicit diagnosis, no prompt or response was read; no attachment content,
+credential or Codex history was read or retained at any point.
+
+After that content-free proof, the operator separately authorized reading only
+the exact new prompt and final response to diagnose its Android-build note.
+The fields were displayed transiently and not copied into evidence. They
+confirm the agent applied one conversation-UI spacing adjustment and reported
+that it could not compile Android because Docker was unavailable.
+
+That build limitation is expected inside the AgentRun sandbox: the accepted
+contract and regression forbid a Docker socket, while the repository's
+canonical Android build script uses Docker. A symbolic closed `ANDROID_BUILD`
+operation already exists in backend, worker and root-owned mediator code, but
+it is not surfaced by the Android conversation UI. Its mediator currently
+invokes Docker as root while live AX42 rootful Docker/containerd are inactive,
+masked and have no socket. No build was attempted.
+
+Exposing Docker to Codex is rejected. The recommended follow-up is a separate
+Atenea-only, disabled-by-default OpenSpec that exposes the fixed symbolic
+validation action and routes it through a server-derived rootless/protected
+builder with sanitized durable results. APK publication/installation remains
+a separate explicit gate. This follow-up is not part of the instruction-
+projection correction.
+
+Sanitized canary evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-2.3-real-canary-20260811`.
+The SHA-256 of its `SHA256SUMS` is
+`66ba0a6599bd902853dede2e23439525d386fd07a6391a018598f05cb0f2e4dc`.
+Task 2.3 is complete and OpenSpec progress is `7/8`; task 2.4 is the exact
+first pending task. Final sealing and archive remain outside the exact 2.3
+authorization.
