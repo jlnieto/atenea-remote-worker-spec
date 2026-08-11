@@ -80,7 +80,7 @@ blocks the current task without repair or adoption.
 - [x] 5.2 Publish/install only the authorized APK, sign in without exposing
   credentials and prove ready/blocked state on the exact eligible Atenea
   WorkSession without sending a prompt
-- [ ] 5.3 With separate operator intent, select and upload a generated
+- [x] 5.3 With separate operator intent, select and upload a generated
   non-secret image, prove visible selection and stop before Send unless the
   exact real image-bearing turn is separately authorized
 - [ ] 5.4 Seal final non-impact evidence, strict-validate, archive, commit and

@@ -15301,3 +15301,26 @@ Sanitized evidence is retained at
 the SHA-256 of its `SHA256SUMS` is
 `fa172351d9872ca48d0fcab5e5f9224a90c59293bcd6da30582846b3af4348e0`.
 OpenSpec progress is `26/28`; task 5.3 is the exact first pending task.
+
+## Android attachment rollout — bounded synthetic selection verified
+
+Task 5.3 is complete. With explicit operator intent, the real Android picker
+selected the generated non-secret geometric JPEG and the composer visibly
+reported `1/4` selected, a thumbnail, `75.4 KB`, and the secondary removal
+action. The input remained empty and the operator stopped before Send. The
+state is readable in the first mobile viewport with no clipping, overlap,
+horizontal overflow or competition with the sole primary Send action.
+
+Read-only production metadata confirms two distinct, byte-identical,
+unbound operator uploads from the two picker selections. Both are retained
+unchanged under the attachment policy: neither has an AgentRun or turn
+binding, and no deletion, adoption or rebinding was attempted. Since the first
+selection there remain zero new turns, zero new AgentRuns and zero attachment
+bindings, proving that selecting and uploading the image did not submit a
+prompt or start Codex/runtime.
+
+The generated source fixture and sanitized metadata report remain in
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-rollout-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`fa172351d9872ca48d0fcab5e5f9224a90c59293bcd6da30582846b3af4348e0`.
+OpenSpec progress is `27/28`; task 5.4 is the exact first pending task.
