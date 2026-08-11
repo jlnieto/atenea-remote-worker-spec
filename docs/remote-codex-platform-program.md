@@ -15354,3 +15354,37 @@ OpenSpec progress remains `27/28`; task 5.4 remains the exact first pending
 task and the change is deliberately not archived. A separate operator
 decision must first accept this WorkSession 19 ownership as expected or
 authorize its exact lifecycle disposition.
+
+## Android attachment rollout — completed and archived
+
+The operator accepted WorkSession 19 registration, admission and allocation
+as exact expected ownership created by successful AgentRun 97 before the
+attachment canary. Read-only correlation removes the apparent time conflict:
+AX42's `15:48 +0200` materialization is `13:48 UTC`, matching AgentRun 97;
+the two generated-image uploads occurred later at `15:10` and `15:12 UTC`.
+Source inspection confirms AgentRun admission ensures workspace ownership
+before dispatch, while capability and attachment upload only check/use
+existing ownership.
+
+Final read-only persistence proves AgentRun 97 remains terminal `SUCCEEDED`
+with zero attachments. Since the first generated upload there are zero new
+turns, zero new AgentRuns and zero attachment bindings. Both byte-identical
+uploads remain unbound and retained by policy. No prompt, response or
+attachment content was read; every database query ended with `ROLLBACK`.
+
+The accepted WorkSession 19 admission, allocation and registry remain
+byte-exact at `7a89d9e4...`, `08db9255...` and `c867783c...`. Production,
+preview, Beautips and Caddy retain exact accepted images, running state and
+zero restarts; application health is HTTP 200 and Caddy configuration is
+valid. AX42 services, successful backups, slots `3/0/0/3`, admission `2/4`
+and `1/2`, RAID `[UU]`, and the separately excluded ownership remain intact.
+
+Final sanitized evidence is retained at
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-rollout-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`a43ff299a0430aee5a0c5db172cefa48422061f649cff332b17add83ef859bd4`.
+Task 5.4 is complete and OpenSpec progress is `28/28`. Strict validation
+passed and the change is archived as
+`2026-08-11-add-android-worksession-image-attachments`, with its three native
+Android requirements applied to the canonical WorkSession attachment spec.
+There is no remaining rollout or operator action in this change.

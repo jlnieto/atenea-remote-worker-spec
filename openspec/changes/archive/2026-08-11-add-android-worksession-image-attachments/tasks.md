@@ -83,5 +83,5 @@ blocks the current task without repair or adoption.
 - [x] 5.3 With separate operator intent, select and upload a generated
   non-secret image, prove visible selection and stop before Send unless the
   exact real image-bearing turn is separately authorized
-- [ ] 5.4 Seal final non-impact evidence, strict-validate, archive, commit and
+- [x] 5.4 Seal final non-impact evidence, strict-validate, archive, commit and
   publish; leave Beautips and all other projects blocked
