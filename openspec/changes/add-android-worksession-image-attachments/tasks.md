@@ -17,13 +17,13 @@ blocks the current task without repair or adoption.
 
 ## 1. Android API contract
 
-- [ ] 1.1 Add closed Android DTOs/parsers for capability, stored attachments,
+- [x] 1.1 Add closed Android DTOs/parsers for capability, stored attachments,
   historical turn bindings and their exact server enums/limits
-- [ ] 1.2 Add authenticated capability/list/download and idempotent multipart
+- [x] 1.2 Add authenticated capability/list/download and idempotent multipart
   upload calls with finite timeouts, bounded binary response and token refresh
-- [ ] 1.3 Extend turn submission with stable `clientRequestId` and exact ordered
+- [x] 1.3 Extend turn submission with stable `clientRequestId` and exact ordered
   `attachmentIds` while retaining text-only compatibility
-- [ ] 1.4 Add focused request/parser/multipart/refresh/error tests, run them,
+- [x] 1.4 Add focused request/parser/multipart/refresh/error tests, run them,
   document, strict-validate, commit and publish the API slice
 
 ## 2. Bounded Android attachment state
