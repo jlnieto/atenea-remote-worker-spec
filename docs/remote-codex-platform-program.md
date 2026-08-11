@@ -15388,3 +15388,40 @@ passed and the change is archived as
 `2026-08-11-add-android-worksession-image-attachments`, with its three native
 Android requirements applied to the canonical WorkSession attachment spec.
 There is no remaining rollout or operator action in this change.
+
+## Reviewed instruction sandbox cleanliness — root cause and specification
+
+The separate corrective change
+`fix-reviewed-instruction-sandbox-cleanliness` addresses the false dirty
+source state exposed by WorkSession 19 AgentRun 97. The retained host worktree
+is clean at canonical commit `e4287dbc...`; tracked `AGENTS.md` is 3,804 bytes,
+matches index blob `75173298...` and accepted SHA-256 `a09adc58...`. No source
+file was emptied or modified.
+
+The exact installed and reviewed runner predecessor instead bind-mounts its
+zero-byte ambient instruction mask over the tracked repository path inside
+Bubblewrap. Git therefore reports a modified empty `AGENTS.md` only to the
+Codex process. The runner had already validated and injected the real reviewed
+bundle, but Codex correctly refused to work from the contradictory visible
+source state. AgentRun process success records only the terminal response; it
+does not imply a source change.
+
+Official OpenAI documentation confirms automatic non-empty `AGENTS.md`
+discovery and the runner-owned `project_doc_max_bytes` bound. A content-free
+probe against exact installed Codex `0.145.0` proves bound `0` yields one
+explicit bundle marker and zero automatic project markers, while the default
+32 KiB bound yields one of each. The specified successor will project the
+already-validated repository bytes read-only, set the automatic bound to zero
+and retain one explicit combined bundle. Ambient home masks and all existing
+authority/sandbox restrictions remain unchanged.
+
+No installed runner, WorkSession, Git, ownership, service, runtime, prompt,
+response, attachment, production, preview or Beautips resource changed.
+Sanitized entry evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-0.1-entry-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`e3255eaf5c14843ec786399b895a07c2608f43f5b64f2256f086b44d469d10aa`.
+
+Task 0.1 is complete and OpenSpec progress is `1/8`; task 1.1 is the exact
+first pending task. AX42 installation and any real prompt remain separate
+explicit gates.
