@@ -13,7 +13,7 @@ blocks the current task without repair, adoption or cleanup.
 
 ## 1. Correct and validate the sandbox boundary
 
-- [ ] 1.1 Add a focused regression that reproduces the old empty tracked-file
+- [x] 1.1 Add a focused regression that reproduces the old empty tracked-file
   projection and requires exact bytes, Git cleanliness, read-only behavior,
   single explicit injection and temporary cleanup; run, document,
   strict-validate, commit and publish it failing only against the predecessor

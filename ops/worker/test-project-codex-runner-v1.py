@@ -836,6 +836,96 @@ class ProjectCodexContractTest(unittest.TestCase):
         ))
         self.assertEqual("-", command[-1])
 
+    def test_reviewed_instruction_projection_is_exact_clean_single_and_temporary(self):
+        project_bytes = b"synthetic reviewed repository contract\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            agents = worktree / "AGENTS.md"
+            agents.write_bytes(project_bytes)
+            subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Contract test"],
+                cwd=worktree,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "contract@atenea.invalid"],
+                cwd=worktree,
+                check=True,
+            )
+            subprocess.run(["git", "add", "AGENTS.md"], cwd=worktree, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "instructions"],
+                cwd=worktree,
+                check=True,
+            )
+            projection_root = root / "projection"
+            projection_root.mkdir(mode=0o700)
+            projection = MODULE.prepare_instruction_projection(
+                projection_root,
+                project_bytes,
+            )
+
+            self.assertEqual(b"", projection.ambient_mask.read_bytes())
+            self.assertEqual(project_bytes, projection.project_source.read_bytes())
+            self.assertNotEqual(projection.ambient_mask, projection.project_source)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "cat-file", "blob", "HEAD:AGENTS.md"],
+                    cwd=worktree,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                ).stdout,
+                projection.project_source.read_bytes(),
+            )
+
+            workload = self.workload()
+            workload["message"] = "SYNTHETIC_PROMPT_STDIN_ONLY"
+            command = MODULE.sandbox_command(
+                workload,
+                worktree,
+                MODULE.GIT_COMMON_DIR,
+                root / "final.txt",
+                root / "resolv.conf",
+                projection.ambient_mask,
+                "synthetic explicit reviewed bundle",
+                str(uuid.uuid4()),
+            )
+            project_target = str(worktree / "AGENTS.md")
+            project_target_index = command.index(project_target)
+            self.assertEqual("--ro-bind", command[project_target_index - 2])
+            self.assertEqual(
+                str(projection.project_source),
+                command[project_target_index - 1],
+            )
+            self.assertEqual(2, command.count(str(projection.ambient_mask)))
+            self.assertEqual(1, command.count(str(projection.project_source)))
+            self.assertEqual(1, command.count("project_doc_max_bytes=0"))
+            self.assertEqual(
+                1,
+                command.count(
+                    'developer_instructions="synthetic explicit reviewed bundle"'
+                ),
+            )
+            self.assertNotIn(workload["message"], "\n".join(command))
+            self.assertEqual(
+                "",
+                subprocess.run(
+                    ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                    cwd=worktree,
+                    check=True,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                ).stdout,
+            )
+            ambient_path = projection.ambient_mask
+            project_path = projection.project_source
+
+        self.assertFalse(ambient_path.exists())
+        self.assertFalse(project_path.exists())
+
     def test_resume_uses_only_exact_uuid_and_stdin(self):
         thread_id = str(uuid.uuid4())
         command = MODULE.sandbox_command(

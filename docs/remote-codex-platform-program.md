@@ -15425,3 +15425,27 @@ the SHA-256 of its `SHA256SUMS` is
 Task 0.1 is complete and OpenSpec progress is `1/8`; task 1.1 is the exact
 first pending task. AX42 installation and any real prompt remain separate
 explicit gates.
+
+## Reviewed instruction sandbox cleanliness — focused red regression
+
+Task 1.1 adds one synthetic contract test for the successor boundary. It
+requires two distinct temporary projections: an empty mask only for ambient
+home instructions and the exact validated repository bytes for the tracked
+worktree `AGENTS.md`. It also requires that the project bind is read-only, the
+host repository remains clean, the explicit reviewed bundle appears once,
+automatic project discovery is disabled and both projections disappear with
+the temporary execution directory.
+
+Against predecessor commit `d69dc63`, the focused finite test runs once and
+fails only with the expected missing `prepare_instruction_projection`
+implementation. No runner implementation, installed worker, live source,
+WorkSession 19 ownership, service, prompt, response, attachment, production,
+preview or Beautips resource changed.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-1.1-red-regression-20260811`.
+The SHA-256 of its `SHA256SUMS` is
+`56dd315de82dba77a31a764f434d1104eeeaef3a14e640e8fa9017ed1c9ae125`.
+Task 1.1 is complete and OpenSpec progress is `2/8`; task 1.2 is the exact
+first pending task. Installation and a real prompt remain separate explicit
+gates.
