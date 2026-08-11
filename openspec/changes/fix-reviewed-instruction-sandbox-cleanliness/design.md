@@ -35,7 +35,9 @@ the default bound includes the repository source once.
 - Change any instruction text, instruction fingerprint or WorkSession source.
 - Permit repository `.codex`, overrides, fallbacks or user configuration.
 - Change Codex version/model, backend dispatch, routing, runtime, attachments,
-  Android, web UI, preview, Beautips or another project.
+  Android, web UI or preview; enable, reconfigure or execute Beautips or
+  another project. The shared-runner compatibility trust pin may move without
+  changing the pre-existing project registry or ownership.
 - Retry AgentRun 97 or submit any real prompt during preparation/installation.
 
 ## Decisions

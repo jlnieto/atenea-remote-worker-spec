@@ -46,7 +46,9 @@ None.
 - Programme repository: `ops/worker/project-codex-runner-v1.py`, focused
   worker tests, installer/checksum artifacts and operational documentation.
 - Atenea backend, database, web and Android: no code, schema, configuration or
-  deployment change.
+  deployment change. AX42 changes only the shared runner and its exact static
+  adapter/installer trust pins; it does not change Beautips configuration,
+  ownership, activation or execution.
 - WorkSession 19: retained Git, registration, admission, allocation, turns,
   AgentRuns and attachments remain untouched while preparing the correction.
 - Rollout: no AX42 installation, worker restart or real prompt may occur

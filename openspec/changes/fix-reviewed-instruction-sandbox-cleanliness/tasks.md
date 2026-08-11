@@ -26,7 +26,7 @@ blocks the current task without repair, adoption or cleanup.
 
 ## 2. Separately authorized rollout and canary
 
-- [ ] 2.1 Build and fingerprint an exact AX42 predecessor/successor/rollback
+- [x] 2.1 Build and fingerprint an exact AX42 predecessor/successor/rollback
   bundle with finite checks and automatic rollback; retain sanitized evidence,
   strict-validate, commit and publish, then stop for exact installation
   authorization

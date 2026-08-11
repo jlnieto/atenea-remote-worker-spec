@@ -15514,3 +15514,43 @@ The SHA-256 of its `SHA256SUMS` is
 `3d139c7a036ada55f0c2f4c623d66edb0961d51334f3adfccd5785671697033d`.
 Task 1.3 is complete and OpenSpec progress is `4/8`; task 2.1 is the exact
 first pending task. No AX42 installation or real prompt is authorized.
+
+## Reviewed instruction sandbox cleanliness — sealed AX42 candidate
+
+Task 2.1 prepares a deterministic four-file predecessor/successor bundle from
+reviewed source commit `fd3154a76c597be73c4655855606883ba6fa3604`.
+The bundle SHA-256 is
+`43f68f0c6a71860ee76a3d93ff15f7a90cbc6bdb41f9604bd23c10618a18f795`
+and its internal `SHA256SUMS` SHA-256 is
+`e777560a5675a8bdd5ba5a62a59e030d5c0af4817fc73e12a4d3778165134022`.
+
+The transaction changes only the shared project runner and the three static
+adapter/installer trust-chain files needed to keep both installed consumers
+internally exact. Read-only discovery showed that Beautips was already
+selection/execution-enabled with one retained workspace before this change.
+The candidate therefore pins its entire registry byte-exact at `87ba464a...`,
+does not change its activation/configuration/ownership and does not execute a
+Beautips operation. The static adapter pin must follow the shared runner or
+the pre-existing adapter would reject it.
+
+The fail-closed script accepts no arguments and fixes the host, service,
+paths, staging directory, four files and every predecessor/successor hash. It
+requires the exact terminal execution journal, zero non-terminal runs, clean
+WorkSession 19, exact Atenea/Beautips/excluded ownership, slots, admission,
+backups, timers and RAID. It stops and starts only the AgentRun worker, waits
+at most 30 seconds and automatically restores and verifies the exact four-file
+predecessor on any post-mutation failure. Unverified rollback exits distinctly
+with status 70.
+
+The sealed manifest SHA-256 is
+`2f51956e2674dffae436b660dfd49be1e7d3c98fac6837562b7226dcc41c14b9`.
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-2.1-rollout-candidate-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`da78acbc8eaa0f3a68df1ad389db1cb0e087dae13d19ed0ebe26553266b11065`.
+
+No candidate command was run on AX42 and no live file, service, ownership,
+prompt or resource changed. Task 2.1 is complete and OpenSpec progress is
+`5/8`; task 2.2 is the exact first pending task. Stop for separate exact
+installation authorization. The later real Atenea canary remains a second,
+independent operator gate.
