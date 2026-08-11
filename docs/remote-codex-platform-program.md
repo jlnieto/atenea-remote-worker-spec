@@ -15324,3 +15324,33 @@ The generated source fixture and sanitized metadata report remain in
 the SHA-256 of its `SHA256SUMS` is
 `fa172351d9872ca48d0fcab5e5f9224a90c59293bcd6da30582846b3af4348e0`.
 OpenSpec progress is `27/28`; task 5.4 is the exact first pending task.
+
+## Android attachment rollout — final archive blocked by AX42 divergence
+
+Task 5.4 started with a read-only control/worker postflight and stopped before
+archive or corrective action. Production, preview, Beautips and Caddy retain
+their exact accepted images, running state and zero restarts; all three
+application health checks return HTTP 200 and Caddy configuration is valid.
+The accepted absent activation network remains absent.
+
+AX42 no longer matches the task-4 baseline. Admission changed from normal
+`1/4`, heavy `0/2` to normal `2/4`, heavy `1/2`; registry selection/execution
+changed from disabled to enabled and its workspace count changed from zero to
+one. The sole registration is WorkSession 19 remote UUID
+`6547081d-895e-4be1-a8fd-d115b7743cdf`. Its admission, allocation and registry
+were materialized together at `2026-08-11 15:48:38 +0200`. This was not part
+of the authorized image-selection canary and prevents a truthful final
+non-impact claim.
+
+No resource was adopted, repaired, released, removed or modified. Worker,
+preview and attachment services, backups, timers, slots `3/0/0/3`, RAID
+`[UU]`, and the explicitly excluded allocation/admission remain intact. The
+sanitized blocker evidence is retained at
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-rollout-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`e4a84d8444c84991d39da5d967cf380ce01f9cd89ca183dff9061b3866f1b0b7`.
+
+OpenSpec progress remains `27/28`; task 5.4 remains the exact first pending
+task and the change is deliberately not archived. A separate operator
+decision must first accept this WorkSession 19 ownership as expected or
+authorize its exact lifecycle disposition.
