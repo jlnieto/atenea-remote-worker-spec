@@ -15176,3 +15176,48 @@ The SHA-256 of its three-file `SHA256SUMS` is
 The archived change is complete at `60/60`. There is no remaining task or
 automatic action in this change; normal use of WorkSession 19 requires a new,
 explicit operator prompt outside this close-lifecycle scope.
+
+## Android WorkSession image attachments — candidate prepared
+
+The separate OpenSpec change `add-android-worksession-image-attachments`
+closes the native Android parity gap discovered after the lifecycle rollout.
+The backend V62 contract was already complete and enabled only for canonical
+`atenea`; Android had no capability query, image picker, multipart upload or
+attachment-aware turn request.
+
+Implementation commit `39d7d7379423b3da36ce89cc3329cbc6f87f00b3`
+adds server-authoritative ready/blocked state, PNG/JPEG/WebP selection through
+Android's system provider, bounded reads without storage permission,
+sequential idempotent uploads, stable uncertain-turn replay, exact ordered
+attachment binding and authenticated explicit-only historical viewing. The
+composer keeps Send as its sole primary action and exposes concise selection,
+upload, failure, retry and blocked next-action state.
+
+From clean committed source, 56 API/core unit tests pass, affected-module lint
+passes, both APKs assemble and 10 Android 35 instrumented tests pass. Five
+synthetic 390x844 renders independently prove selected, blocked, uploading,
+retryable long-name error and historical states without clipping or overflow.
+The repository-wide lint command also ran; its only failures are unchanged
+pre-existing notification/style/voice-runtime findings outside this OpenSpec.
+The backend harness was not allowed to replace a labelled pre-existing local
+Compose database container; it remained untouched, and no backend source was
+changed.
+
+The uninstalled and unpublished candidate is Atenea `0.5.103`, versionCode
+`136`, SHA-256
+`507ec30d5a99e017625ade793354578ef6626e2a9eee354b02ad358d6340d95b`,
+at exact implementation tree
+`bc3d9c42c43b311b1eb88681088091998ec8c247`. Production, preview, Beautips
+and Caddy retain exact accepted images with zero restarts and HTTP 200; AX42
+services, backups, timers, slots `3/0/0/3`, admission `1/4` and `0/2`, empty
+disabled registry and RAID `[UU]` remain unchanged. No prompt, real attachment,
+runtime, deployment, APK publication/installation or foreign-resource action
+occurred.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-4-candidate`;
+the SHA-256 of its `SHA256SUMS` is
+`ac8b1e7aaa854db39742013e69253dab635dc2f367fe0f0ab099b93a992bd892`.
+OpenSpec progress is `24/28`; task 5.1 is the exact first pending task and
+requires separate authorization for the exact commit and APK hash before any
+publication or installation.

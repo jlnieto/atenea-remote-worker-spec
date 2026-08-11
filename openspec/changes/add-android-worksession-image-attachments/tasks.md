@@ -59,18 +59,18 @@ blocks the current task without repair or adoption.
 
 ## 4. Integrated validation and candidate
 
-- [ ] 4.1 Run all Android unit/instrumentation/lint/build checks and relevant
+- [x] 4.1 Run all Android unit/instrumentation/lint/build checks and relevant
   repository suites from clean source with finite timeouts
-- [ ] 4.2 Prove synthetic ready/blocked, one-to-four selection, all bounds,
+- [x] 4.2 Prove synthetic ready/blocked, one-to-four selection, all bounds,
   upload retry, uncertain turn replay, exact clearing, history reload/download
   and zero implicit content download
-- [ ] 4.3 Audit source/logs/artifacts for attachment content, URI/path, prompts,
+- [x] 4.3 Audit source/logs/artifacts for attachment content, URI/path, prompts,
   answers, auth/tokens, credentials, cookies and environment dumps
-- [ ] 4.4 Build and fingerprint APK 0.5.103/versionCode 136 without publishing
+- [x] 4.4 Build and fingerprint APK 0.5.103/versionCode 136 without publishing
   or installing it; retain sanitized visual and test evidence plus SHA256SUMS
-- [ ] 4.5 Reconfirm production, preview, Beautips, routing, AX42 services, slots,
+- [x] 4.5 Reconfirm production, preview, Beautips, routing, AX42 services, slots,
   backups, RAID, ownership and foreign resources are unchanged
-- [ ] 4.6 Update programme ledger and Android docs, strict-validate, commit and
+- [x] 4.6 Update programme ledger and Android docs, strict-validate, commit and
   publish both branches, then stop with the exact candidate rollout manifest
 
 ## 5. Separately authorized rollout and canary
