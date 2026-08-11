@@ -15221,3 +15221,30 @@ the SHA-256 of its `SHA256SUMS` is
 OpenSpec progress is `24/28`; task 5.1 is the exact first pending task and
 requires separate authorization for the exact commit and APK hash before any
 publication or installation.
+
+## Android attachment rollout gate — signing preflight blocked safely
+
+The operator authorized the previously fingerprinted APK `507ec30d...`, but
+the mandatory pre-publication signature comparison found that it was signed by
+temporary local certificate `411021d4...`; the established Atenea channel and
+installed application use certificate `a1642a05...`. Android would reject that
+artifact as an update. The public/protected APKs, manifest and release archive
+therefore remained untouched at `0.5.102` / versionCode 135 /
+`6dc6dc1d...`, and release 136 remains absent.
+
+A corrected `0.5.103` / versionCode 136 candidate was built from the same clean
+implementation commit `39d7d7379423b3da36ce89cc3329cbc6f87f00b3`
+through the established production Android builder without reading its key or
+secret values. Its APK SHA-256 is
+`bec7c6539df49bda3a877d47e4010468c4f6f09168348189ac1c6aa48462341e`
+and its certificate SHA-256 is the exact channel certificate
+`a1642a052853e9992da7ae8f8b6fe09e150533877776c009e7cca83e8b76559a`.
+The task-owned signing worktree was removed; the corrected immutable artifact
+is staged only as candidate evidence and has not been published or installed.
+
+Sanitized evidence is retained at
+`/home/jose/codex-evidence/add-android-worksession-image-attachments/task-5-signing-preflight-blocked`;
+the SHA-256 of its `SHA256SUMS` is
+`27f5f07c85a83159ef8d32d3fe8a25b446d7a020e9a0e3af7fbebd54d84b63c0`.
+OpenSpec remains `24/28`; task 5.1 is still pending and now requires separate
+authorization for the corrected APK hash and matching channel certificate.
