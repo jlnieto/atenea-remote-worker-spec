@@ -15641,3 +15641,47 @@ The SHA-256 of its `SHA256SUMS` is
 Task 2.3 is complete and OpenSpec progress is `7/8`; task 2.4 is the exact
 first pending task. Final sealing and archive remain outside the exact 2.3
 authorization.
+
+## Reviewed instruction sandbox cleanliness — final close and archive
+
+Task 2.4 completed as a documentation-only, read-only closeout. The programme
+branch and its published origin ref were exact at `e7aa4be8...` before the
+close; local worktree and index were clean. The control host's separate active
+programme checkout remained clean and was neither switched nor advanced.
+
+The final production transaction was `READ ONLY` and ended with `ROLLBACK`.
+Flyway remains V66; WorkSessions 16, 17 and 19 remain
+`CLOSED/RELEASED/10`, `CLOSED/RELEASED/6` and `OPEN/NOT_STARTED/0`.
+WorkSession 17 retains its turn, AgentRun and attachment record. AgentRun 96
+remains failed and unretried. WorkSession 19 retains four turns, two successful
+AgentRuns and two attachment records, while every lifecycle, AgentRun and
+lease non-terminal count remains zero.
+
+The installed successor, exact canary journal and content-free canary metadata
+remain unchanged. WorkSession 19 retains its expected single Android UI draft,
+while tracked `AGENTS.md` stays byte-exact and clean in both worktree and
+index. Its registration, admission, allocation and Atenea registry remain
+exact. The excluded admission/allocation and pre-existing Beautips registry
+remain byte-exact and were not adopted, repaired, released or changed.
+
+Production, preview, Beautips and Caddy retain their exact images, running
+state, zero restarts and HTTP 200; Caddy validates and the accepted activation
+network remains absent. AX42 services and slot proxies are active with zero
+restarts, admission remains `2/4` and `1/2`, slots remain `3/0/0/3`, backup,
+backup-check and health remain successful, all timers are active and all three
+RAID tests pass. Rootful Docker/containerd remain inactive and masked, their
+socket remains absent, and rollout/result staging remains empty.
+
+Every earlier task evidence seal and the nested rollout bundle verify. Final
+sanitized evidence is retained at
+`/home/jose/codex-evidence/fix-reviewed-instruction-sandbox-cleanliness/task-2.4-final-close-20260811`;
+the SHA-256 of its `SHA256SUMS` is
+`9e9edcf26ad243b67c105fdb305dd3c797b15d81caf0daa65e04db72f30b0191`.
+No prompt, response, attachment content, credential, token, cookie, Codex
+history or environment dump was retained.
+
+The active change passed strict validation, reached `8/8` and was archived as
+`2026-08-11-fix-reviewed-instruction-sandbox-cleanliness`. Its requirement is
+now part of the canonical `codex-session-operations` specification, and strict
+validation of all 12 canonical specifications passes. No task or human gate
+remains in this change. The separate V2 programme has not begun.
