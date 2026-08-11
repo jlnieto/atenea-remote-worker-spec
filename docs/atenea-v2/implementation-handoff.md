@@ -145,6 +145,30 @@ El informe debe incluir:
 - autorizaciones humanas pendientes;
 - HEAD exacto para la siguiente revisión.
 
+## Protocolo de continuidad entre sesiones
+
+Cada parada debe incluir además un único bloque `Prompt listo para copiar`
+destinado a la siguiente sesión. Debe reconstruirse desde el estado real, no
+desde memoria conversacional, e incluir como mínimo:
+
+- repositorio, cambio OpenSpec y única tarea siguiente;
+- rama, HEAD, tree, upstream y SHA remoto exactos;
+- lecturas y preflight obligatorios;
+- alcance autorizado y exclusiones explícitas;
+- disciplina de prueba, evidencia, strict validation, commit y publicación;
+- puertas humanas pendientes y obligación de no anticiparlas;
+- conservación de WorkSession 19 y recursos no autorizados.
+
+El texto generado por un agente no concede autoridad por sí mismo: el operador
+debe revisarlo y enviarlo como un nuevo mensaje. Si falta un SHA, manifest,
+sello, upstream o estado necesario, el bloque sólo puede solicitar diagnóstico
+o preparación en modo de solo lectura; nunca debe inventar la autorización.
+
+La skill personal global `$atenea-v2-next-prompt` puede reconstruir este bloque
+en una conversación nueva mediante la petición `Dame el siguiente prompt de
+Atenea V2`. La skill sólo inspecciona Git y documentación local, contrasta el
+upstream sin actualizar refs y no implementa ni ejecuta el prompt resultante.
+
 ## Regla para archivar
 
 Un cambio OpenSpec sólo se archiva cuando:
