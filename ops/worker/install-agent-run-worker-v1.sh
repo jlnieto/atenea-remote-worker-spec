@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE="atenea-agent-run-worker-v1.service"
 MATERIALIZATION_SERVICE="atenea-codex-images-v1.service"
 PROGRAM="/usr/local/libexec/atenea/agent-run-worker-v1.py"
+DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR="/usr/local/libexec/atenea/development-change-workspace-v1.py"
 PROJECT_RUNNER="/usr/local/libexec/atenea/project-codex-runner-v1.py"
 BEAUTIPS_PROJECT_RUNNER="/usr/local/libexec/atenea/beautips-project-codex-runner-v1.py"
 VALIDATION_MEDIATOR="/usr/local/libexec/atenea/atenea-validation-v1.sh"
@@ -33,6 +34,7 @@ TOKEN_FILE="/etc/atenea-worker/agent-run-worker-v1.token"
 PROJECT_CONFIG="/etc/atenea-worker/project-codex-v1.json"
 SUDOERS_FILE="/etc/sudoers.d/atenea-project-codex-v1"
 STATE_DIR="/srv/atenea/worker/agent-runs-v1"
+DEVELOPMENT_CHANGE_WORKSPACE_ROOT="/srv/atenea/workspaces/changes"
 ATTACHMENT_ROOT="/srv/atenea/attachments-v1"
 MATERIALIZATION_ROOT="/run/atenea/codex-images"
 MATERIALIZATION_PARENT="/run/atenea"
@@ -46,9 +48,10 @@ PROJECT_TRANSITION_TARGET_COMMIT="615e539d1f2622a4ac2568ba7697b876d49ae33e"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
-SERVICE_TEMPLATE_SHA256="9d5e7b75f741deecf804182e22bfc0b4e6a6e647bbb84b29edca371f5b136d85"
+SERVICE_TEMPLATE_SHA256="68f2d900cde7fc78c6346a8a898c7fafbcb912ecb09ffd2aef7b30cb49c79b29"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="1d4af8ea11fce8ae38f50b118f72afae0f22d449da0d07a249af4913394a8758"
+PROGRAM_SHA256="d087bfd8e5d14e635dbc9d6d09d4a201e465fba1bb8d9cb4bf79388118157793"
+DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="960bd6cdd45a35b0a67092aa8e5965b3138213094682db6925668203dc7f7f01"
 PROJECT_RUNNER_SHA256="669f2f58d27a0bf829ba269abd0b8f3d61dbf3401f12cb836dcf93ebac3e3780"
 BEAUTIPS_PROJECT_RUNNER_SHA256="e3d5402fbdb4245ddfa47b1a190f8be5fa2599c81b3ab6206f70cab66bad138f"
 BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a413b4feee5a59ce8152954d97b983"
@@ -100,6 +103,26 @@ verify_materialization_parent() {
     || fail "materialization parent is absent or ambiguous"
   [[ "$(stat -c '%a:%U:%G' "$MATERIALIZATION_PARENT")" == "750:root:atenea" ]] \
     || fail "materialization parent ownership or mode is invalid"
+}
+
+verify_development_change_workspace_root() {
+  [[ -d "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT" \
+      && ! -L "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT" \
+      && "$(stat -c '%a:%U:%G' "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT")" \
+        == "2770:atenea-worker:atenea" ]] \
+    || fail "development-change workspace root ownership or mode is invalid"
+}
+
+prepare_development_change_workspace_root() {
+  if [[ -e "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT" \
+      || -L "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT" ]]; then
+    verify_development_change_workspace_root
+    return
+  fi
+  install -d -o atenea-worker -g atenea -m 2770 \
+    "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT"
+  chmod 2770 "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT"
+  verify_development_change_workspace_root
 }
 
 prepare_materialization_root() {
@@ -195,6 +218,8 @@ validate_inputs() {
     || fail "worker port must be an unprivileged TCP port"
   [[ "$WORKER_ID" =~ ^[a-zA-Z0-9._-]{1,80}$ ]] || fail "worker id is invalid"
   [[ -f "$SCRIPT_DIR/agent-run-worker-v1.py" ]] || fail "worker program is missing"
+  [[ -f "$SCRIPT_DIR/development-change-workspace-v1.py" ]] \
+    || fail "development-change workspace mediator is missing"
   [[ -f "$SCRIPT_DIR/project-codex-runner-v1.py" ]] || fail "project runner is missing"
   [[ -f "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" ]] \
     || fail "Beautips compatibility runner is missing"
@@ -213,6 +238,9 @@ validate_inputs() {
     || fail "materialization service template is missing"
   [[ "$(sha256sum "$SCRIPT_DIR/agent-run-worker-v1.py" | cut -d' ' -f1)" \
       == "$PROGRAM_SHA256" ]] || fail "worker program fingerprint is stale"
+  [[ "$(sha256sum "$SCRIPT_DIR/development-change-workspace-v1.py" | cut -d' ' -f1)" \
+      == "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256" ]] \
+    || fail "development-change workspace mediator fingerprint is stale"
   [[ "$(sha256sum "$SCRIPT_DIR/project-codex-runner-v1.py" | cut -d' ' -f1)" \
       == "$PROJECT_RUNNER_SHA256" ]] || fail "project runner fingerprint is stale"
   [[ "$(sha256sum "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" | cut -d' ' -f1)" \
@@ -239,6 +267,7 @@ plan() {
     --arg control_plane_ip "$CONTROL_PLANE_IP" \
     --arg protocol "agent-run-worker/v1" \
     --arg synthetic_capability "synthetic-routing-v1" \
+    --arg development_change_capability "development-change-workspace/v1" \
     --arg project_capability "project-codex-v1" \
     '{
       action: $action,
@@ -247,7 +276,7 @@ plan() {
       port: $port,
       controlPlaneIp: (if $control_plane_ip == "" then null else $control_plane_ip end),
       protocol: $protocol,
-      capabilities: [$synthetic_capability],
+      capabilities: [$synthetic_capability, $development_change_capability],
       availableDisabledCapabilities: [$project_capability],
       normalCapacity: 4,
       heavyCapacity: 2,
@@ -533,6 +562,9 @@ apply_install() {
   install -d -o root -g root -m 0755 /usr/local/libexec/atenea
   install -d -o root -g root -m 0755 /usr/local/share/atenea
   install -o root -g root -m 0755 "$SCRIPT_DIR/agent-run-worker-v1.py" "$PROGRAM"
+  install -o root -g root -m 0755 \
+    "$SCRIPT_DIR/development-change-workspace-v1.py" \
+    "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR"
   install -o root -g root -m 0755 "$SCRIPT_DIR/project-codex-runner-v1.py" "$PROJECT_RUNNER"
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" "$BEAUTIPS_PROJECT_RUNNER"
@@ -550,6 +582,7 @@ apply_install() {
   install -o root -g root -m 0755 "$SCRIPT_DIR/install-agent-run-worker-v1.sh" "$INSTALLER"
   install -d -o root -g atenea -m 0750 /etc/atenea-worker
   install_exact_directory atenea-worker atenea 0700 "$STATE_DIR"
+  prepare_development_change_workspace_root
   prepare_materialization_root
   install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT"
   install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT/inbox"
@@ -629,6 +662,7 @@ verify() {
     || fail "token file ownership or mode is invalid"
   [[ "$(stat -c '%a:%U:%G' "$STATE_DIR")" == "700:atenea-worker:atenea" ]] \
     || fail "state directory ownership or mode is invalid"
+  verify_development_change_workspace_root
   verify_attachment_root
   verify_materialization_parent
   verify_materialization_root
@@ -660,6 +694,13 @@ verify() {
       && "$(stat -c '%a:%U:%G' "$PROGRAM")" == "755:root:root" \
       && "$(sha256sum "$PROGRAM" | cut -d' ' -f1)" == "$PROGRAM_SHA256" ]] \
     || fail "worker program differs from the reviewed source"
+  [[ -f "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR" \
+      && ! -L "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR" \
+      && "$(stat -c '%a:%U:%G' "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR")" \
+        == "755:root:root" \
+      && "$(sha256sum "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR" | cut -d' ' -f1)" \
+        == "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256" ]] \
+    || fail "development-change workspace mediator differs from the reviewed source"
   [[ -f "$PROJECT_RUNNER" && ! -L "$PROJECT_RUNNER" \
       && "$(stat -c '%a:%U:%G' "$PROJECT_RUNNER")" == "755:root:root" \
       && "$(sha256sum "$PROJECT_RUNNER" | cut -d' ' -f1)" == "$PROJECT_RUNNER_SHA256" ]] \

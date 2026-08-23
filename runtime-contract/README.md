@@ -5,6 +5,11 @@ project can be activated on the AX42 worker. Version 1 manifests are JSON
 documents. YAML may be added later only with a parser that preserves the same
 JSON data model and validation result.
 
+`development-change-workspace-v1.request.schema.json` and
+`development-change-workspace-v1.response.schema.json` define the stable HTTP
+payload boundary used by `app` to provision, inspect, and reconcile an exact
+development-change worktree on AX42.
+
 The schema deliberately:
 
 - uses argument arrays instead of shell command strings;

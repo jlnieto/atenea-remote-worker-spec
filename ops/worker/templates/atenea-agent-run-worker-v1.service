@@ -1,4 +1,5 @@
 [Unit]
+# Canonical AX42 worker unit with development-change workspace mediation.
 Description=Atenea private AgentRun worker v1
 Requires=atenea-codex-images-v1.service
 After=network-online.target tailscaled.service atenea-codex-images-v1.service
@@ -8,7 +9,7 @@ Wants=network-online.target
 Type=simple
 User=atenea-worker
 Group=atenea
-ExecStart=/usr/local/libexec/atenea/agent-run-worker-v1.py --bind ${ATENEA_WORKER_BIND} --port ${ATENEA_WORKER_PORT} --worker-id ${ATENEA_WORKER_ID} --state-dir /srv/atenea/worker/agent-runs-v1 --token-file /etc/atenea-worker/agent-run-worker-v1.token --normal-capacity 4 --heavy-capacity 2 --project-config /etc/atenea-worker/project-codex-v1.json --project-readiness-enabled --unactivated-release-enabled --project-runner /usr/local/libexec/atenea/project-codex-runner-v1.py --project-workspace-activator /usr/local/libexec/atenea/atenea-workspace-activation-v1.sh --project-workspace-releaser /usr/local/libexec/atenea/atenea-workspace-release-v1.py --beautips-project-config /etc/atenea-worker/beautips-project-codex-v1.json --beautips-project-runner /usr/local/libexec/atenea/beautips-project-codex-runner-v1.py --project-validation-mediator /usr/local/libexec/atenea/atenea-validation-v1.sh --repository-role-mediator /usr/local/libexec/atenea/atenea-multi-repository-v1.sh --codex-update-mediator /usr/local/libexec/atenea/codex-release-stage-v1.py --codex-activate-mediator /usr/local/libexec/atenea/codex-release-activate-v1.py --codex-rollback-mediator /usr/local/libexec/atenea/codex-release-activate-v1.py --codex-restart-scheduler /usr/local/libexec/atenea/codex-release-restart-v1.sh --codex-update-registry /etc/atenea-worker/codex-release-stage-v1.json --codex-release-root /srv/atenea/worker/codex-releases-v1 --project-timeout 1800
+ExecStart=/usr/local/libexec/atenea/agent-run-worker-v1.py --bind ${ATENEA_WORKER_BIND} --port ${ATENEA_WORKER_PORT} --worker-id ${ATENEA_WORKER_ID} --state-dir /srv/atenea/worker/agent-runs-v1 --token-file /etc/atenea-worker/agent-run-worker-v1.token --normal-capacity 4 --heavy-capacity 2 --project-config /etc/atenea-worker/project-codex-v1.json --project-readiness-enabled --unactivated-release-enabled --project-runner /usr/local/libexec/atenea/project-codex-runner-v1.py --project-workspace-activator /usr/local/libexec/atenea/atenea-workspace-activation-v1.sh --project-workspace-releaser /usr/local/libexec/atenea/atenea-workspace-release-v1.py --development-change-workspace-mediator /usr/local/libexec/atenea/development-change-workspace-v1.py --beautips-project-config /etc/atenea-worker/beautips-project-codex-v1.json --beautips-project-runner /usr/local/libexec/atenea/beautips-project-codex-runner-v1.py --project-validation-mediator /usr/local/libexec/atenea/atenea-validation-v1.sh --repository-role-mediator /usr/local/libexec/atenea/atenea-multi-repository-v1.sh --codex-update-mediator /usr/local/libexec/atenea/codex-release-stage-v1.py --codex-activate-mediator /usr/local/libexec/atenea/codex-release-activate-v1.py --codex-rollback-mediator /usr/local/libexec/atenea/codex-release-activate-v1.py --codex-restart-scheduler /usr/local/libexec/atenea/codex-release-restart-v1.sh --codex-update-registry /etc/atenea-worker/codex-release-stage-v1.json --codex-release-root /srv/atenea/worker/codex-releases-v1 --project-timeout 1800
 EnvironmentFile=/etc/atenea-worker/agent-run-worker-v1.env
 Restart=on-failure
 RestartSec=2s
@@ -27,7 +28,7 @@ RestrictSUIDSGID=false
 LockPersonality=true
 MemoryDenyWriteExecute=true
 ReadOnlyPaths=/srv/atenea/attachments-v1
-ReadWritePaths=/etc/atenea-worker /srv/atenea/worker/agent-runs-v1 /srv/atenea/worker/codex-releases-v1 /srv/atenea/worker/workspace-locks /srv/atenea/worker/runtime-admission-v1 /srv/atenea/worker/runtime-allocation-v1 /srv/atenea/worker/workspace-release-v1 /srv/atenea/repositories /srv/atenea/workspaces/sessions /srv/atenea/artifacts /srv/atenea/caches /home/jose/.codex /run/atenea/codex-images
+ReadWritePaths=/etc/atenea-worker /srv/atenea/worker/agent-runs-v1 /srv/atenea/worker/codex-releases-v1 /srv/atenea/worker/workspace-locks /srv/atenea/worker/runtime-admission-v1 /srv/atenea/worker/runtime-allocation-v1 /srv/atenea/worker/workspace-release-v1 /srv/atenea/repositories /srv/atenea/workspaces/sessions /srv/atenea/workspaces/changes /srv/atenea/artifacts /srv/atenea/caches /home/jose/.codex /run/atenea/codex-images
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE
 AmbientCapabilities=
 

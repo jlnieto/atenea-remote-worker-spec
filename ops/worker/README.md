@@ -254,6 +254,24 @@ The legacy exact dispatch/execution cancel route remains available for v1
 compatibility, while new control-plane recovery uses the complete ownership
 envelope.
 
+## Development-change workspaces
+
+`development-change-workspace-v1.py` owns the fail-closed AX42 worktree
+boundary consumed by the sibling `app` repository. The worker exposes
+`POST /v1/development-changes/workspaces/{provision,inspect,reconcile}` and
+advertises `development-change-workspace/v1` only while the exact executable
+mediator is installed. Requests and responses are defined in
+`runtime-contract/development-change-workspace-v1.*.schema.json`.
+
+The general worker installer installs the mediator and prepares
+`/srv/atenea/workspaces/changes`; it does not inspect an application checkout
+or its migrations. Run the synthetic protocol, idempotency, ownership, schema,
+and systemd-boundary suite with:
+
+```bash
+python3 ./test-development-change-workspace-v1.py
+```
+
 ## Session runtime allocation
 
 `session-runtime-allocation-v1.sh` implements task 3.2 without starting a
