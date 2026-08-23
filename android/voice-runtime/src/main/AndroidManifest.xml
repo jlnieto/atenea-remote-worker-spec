@@ -1,8 +1,0 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
-        <service
-            android:name=".AteneaVoiceRuntimeService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-    </application>
-</manifest>
