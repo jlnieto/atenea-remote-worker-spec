@@ -131,6 +131,10 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         self.assertEqual(self.base_commit, response["canonicalCommit"])
         self.assertEqual("a" * 64, response["sourceFingerprintSha256"])
         self.assertFalse(response["workspaceDirty"])
+        self.assertEqual(
+            0o770,
+            (self.workspaces / self.change_key).stat().st_mode & 0o777,
+        )
 
     def test_machine_readable_contract_accepts_exact_exchange(self) -> None:
         request_schema = json.loads(

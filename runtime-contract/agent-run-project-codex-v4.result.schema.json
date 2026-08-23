@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.internal/contracts/agent-run-project-codex-v4.result.schema.json",
+  "title": "Atenea exact development-change-owned project Codex result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "threadId", "turnId", "finalAnswer", "outputSummary", "modelId",
+    "reasoningEffort", "catalogRevision", "codexVersion"
+  ],
+  "properties": {
+    "threadId": {"type": "string", "format": "uuid"},
+    "turnId": {"type": "string", "format": "uuid"},
+    "finalAnswer": {"type": "string", "minLength": 1, "maxLength": 262144},
+    "outputSummary": {"const": "project-codex-v4 completed"},
+    "modelId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"},
+    "reasoningEffort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]},
+    "catalogRevision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "codexVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+  }
+}

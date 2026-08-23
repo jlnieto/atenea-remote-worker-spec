@@ -272,6 +272,27 @@ and systemd-boundary suite with:
 python3 ./test-development-change-workspace-v1.py
 ```
 
+`project-codex-v4` is the additive AgentRun protocol for these workspaces. It
+retains the `agent-run-worker/v1` transport and v1-v3 workload compatibility,
+but replaces legacy session-owned workspace selection with a closed
+`changeOwnership` binding. Admission and the runner independently prove the
+exact `changeKey`, database WorkSession, remote session, workspace, canonical
+source, source revision and provisioner fingerprints. Admission invokes only
+the read-only workspace `INSPECT` operation; it never provisions, selects or
+adopts a workspace. A byte-identical dispatch replay returns its original
+durable execution without rerunning inspection or Codex, while a changed
+request conflicts. Non-terminal executions are exclusive by WorkSession and
+change workspace. The root-owned runner grants the fixed `atenea` group only
+the owner-equivalent access bits on the already owned worktree (including a
+legacy `0700` change root) before entering the existing Codex sandbox; it does
+not change source bytes, ownership, the sealed record or workspace identity.
+
+The capability is advertised only when both exact project execution and the
+development-change mediator are available. Future retirement may remove v1-v3
+only after the control plane no longer dispatches legacy WorkSession-owned
+identities; this change does not set a retirement date or weaken their current
+behavior.
+
 ## Session runtime allocation
 
 `session-runtime-allocation-v1.sh` implements task 3.2 without starting a

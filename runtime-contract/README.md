@@ -10,6 +10,14 @@ JSON data model and validation result.
 payload boundary used by `app` to provision, inspect, and reconcile an exact
 development-change worktree on AX42.
 
+`agent-run-project-codex-v4.request.schema.json` and its result schema are the
+additive AgentRun contract for a previously provisioned development-change
+workspace. The request binds the immutable dispatch to the change key, database
+WorkSession identity, remote session UUID, exact workspace identity, source
+revision and both source/ownership fingerprints. It contains no workspace path,
+host selector, slot, shell or command authority. Versions v1-v3 remain valid
+legacy WorkSession-owned contracts.
+
 The schema deliberately:
 
 - uses argument arrays instead of shell command strings;

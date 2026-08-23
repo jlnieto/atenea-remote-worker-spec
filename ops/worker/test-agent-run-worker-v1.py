@@ -1403,12 +1403,58 @@ print(json.dumps({
          "message": "Inspecting the accepted project."},
         {"category": "CHECKING", "occurredAt": "unsafe-ignored",
          "message": "Checking the accepted project."}
-    ]} if request["workload"]["kind"] in {"project-codex-v2", "project-codex-v3"} else {})
+    ]} if request["workload"]["kind"] in {
+        "project-codex-v2", "project-codex-v3", "project-codex-v4"
+    } else {})
 }))
 """,
             encoding="utf-8",
         )
         self.runner.chmod(0o755)
+        self.change_mediator_calls = root / "change-mediator-calls"
+        self.change_mediator = root / "change-mediator"
+        self.change_mediator.write_text(
+            """#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+r = json.load(sys.stdin)
+calls = pathlib.Path(sys.argv[0]).with_name("change-mediator-calls")
+calls.write_text(calls.read_text() + r["operation"] + "\\n" if calls.exists() else r["operation"] + "\\n")
+owned = r["sourceFingerprintSha256"] == "c" * 64
+print(json.dumps({
+    "schemaVersion": r["schemaVersion"],
+    "protocolVersion": r["protocolVersion"],
+    "state": "OWNED" if owned else "FOREIGN",
+    "effect": r["effect"],
+    "operationId": r["operationId"],
+    "idempotencyKey": r["idempotencyKey"],
+    "operation": r["operation"],
+    "predecessorOperationId": r["predecessorOperationId"],
+    "changeKey": r["changeKey"],
+    "databaseProjectId": r["databaseProjectId"],
+    "projectId": r["projectId"],
+    "repository": r["repository"],
+    "repositoryBranch": r["repositoryBranch"],
+    "baseCommit": r["baseCommit"],
+    "expectedCanonicalCommit": r["expectedCanonicalCommit"],
+    "workspaceBranch": r["workspaceBranch"],
+    "workspaceIdentity": r["workspaceIdentity"],
+    "workerId": r["workerId"],
+    "sourceRevision": r["sourceRevision"],
+    "expectedSourceFingerprintSha256": r["sourceFingerprintSha256"],
+    "canonicalCommit": r["expectedCanonicalCommit"] if owned else None,
+    "sourceFingerprintSha256": r["sourceFingerprintSha256"] if owned else None,
+    "workspaceDirty": True if owned else None,
+    "retainedDraft": True if owned else None,
+    "requestFingerprintSha256": r["requestFingerprintSha256"],
+    "ownershipFingerprintSha256": "b" * 64,
+    "valuesExposed": False,
+}, sort_keys=True, separators=(",", ":")))
+""",
+            encoding="utf-8",
+        )
+        self.change_mediator.chmod(0o755)
         self.session_id = str(uuid.uuid4())
         self.workspace_identity = "remote:ax42-01:work-session:" + self.session_id
         self.config = root / "project.json"
@@ -1444,6 +1490,7 @@ print(json.dumps({
             project_timeout=30,
             project_config_uid=os.getuid(),
             privilege_command=(),
+            development_change_workspace_mediator=self.change_mediator,
         )
         self.state._observe_project_commit = lambda _route: TEST_COMMIT
         self.state.start()
@@ -1508,6 +1555,32 @@ print(json.dumps({
         })
         return request
 
+    def change_request(self, message="hello"):
+        request = self.profiled_request()
+        change_key = "88888888-8888-4888-8888-888888888888"
+        workspace_identity = "remote:test-worker:change:" + change_key
+        request.update({
+            "workspaceIdentity": workspace_identity,
+            "changeOwnership": {
+                "changeKey": change_key,
+                "databaseWorkSessionId": 19,
+                "remoteSessionId": self.session_id,
+                "workspaceIdentity": workspace_identity,
+                "databaseProjectId": 7,
+                "baseCommit": TEST_COMMIT,
+                "expectedCanonicalCommit": TEST_COMMIT,
+                "sourceRevision": 3,
+                "sourceFingerprintSha256": "c" * 64,
+                "workspaceOwnershipFingerprintSha256": "b" * 64,
+            },
+        })
+        request["workload"].update({
+            "kind": MODULE.PROJECT_V4_CAPABILITY,
+            "message": message,
+            "attachments": [],
+        })
+        return request
+
     def wait_terminal(self, dispatch_id, timeout=5):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -1528,6 +1601,114 @@ print(json.dumps({
         terminal = self.wait_terminal(request["dispatchId"])
         self.assertEqual("SUCCEEDED", terminal["status"])
         self.assertEqual(thread_id, terminal["result"]["threadId"])
+
+    def test_change_owned_dispatch_reuses_exact_workspace_and_replay_is_stable(self):
+        request = self.change_request()
+        self.assertIn(MODULE.PROJECT_V4_CAPABILITY, self.state.health()["capabilities"])
+        created, was_created = self.state.create(request)
+        terminal = self.wait_terminal(request["dispatchId"])
+        calls_before_replay = self.change_mediator_calls.read_text().splitlines()
+        duplicate, created_again = self.state.create(json.loads(json.dumps(request)))
+
+        self.assertTrue(was_created)
+        self.assertFalse(created_again)
+        self.assertEqual(created["executionId"], duplicate["executionId"])
+        self.assertEqual("SUCCEEDED", terminal["status"])
+        self.assertEqual("project-codex-v4 completed", terminal["result"]["outputSummary"])
+        self.assertEqual(["INSPECT", "INSPECT"], calls_before_replay)
+        self.assertEqual(
+            calls_before_replay, self.change_mediator_calls.read_text().splitlines()
+        )
+        durable = self.state.executions[request["dispatchId"]]
+        self.assertEqual(request["changeOwnership"], durable["changeOwnership"])
+        self.assertNotIn("path", json.dumps(self.state.get(request["dispatchId"])).lower())
+
+    def test_change_owned_dispatch_rejects_crossed_or_incompatible_ownership(self):
+        cases = []
+        crossed_change = self.change_request()
+        crossed_change["changeOwnership"]["changeKey"] = str(uuid.uuid4())
+        cases.append(crossed_change)
+        crossed_session = self.change_request()
+        crossed_session["changeOwnership"]["remoteSessionId"] = str(uuid.uuid4())
+        cases.append(crossed_session)
+        crossed_workspace = self.change_request()
+        crossed_workspace["changeOwnership"]["workspaceIdentity"] = (
+            "remote:test-worker:change:" + str(uuid.uuid4())
+        )
+        cases.append(crossed_workspace)
+        incompatible_source = self.change_request()
+        incompatible_source["changeOwnership"]["sourceFingerprintSha256"] = "d" * 64
+        cases.append(incompatible_source)
+        foreign_fingerprint = self.change_request()
+        foreign_fingerprint["changeOwnership"][
+            "workspaceOwnershipFingerprintSha256"
+        ] = "e" * 64
+        cases.append(foreign_fingerprint)
+
+        for request in cases:
+            with self.subTest(change=request["changeOwnership"]), self.assertRaises(
+                MODULE.ProtocolError
+            ):
+                self.state.create(request)
+            self.assertNotIn(request["dispatchId"], self.state.executions)
+
+    def test_change_owned_dispatch_serializes_same_workspace_across_sessions(self):
+        first = self.change_request(message="sleep:0.3")
+        self.state.create(first)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if self.state.get(first["dispatchId"])["status"] in {"STARTING", "RUNNING"}:
+                break
+            time.sleep(0.01)
+
+        competing = self.change_request()
+        competing_session = str(uuid.uuid4())
+        competing["sessionId"] = competing_session
+        competing["changeOwnership"]["remoteSessionId"] = competing_session
+        competing["changeOwnership"]["databaseWorkSessionId"] = 20
+        with self.assertRaisesRegex(MODULE.ProtocolError, "non-terminal execution"):
+            self.state.create(competing)
+        self.assertNotIn(competing["dispatchId"], self.state.executions)
+        self.assertEqual("SUCCEEDED", self.wait_terminal(first["dispatchId"])["status"])
+
+    def test_change_owned_dispatch_rejects_durable_worksession_cross_ownership(self):
+        first = self.change_request()
+        self.state.create(first)
+        self.assertEqual("SUCCEEDED", self.wait_terminal(first["dispatchId"])["status"])
+
+        crossed = self.change_request()
+        crossed_session = str(uuid.uuid4())
+        crossed_change = str(uuid.uuid4())
+        crossed_workspace = "remote:test-worker:change:" + crossed_change
+        crossed["sessionId"] = crossed_session
+        crossed["workspaceIdentity"] = crossed_workspace
+        crossed["changeOwnership"].update({
+            "changeKey": crossed_change,
+            "remoteSessionId": crossed_session,
+            "workspaceIdentity": crossed_workspace,
+        })
+        with self.assertRaisesRegex(MODULE.ProtocolError, "different development change"):
+            self.state.create(crossed)
+        self.assertNotIn(crossed["dispatchId"], self.state.executions)
+
+    def test_change_owned_replay_conflict_does_not_reinspect_or_execute(self):
+        request = self.change_request()
+        self.state.create(request)
+        self.wait_terminal(request["dispatchId"])
+        calls_before = self.change_mediator_calls.read_text()
+        runner_calls_before = (
+            Path(self.temporary.name) / "project-runner-calls"
+        ).read_text()
+        conflicting = json.loads(json.dumps(request))
+        conflicting["changeOwnership"]["sourceRevision"] += 1
+
+        with self.assertRaisesRegex(MODULE.ProtocolError, "different immutable request"):
+            self.state.create(conflicting)
+        self.assertEqual(calls_before, self.change_mediator_calls.read_text())
+        self.assertEqual(
+            runner_calls_before,
+            (Path(self.temporary.name) / "project-runner-calls").read_text(),
+        )
 
     def test_legacy_configuration_preserves_text_routing_and_rejects_images(self):
         config = json.loads(self.config.read_text(encoding="utf-8"))

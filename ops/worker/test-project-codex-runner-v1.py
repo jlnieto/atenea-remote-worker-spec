@@ -23,6 +23,10 @@ MODULE = SourceFileLoader(
     "project_codex_runner_v1",
     str(Path(__file__).with_name("project-codex-runner-v1.py")),
 ).load_module()
+CHANGE_MEDIATOR = SourceFileLoader(
+    "development_change_workspace_v1_for_runner",
+    str(Path(__file__).with_name("development-change-workspace-v1.py")),
+).load_module()
 TEST_COMMIT = "1" * 40
 
 
@@ -54,6 +58,32 @@ class ProjectCodexContractTest(unittest.TestCase):
             "codexVersion": MODULE.CODEX_VERSION,
         })
         return workload
+
+    def change_request(self):
+        session_id = "11111111-1111-4111-8111-111111111111"
+        change_key = "88888888-8888-4888-8888-888888888888"
+        workspace_identity = "remote:ax42-01:change:" + change_key
+        workload = self.profiled_workload()
+        workload.update({"kind": MODULE.CHANGE_CAPABILITY, "attachments": []})
+        return {
+            "dispatchId": "33333333-3333-4333-8333-333333333333",
+            "executionId": "44444444-4444-4444-8444-444444444444",
+            "sessionId": session_id,
+            "workspaceIdentity": workspace_identity,
+            "changeOwnership": {
+                "changeKey": change_key,
+                "databaseWorkSessionId": 19,
+                "remoteSessionId": session_id,
+                "workspaceIdentity": workspace_identity,
+                "databaseProjectId": 7,
+                "baseCommit": TEST_COMMIT,
+                "expectedCanonicalCommit": TEST_COMMIT,
+                "sourceRevision": 0,
+                "sourceFingerprintSha256": "a" * 64,
+                "workspaceOwnershipFingerprintSha256": "b" * 64,
+            },
+            "workload": workload,
+        }
 
     def image_fixture(self, root, content=b"\x89PNG\r\n\x1a\nsynthetic-image"):
         session_id = "11111111-1111-4111-8111-111111111111"
@@ -147,6 +177,49 @@ class ProjectCodexContractTest(unittest.TestCase):
         }
         Draft202012Validator(request_schema, format_checker=FormatChecker()).validate(request)
         Draft202012Validator(result_schema, format_checker=FormatChecker()).validate(result)
+
+    def test_change_request_and_result_schemas_are_closed_and_versioned(self):
+        if Draft202012Validator is None:
+            self.skipTest("jsonschema is not installed on this worker")
+        request_schema = json.loads(
+            (ROOT / "runtime-contract/agent-run-project-codex-v4.request.schema.json")
+            .read_text(encoding="utf-8")
+        )
+        result_schema = json.loads(
+            (ROOT / "runtime-contract/agent-run-project-codex-v4.result.schema.json")
+            .read_text(encoding="utf-8")
+        )
+        Draft202012Validator.check_schema(request_schema)
+        Draft202012Validator.check_schema(result_schema)
+        request = self.change_request()
+        request.pop("executionId")
+        request.update({"workloadClass": "NORMAL", "leaseGeneration": 1})
+        result = {
+            "threadId": str(uuid.uuid4()),
+            "turnId": str(uuid.uuid4()),
+            "finalAnswer": "Done.",
+            "outputSummary": "project-codex-v4 completed",
+            "modelId": MODULE.CODEX_MODEL,
+            "reasoningEffort": "high",
+            "catalogRevision": MODULE.CODEX_CATALOG_REVISION,
+            "codexVersion": MODULE.CODEX_VERSION,
+        }
+        request_validator = Draft202012Validator(
+            request_schema, format_checker=FormatChecker()
+        )
+        request_validator.validate(request)
+        Draft202012Validator(
+            result_schema, format_checker=FormatChecker()
+        ).validate(result)
+        for key, value in (
+            ("path", "/srv/foreign"),
+            ("host", "foreign"),
+            ("slot", "slot9"),
+            ("shell", "sh -lc id"),
+        ):
+            candidate = json.loads(json.dumps(request))
+            candidate["changeOwnership"][key] = value
+            self.assertTrue(list(request_validator.iter_errors(candidate)), key)
 
     def test_codex_failure_classification_is_closed_and_sanitized(self):
         cases = (
@@ -852,6 +925,27 @@ class ProjectCodexContractTest(unittest.TestCase):
         ))
         self.assertEqual("-", command[-1])
 
+    def test_change_sandbox_mounts_only_the_derived_change_parent(self):
+        request = self.change_request()
+        change_key = request["changeOwnership"]["changeKey"]
+        worktree = MODULE.CHANGE_WORKSPACE_PARENT / change_key / MODULE.PROJECT_ID
+        command = MODULE.sandbox_command(
+            request["workload"],
+            worktree,
+            MODULE.GIT_COMMON_DIR,
+            Path("/tmp/atenea-codex-result-test/final.txt"),
+            Path("/tmp/atenea-codex-result-test/resolv.conf"),
+            Path("/tmp/atenea-codex-result-test/empty-instructions"),
+            "reviewed instructions",
+            request["executionId"],
+        )
+        serialized = "\n".join(command)
+        self.assertIn(str(MODULE.CHANGE_WORKSPACE_PARENT), command)
+        self.assertIn(str(worktree), command)
+        self.assertNotIn(request["workload"]["message"], serialized)
+        self.assertNotIn("databaseWorkSessionId", serialized)
+        self.assertNotIn(request["changeOwnership"]["sourceFingerprintSha256"], serialized)
+
     def test_reviewed_instruction_projection_is_exact_clean_single_and_temporary(self):
         project_bytes = b"synthetic reviewed repository contract\n"
         with tempfile.TemporaryDirectory() as temporary:
@@ -1211,6 +1305,162 @@ class ProjectCodexContractTest(unittest.TestCase):
             finally:
                 MODULE.GIT_COMMON_DIR = old_common
                 MODULE.MANIFEST_SHA256 = old_manifest
+
+    def test_change_worktree_reuses_sealed_workspace_and_rejects_stale_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            mirror = root / "atenea.git"
+            changes = root / "changes"
+            state = root / "state"
+            changes.mkdir()
+            state.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main", source], check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Contract test"], cwd=source, check=True
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "contract@atenea.invalid"],
+                cwd=source,
+                check=True,
+            )
+            (source / "ops").mkdir()
+            manifest = source / "ops" / "atenea-runtime.json"
+            manifest.write_text("{}\n", encoding="utf-8")
+            (source / "AGENTS.md").write_text("reviewed\n", encoding="utf-8")
+            (source / "tracked.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=source, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "base"], cwd=source, check=True
+            )
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source,
+                text=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            ).stdout.strip()
+            subprocess.run(["git", "clone", "-q", "--bare", source, mirror], check=True)
+            subprocess.run(
+                ["git", "--git-dir", mirror, "remote", "set-url", "origin", MODULE.REPOSITORY],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "--git-dir", mirror, "update-ref",
+                    "refs/remotes/origin/main", commit,
+                ],
+                check=True,
+            )
+            mediator = CHANGE_MEDIATOR.WorkspaceMediator(
+                mirror, changes, state / "workspace.lock", test_mode=True
+            )
+            runner_request = self.change_request()
+            runner_request["workload"]["commit"] = commit
+            runner_request["workload"]["manifestSha256"] = hashlib.sha256(
+                manifest.read_bytes()
+            ).hexdigest()
+            ownership = runner_request["changeOwnership"]
+            ownership["baseCommit"] = commit
+            ownership["expectedCanonicalCommit"] = commit
+
+            def mediator_request(operation="PROVISION", revision=0, source_sha="a" * 64):
+                operation_id = str(uuid.uuid4())
+                body = {
+                    "schemaVersion": 1,
+                    "protocolVersion": "development-change-workspace/v1",
+                    "effect": (
+                        "CREATE_IF_ABSENT_EXACT" if operation == "PROVISION"
+                        else "OBSERVE_ONLY"
+                    ),
+                    "operationId": operation_id,
+                    "idempotencyKey": operation_id,
+                    "operation": operation,
+                    "predecessorOperationId": None,
+                    "changeKey": ownership["changeKey"],
+                    "databaseProjectId": ownership["databaseProjectId"],
+                    "projectId": MODULE.PROJECT_ID,
+                    "repository": MODULE.REPOSITORY,
+                    "repositoryBranch": MODULE.BRANCH,
+                    "baseCommit": commit,
+                    "expectedCanonicalCommit": commit,
+                    "workspaceBranch": f"atenea/change-{ownership['changeKey']}",
+                    "workspaceIdentity": ownership["workspaceIdentity"],
+                    "workerId": "ax42-01",
+                    "sourceRevision": revision,
+                    "sourceFingerprintSha256": source_sha,
+                }
+                body["requestFingerprintSha256"] = CHANGE_MEDIATOR.canonical_sha256(body)
+                return body
+
+            provisioned = mediator.execute(mediator_request(), "PROVISION")
+            ownership["workspaceOwnershipFingerprintSha256"] = provisioned[
+                "ownershipFingerprintSha256"
+            ]
+            config = self.atenea_config()
+            config["commit"] = commit
+            worktree = changes / ownership["changeKey"] / MODULE.PROJECT_ID
+            os.chmod(worktree.parent, 0o700)
+            os.chmod(worktree, 0o700)
+            os.chmod(worktree / "tracked.txt", 0o600)
+            old_values = (
+                MODULE.CHANGE_WORKSPACE_PARENT,
+                MODULE.GIT_COMMON_DIR,
+                MODULE.MANIFEST_SHA256,
+            )
+            MODULE.CHANGE_WORKSPACE_PARENT = changes
+            MODULE.GIT_COMMON_DIR = mirror
+            MODULE.MANIFEST_SHA256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            try:
+                with patch.object(
+                    MODULE,
+                    "change_workspace_owner_ids",
+                    return_value=(os.getuid(), {os.getuid()}, os.getgid()),
+                ):
+                    workload, observed_worktree = MODULE.validate_request(
+                        runner_request, config
+                    )
+                    self.assertEqual(MODULE.CHANGE_CAPABILITY, workload["kind"])
+                    self.assertEqual(worktree, observed_worktree)
+                    self.assertEqual(
+                        mirror, MODULE.validate_change_worktree(runner_request, worktree)
+                    )
+                    self.assertEqual(0o770, worktree.parent.stat().st_mode & 0o777)
+                    self.assertEqual(0o770, worktree.stat().st_mode & 0o777)
+                    self.assertEqual(0o660, (worktree / "tracked.txt").stat().st_mode & 0o777)
+                    self.assertEqual(
+                        0o600,
+                        (worktree.parent / "workspace-v1.json").stat().st_mode & 0o777,
+                    )
+
+                    (worktree / "tracked.txt").write_text("changed\n", encoding="utf-8")
+                    with self.assertRaises(SystemExit):
+                        MODULE.validate_change_worktree(runner_request, worktree)
+
+                    observed = mediator.execute(
+                        mediator_request("INSPECT", 1), "INSPECT"
+                    )
+                    ownership["sourceRevision"] = 1
+                    ownership["sourceFingerprintSha256"] = observed[
+                        "sourceFingerprintSha256"
+                    ]
+                    ownership["workspaceOwnershipFingerprintSha256"] = observed[
+                        "ownershipFingerprintSha256"
+                    ]
+                    self.assertEqual(
+                        mirror, MODULE.validate_change_worktree(runner_request, worktree)
+                    )
+
+                    crossed = json.loads(json.dumps(runner_request))
+                    crossed["changeOwnership"]["remoteSessionId"] = str(uuid.uuid4())
+                    with self.assertRaises(SystemExit):
+                        MODULE.validate_request(crossed, config)
+            finally:
+                (
+                    MODULE.CHANGE_WORKSPACE_PARENT,
+                    MODULE.GIT_COMMON_DIR,
+                    MODULE.MANIFEST_SHA256,
+                ) = old_values
 
 
 if __name__ == "__main__":

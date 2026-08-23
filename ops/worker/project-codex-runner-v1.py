@@ -24,6 +24,7 @@ from typing import Any, NamedTuple
 CAPABILITY = "project-codex-v1"
 PROFILED_CAPABILITY = "project-codex-v2"
 IMAGE_CAPABILITY = "project-codex-v3"
+CHANGE_CAPABILITY = "project-codex-v4"
 CODEX_VERSION = "0.145.0"
 CODEX_MODEL = "gpt-5.6-sol"
 CODEX_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
@@ -34,6 +35,9 @@ BASE_COMMIT: str | None = None
 MANIFEST_SHA256 = "327a0c521017109d7c0067a11e7d8c3ad2079de4ea78d28296848f9de39c164b"
 CODEX = "/home/jose/.codex/packages/standalone/current/bin/codex"
 GIT_COMMON_DIR = Path("/srv/atenea/repositories/atenea.git")
+CHANGE_WORKSPACE_PARENT = Path("/srv/atenea/workspaces/changes")
+CHANGE_WORKSPACE_OWNER = "atenea-worker"
+CHANGE_WORKSPACE_GROUP = "atenea"
 INSTRUCTION_BUNDLE_REVISION = "atenea-reviewed-instruction-bundle-v1"
 PLATFORM_INSTRUCTION_PATH = Path(
     "/usr/local/share/atenea/codex-platform-instructions-v1.md"
@@ -52,6 +56,7 @@ INSTRUCTION_BUNDLE_SHA256 = (
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_KEYS = {"dispatchId", "executionId", "sessionId", "workspaceIdentity", "workload"}
+CHANGE_REQUEST_KEYS = REQUEST_KEYS | {"changeOwnership"}
 WORKLOAD_KEYS = {
     "kind", "projectId", "repository", "branch", "commit",
     "manifestSha256", "message", "threadId", "instructionBundleRevision",
@@ -62,6 +67,19 @@ PROFILED_WORKLOAD_KEYS = WORKLOAD_KEYS | {
     "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
 }
 IMAGE_WORKLOAD_KEYS = PROFILED_WORKLOAD_KEYS | {"attachments"}
+CHANGE_WORKLOAD_KEYS = IMAGE_WORKLOAD_KEYS
+CHANGE_OWNERSHIP_KEYS = {
+    "changeKey", "databaseWorkSessionId", "remoteSessionId",
+    "workspaceIdentity", "databaseProjectId", "baseCommit",
+    "expectedCanonicalCommit", "sourceRevision",
+    "sourceFingerprintSha256", "workspaceOwnershipFingerprintSha256",
+}
+CHANGE_WORKSPACE_RECORD_KEYS = {
+    "schemaVersion", "protocolVersion", "changeKey", "databaseProjectId",
+    "projectId", "repository", "repositoryBranch", "baseCommit",
+    "workspaceBranch", "workspaceIdentity", "workerId",
+    "initialSourceFingerprintSha256", "recordSha256",
+}
 ATTACHMENT_REFERENCE_KEYS = {"attachmentId", "contentType", "sizeBytes", "sha256"}
 ATTACHMENT_METADATA_KEYS = {
     "protocolVersion", "workerId", "sessionId", "attachmentId",
@@ -76,6 +94,7 @@ ATTACHMENT_GROUP = "atenea"
 ATTACHMENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
 MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 MAX_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024
+MAX_CHANGE_FINGERPRINT_BYTES = 64 * 1024 * 1024
 MATERIALIZATION_ROOT = Path("/run/atenea/codex-images")
 TERMINAL_EXECUTION_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 NON_TERMINAL_EXECUTION_STATES = {
@@ -154,7 +173,9 @@ def codex_failure_reason(stderr: str) -> str:
 
 
 def validate_codex_version(workload: dict[str, Any]) -> None:
-    if workload["kind"] not in {PROFILED_CAPABILITY, IMAGE_CAPABILITY}:
+    if workload["kind"] not in {
+        PROFILED_CAPABILITY, IMAGE_CAPABILITY, CHANGE_CAPABILITY,
+    }:
         return
     try:
         observed = subprocess.run(
@@ -172,7 +193,9 @@ def validate_codex_version(workload: dict[str, Any]) -> None:
 
 
 def effective_profile(workload: dict[str, Any]) -> dict[str, str]:
-    if workload["kind"] not in {PROFILED_CAPABILITY, IMAGE_CAPABILITY}:
+    if workload["kind"] not in {
+        PROFILED_CAPABILITY, IMAGE_CAPABILITY, CHANGE_CAPABILITY,
+    }:
         return {}
     return {
         key: workload[key]
@@ -302,7 +325,10 @@ def validate_config(
 
 
 def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, Any], Path]:
-    if not isinstance(request, dict) or set(request) != REQUEST_KEYS:
+    workload = request.get("workload") if isinstance(request, dict) else None
+    capability = workload.get("kind") if isinstance(workload, dict) else None
+    request_keys = CHANGE_REQUEST_KEYS if capability == CHANGE_CAPABILITY else REQUEST_KEYS
+    if not isinstance(request, dict) or set(request) != request_keys:
         reject("workspace ownership rejected")
     for key in ("dispatchId", "executionId", "sessionId"):
         try:
@@ -311,13 +337,13 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
             reject("workspace ownership rejected")
     if not isinstance(request["workspaceIdentity"], str):
         reject("workspace ownership rejected")
-    workload = request["workload"]
-    capability = workload.get("kind") if isinstance(workload, dict) else None
     allowed_capabilities = {CAPABILITY, PROFILED_CAPABILITY}
     if PROJECT_ID == "atenea":
-        allowed_capabilities.add(IMAGE_CAPABILITY)
+        allowed_capabilities.update({IMAGE_CAPABILITY, CHANGE_CAPABILITY})
     workload_keys = (
-        IMAGE_WORKLOAD_KEYS
+        CHANGE_WORKLOAD_KEYS
+        if capability == CHANGE_CAPABILITY
+        else IMAGE_WORKLOAD_KEYS
         if capability == IMAGE_CAPABILITY
         else PROFILED_WORKLOAD_KEYS
         if capability == PROFILED_CAPABILITY
@@ -345,7 +371,7 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
         or not (1 <= len(workload["message"]) <= 20_000)
     ):
         reject("workspace ownership rejected")
-    if capability in {PROFILED_CAPABILITY, IMAGE_CAPABILITY} and (
+    if capability in {PROFILED_CAPABILITY, IMAGE_CAPABILITY, CHANGE_CAPABILITY} and (
         workload.get("modelId") != CODEX_MODEL
         or workload.get("reasoningEffort") not in CODEX_EFFORTS
         or workload.get("catalogRevision") != CODEX_CATALOG_REVISION
@@ -358,6 +384,54 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
             uuid.UUID(thread_id)
         except (ValueError, TypeError, AttributeError):
             reject("workspace ownership rejected")
+    if capability == CHANGE_CAPABILITY:
+        ownership = request.get("changeOwnership")
+        if not isinstance(ownership, dict) or set(ownership) != CHANGE_OWNERSHIP_KEYS:
+            reject("workspace ownership rejected")
+        for key in ("changeKey", "remoteSessionId"):
+            try:
+                canonical = str(uuid.UUID(ownership.get(key)))
+            except (ValueError, TypeError, AttributeError):
+                canonical = None
+            if canonical != ownership.get(key):
+                reject("workspace ownership rejected")
+        change_key = ownership["changeKey"]
+        expected_identity = f"remote:{ATTACHMENT_WORKER_ID}:change:{change_key}"
+        if (
+            ownership.get("remoteSessionId") != request["sessionId"]
+            or ownership.get("workspaceIdentity") != request["workspaceIdentity"]
+            or request["workspaceIdentity"] != expected_identity
+            or ownership.get("expectedCanonicalCommit") != workload["commit"]
+            or not isinstance(ownership.get("databaseProjectId"), int)
+            or isinstance(ownership.get("databaseProjectId"), bool)
+            or ownership["databaseProjectId"] < 1
+            or not isinstance(ownership.get("databaseWorkSessionId"), int)
+            or isinstance(ownership.get("databaseWorkSessionId"), bool)
+            or ownership["databaseWorkSessionId"] < 1
+            or not isinstance(ownership.get("sourceRevision"), int)
+            or isinstance(ownership.get("sourceRevision"), bool)
+            or ownership["sourceRevision"] < 0
+            or COMMIT_PATTERN.fullmatch(str(ownership.get("baseCommit", ""))) is None
+            or COMMIT_PATTERN.fullmatch(
+                str(ownership.get("expectedCanonicalCommit", ""))
+            ) is None
+            or any(
+                SHA256_PATTERN.fullmatch(str(ownership.get(key, ""))) is None
+                for key in (
+                    "sourceFingerprintSha256",
+                    "workspaceOwnershipFingerprintSha256",
+                )
+            )
+        ):
+            reject("workspace ownership rejected")
+        references = workload.get("attachments")
+        if not isinstance(references, list) or len(references) > 4:
+            reject("workspace ownership rejected")
+        worktree = CHANGE_WORKSPACE_PARENT / change_key / PROJECT_ID
+        if not worktree.is_dir() or worktree.is_symlink():
+            reject("workspace ownership rejected")
+        return workload, worktree
+
     record = config["workspaces"].get(request["workspaceIdentity"])
     record_keys = {"sessionId", "worktree", "allocationSha256"}
     if BASE_COMMIT is None:
@@ -457,11 +531,14 @@ def validate_attachment_references(
     workload: dict[str, Any],
     config: dict[str, Any],
 ) -> list[VerifiedAttachment]:
-    if workload["kind"] != IMAGE_CAPABILITY:
+    if workload["kind"] not in {IMAGE_CAPABILITY, CHANGE_CAPABILITY}:
         return []
     references = workload.get("attachments")
-    if not isinstance(references, list) or not (1 <= len(references) <= 4):
+    minimum = 0 if workload["kind"] == CHANGE_CAPABILITY else 1
+    if not isinstance(references, list) or not (minimum <= len(references) <= 4):
         reject("attachment ownership rejected")
+    if not references:
+        return []
     session_id = request["sessionId"]
     try:
         canonical_session = str(uuid.UUID(session_id))
@@ -903,6 +980,272 @@ def checked(command: list[str], cwd: Path) -> str:
     return result.stdout.strip()
 
 
+def canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON field")
+        value[key] = item
+    return value
+
+
+def change_workspace_owner_ids() -> tuple[int, set[int], int]:
+    try:
+        service_uid = pwd.getpwnam(CHANGE_WORKSPACE_OWNER).pw_uid
+        return service_uid, {
+            service_uid, pwd.getpwnam("jose").pw_uid,
+        }, grp.getgrnam(CHANGE_WORKSPACE_GROUP).gr_gid
+    except KeyError:
+        reject("workspace ownership rejected")
+
+
+def checked_bytes(command: list[str], cwd: Path) -> bytes:
+    if command and command[0] == "git":
+        command = ["git", "-c", f"safe.directory={cwd}", *command[1:]]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        reject("worktree fingerprint rejected")
+    if len(result.stdout) > MAX_CHANGE_FINGERPRINT_BYTES:
+        reject("worktree fingerprint rejected")
+    return result.stdout
+
+
+def read_change_workspace_record(
+    worktree: Path, ownership: dict[str, Any]
+) -> dict[str, Any]:
+    service_uid, _owner_uids, owner_gid = change_workspace_owner_ids()
+    root = worktree.parent
+    record_path = root / "workspace-v1.json"
+    try:
+        root_stat = root.lstat()
+        worktree_stat = worktree.lstat()
+        record_stat = record_path.lstat()
+        record = json.loads(
+            record_path.read_text(encoding="utf-8"),
+            object_pairs_hook=strict_object_pairs,
+        )
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        reject("workspace ownership rejected")
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or root.is_symlink()
+        or stat.S_IMODE(root_stat.st_mode) not in {0o700, 0o770}
+        or root_stat.st_uid != service_uid
+        or root_stat.st_gid != owner_gid
+        or not stat.S_ISDIR(worktree_stat.st_mode)
+        or worktree.is_symlink()
+        or worktree_stat.st_uid != service_uid
+        or worktree_stat.st_gid != owner_gid
+        or not stat.S_ISREG(record_stat.st_mode)
+        or record_path.is_symlink()
+        or stat.S_IMODE(record_stat.st_mode) != 0o600
+        or record_stat.st_uid != service_uid
+        or record_stat.st_gid != owner_gid
+        or not isinstance(record, dict)
+        or set(record) != CHANGE_WORKSPACE_RECORD_KEYS
+        or SHA256_PATTERN.fullmatch(
+            str(record.get("initialSourceFingerprintSha256", ""))
+        ) is None
+        or SHA256_PATTERN.fullmatch(str(record.get("recordSha256", ""))) is None
+    ):
+        reject("workspace ownership rejected")
+    sealed = dict(record)
+    seal = sealed.pop("recordSha256", None)
+    if not isinstance(seal, str) or canonical_sha256(sealed) != seal:
+        reject("workspace ownership rejected")
+    expected = {
+        "schemaVersion": 1,
+        "protocolVersion": "development-change-workspace/v1",
+        "changeKey": ownership["changeKey"],
+        "databaseProjectId": ownership["databaseProjectId"],
+        "projectId": PROJECT_ID,
+        "repository": REPOSITORY,
+        "repositoryBranch": BRANCH,
+        "baseCommit": ownership["baseCommit"],
+        "workspaceBranch": f"atenea/change-{ownership['changeKey']}",
+        "workspaceIdentity": ownership["workspaceIdentity"],
+        "workerId": ATTACHMENT_WORKER_ID,
+    }
+    if any(record.get(key) != value for key, value in expected.items()):
+        reject("workspace ownership rejected")
+    return record
+
+
+def prepare_change_workspace_access(
+    worktree: Path, owner_uids: set[int], owner_gid: int
+) -> None:
+    candidates = [worktree.parent]
+    try:
+        for directory, names, files in os.walk(worktree, followlinks=False):
+            directory_path = Path(directory)
+            candidates.append(directory_path)
+            candidates.extend(directory_path / name for name in names)
+            candidates.extend(directory_path / name for name in files)
+        if len(candidates) > 200_000:
+            reject("workspace ownership rejected")
+        for candidate in candidates:
+            observed = candidate.lstat()
+            if stat.S_ISLNK(observed.st_mode):
+                continue
+            if (
+                not (stat.S_ISDIR(observed.st_mode) or stat.S_ISREG(observed.st_mode))
+                or observed.st_uid not in owner_uids
+                or observed.st_gid != owner_gid
+                or observed.st_mode & 0o002
+            ):
+                reject("workspace ownership rejected")
+            mode = stat.S_IMODE(observed.st_mode)
+            os.chmod(candidate, mode | ((mode & 0o700) >> 3), follow_symlinks=False)
+    except OSError:
+        reject("workspace ownership rejected")
+
+
+def change_source_fingerprint(
+    worktree: Path, record: dict[str, Any], head: str
+) -> str:
+    status = checked_bytes(
+        ["git", "status", "--porcelain=v2", "-z", "--untracked-files=all"],
+        worktree,
+    )
+    if not status and head == record["baseCommit"]:
+        return record["initialSourceFingerprintSha256"]
+    diff = checked_bytes(
+        ["git", "diff", "--binary", "--no-ext-diff", "HEAD"], worktree
+    )
+    raw_paths = checked_bytes(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], worktree
+    )
+    try:
+        paths = [part.decode("utf-8") for part in raw_paths.split(b"\0") if part]
+    except UnicodeDecodeError:
+        reject("worktree fingerprint rejected")
+    if len(paths) > 4096:
+        reject("worktree fingerprint rejected")
+    untracked = []
+    total = 0
+    for relative in sorted(paths):
+        candidate = worktree / relative
+        try:
+            observed = candidate.lstat()
+            if stat.S_ISLNK(observed.st_mode):
+                data = os.readlink(candidate).encode("utf-8")
+            elif stat.S_ISREG(observed.st_mode):
+                total += observed.st_size
+                if total > MAX_CHANGE_FINGERPRINT_BYTES:
+                    reject("worktree fingerprint rejected")
+                data = candidate.read_bytes()
+            else:
+                reject("worktree fingerprint rejected")
+        except OSError:
+            reject("worktree fingerprint rejected")
+        untracked.append({
+            "pathSha256": hashlib.sha256(relative.encode()).hexdigest(),
+            "contentSha256": hashlib.sha256(data).hexdigest(),
+        })
+    return canonical_sha256({
+        "initialSourceFingerprintSha256": record["initialSourceFingerprintSha256"],
+        "headCommit": head,
+        "statusSha256": hashlib.sha256(status).hexdigest(),
+        "diffSha256": hashlib.sha256(diff).hexdigest(),
+        "untracked": untracked,
+    })
+
+
+def validate_change_worktree(
+    request: dict[str, Any], worktree: Path
+) -> Path:
+    ownership = request["changeOwnership"]
+    record = read_change_workspace_record(worktree, ownership)
+    root = checked(["git", "rev-parse", "--show-toplevel"], worktree)
+    remote = checked(["git", "remote", "get-url", "origin"], worktree)
+    common_value = Path(checked(["git", "rev-parse", "--git-common-dir"], worktree))
+    common_dir = (
+        common_value if common_value.is_absolute() else worktree / common_value
+    ).resolve()
+    try:
+        common_stat = GIT_COMMON_DIR.lstat()
+    except OSError:
+        reject("worktree fingerprint rejected")
+    branch = checked(["git", "symbolic-ref", "--quiet", "HEAD"], worktree)
+    head = checked(["git", "rev-parse", "--verify", "HEAD^{commit}"], worktree)
+    branch_head = checked(
+        [
+            "git", "--git-dir", str(common_dir), "rev-parse", "--verify",
+            f"refs/heads/atenea/change-{ownership['changeKey']}^{{commit}}",
+        ],
+        worktree,
+    )
+    canonical = checked(
+        [
+            "git", "--git-dir", str(common_dir), "rev-parse", "--verify",
+            f"refs/remotes/origin/{BRANCH}^{{commit}}",
+        ],
+        worktree,
+    )
+    if (
+        Path(root) != worktree
+        or remote != REPOSITORY
+        or common_dir != GIT_COMMON_DIR
+        or not stat.S_ISDIR(common_stat.st_mode)
+        or GIT_COMMON_DIR.is_symlink()
+        or branch != f"refs/heads/atenea/change-{ownership['changeKey']}"
+        or head != branch_head
+        or canonical != ownership["expectedCanonicalCommit"]
+    ):
+        reject("worktree fingerprint rejected")
+    source_fingerprint = change_source_fingerprint(worktree, record, head)
+    head_after = checked(["git", "rev-parse", "--verify", "HEAD^{commit}"], worktree)
+    branch_head_after = checked(
+        [
+            "git", "--git-dir", str(common_dir), "rev-parse", "--verify",
+            f"refs/heads/atenea/change-{ownership['changeKey']}^{{commit}}",
+        ],
+        worktree,
+    )
+    source_fingerprint_after = change_source_fingerprint(
+        worktree, record, head_after
+    )
+    ownership_fingerprint = canonical_sha256({
+        "recordSha256": record["recordSha256"],
+        "branchHead": branch_head,
+        "workspaceIdentity": ownership["workspaceIdentity"],
+    })
+    if (
+        source_fingerprint != ownership["sourceFingerprintSha256"]
+        or source_fingerprint_after != source_fingerprint
+        or head_after != head
+        or branch_head_after != branch_head
+        or ownership_fingerprint
+            != ownership["workspaceOwnershipFingerprintSha256"]
+    ):
+        reject("worktree fingerprint rejected")
+    manifest = worktree / "ops" / "atenea-runtime.json"
+    try:
+        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    except OSError:
+        reject("worktree fingerprint rejected")
+    if digest != MANIFEST_SHA256:
+        reject("worktree fingerprint rejected")
+    _service_uid, owner_uids, owner_gid = change_workspace_owner_ids()
+    prepare_change_workspace_access(worktree, owner_uids, owner_gid)
+    return common_dir
+
+
 def validate_worktree(worktree: Path, record: dict[str, Any]) -> Path:
     root = checked(["git", "rev-parse", "--show-toplevel"], worktree)
     if Path(root) != worktree:
@@ -1116,7 +1459,15 @@ def sandbox_command(
             mounts.extend(["--ro-bind", str(attachment.path), str(attachment.path)])
         mount_index = command.index("--setenv")
         command[mount_index:mount_index] = mounts
-    if workload["kind"] in {PROFILED_CAPABILITY, IMAGE_CAPABILITY}:
+    if workload["kind"] == CHANGE_CAPABILITY:
+        workspace_index = command.index("--dir", command.index("/srv/atenea/workspaces"))
+        # The path is derived from the sealed change identity; no caller path is mounted.
+        command[workspace_index + 2:workspace_index + 2] = [
+            "--dir", str(CHANGE_WORKSPACE_PARENT),
+        ]
+    if workload["kind"] in {
+        PROFILED_CAPABILITY, IMAGE_CAPABILITY, CHANGE_CAPABILITY,
+    }:
         command.extend([
             "--model", workload["modelId"],
             "--config", "model_reasoning_effort=" + json.dumps(workload["reasoningEffort"]),
@@ -1225,7 +1576,9 @@ def execute(
             "finalAnswer": final_answer,
             "outputSummary": f"{CAPABILITY} completed",
         }
-        if workload["kind"] in {PROFILED_CAPABILITY, IMAGE_CAPABILITY}:
+        if workload["kind"] in {
+            PROFILED_CAPABILITY, IMAGE_CAPABILITY, CHANGE_CAPABILITY,
+        }:
             result.update({
                 "outputSummary": f"{workload['kind']} completed",
                 "progressEvents": normalize_codex_events(stream),
@@ -1259,8 +1612,11 @@ def main() -> int:
         reject("workspace ownership rejected")
     workload, worktree = validate_request(request, config)
     validate_codex_version(workload)
-    record = config["workspaces"][request["workspaceIdentity"]]
-    common_dir = validate_worktree(worktree, record)
+    if workload["kind"] == CHANGE_CAPABILITY:
+        common_dir = validate_change_worktree(request, worktree)
+    else:
+        record = config["workspaces"][request["workspaceIdentity"]]
+        common_dir = validate_worktree(worktree, record)
     instruction_bundle = validate_instruction_bundle(worktree)
     verified_attachments = validate_attachment_references(request, workload, config)
     try:
