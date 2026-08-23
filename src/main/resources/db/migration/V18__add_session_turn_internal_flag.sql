@@ -1,2 +1,0 @@
-ALTER TABLE session_turn
-    ADD COLUMN internal BOOLEAN NOT NULL DEFAULT FALSE;

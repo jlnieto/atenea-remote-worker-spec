@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, durable AgentRun worker protocol with exact project opt-in."""
+"""Canonical AX42 AgentRun worker with exact project opt-in."""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ CODEX_CATALOG_CAPABILITY = "codex-model-catalog-v1"
 CODEX_UPDATE_STAGE_CAPABILITY = "codex-update-stage-v1"
 CODEX_UPDATE_ACTIVATE_CAPABILITY = "codex-update-activate-v1"
 CODEX_UPDATE_ROLLBACK_CAPABILITY = "codex-update-rollback-v1"
+DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
+DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
 CODEX_VERSION = "0.145.0"
 CODEX_MODELS = [
@@ -76,6 +78,9 @@ REVIEWED_MEDIATOR_ERRORS = {
     ),
     "WORKSPACE_RELEASE_BOUNDARY_UNAVAILABLE": (
         "POLICY", False, "CONTACT_PLATFORM_ADMINISTRATOR",
+    ),
+    "DEVELOPMENT_CHANGE_WORKSPACE_REJECTED": (
+        "OWNERSHIP", False, "CONTACT_PLATFORM_ADMINISTRATOR",
     ),
 }
 PROGRESS_CATEGORIES = {
@@ -224,6 +229,24 @@ CODEX_UPDATE_ROLLBACK_RESULT_KEYS = {
     "previousBeforeFingerprint", "currentAfterFingerprint",
     "previousAfterFingerprint", "valuesExposed",
 }
+DEVELOPMENT_CHANGE_WORKSPACE_REQUEST_KEYS = {
+    "schemaVersion", "protocolVersion", "effect", "operationId",
+    "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
+    "databaseProjectId", "projectId", "repository", "repositoryBranch",
+    "baseCommit", "expectedCanonicalCommit", "workspaceBranch",
+    "workspaceIdentity", "workerId", "sourceRevision",
+    "sourceFingerprintSha256", "requestFingerprintSha256",
+}
+DEVELOPMENT_CHANGE_WORKSPACE_RESPONSE_KEYS = {
+    "schemaVersion", "protocolVersion", "state", "effect", "operationId",
+    "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
+    "databaseProjectId", "projectId", "repository", "repositoryBranch",
+    "baseCommit", "expectedCanonicalCommit", "workspaceBranch",
+    "workspaceIdentity", "workerId", "sourceRevision",
+    "expectedSourceFingerprintSha256", "canonicalCommit",
+    "sourceFingerprintSha256", "workspaceDirty", "retainedDraft",
+    "requestFingerprintSha256", "ownershipFingerprintSha256", "valuesExposed",
+}
 EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
 }
@@ -263,6 +286,21 @@ def utc_now() -> str:
 def canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def strict_json_object(raw: str) -> dict[str, Any]:
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON field")
+            result[key] = value
+        return result
+
+    parsed = json.loads(raw, object_pairs_hook=unique_pairs)
+    if not isinstance(parsed, dict):
+        raise ValueError("JSON response is not an object")
+    return parsed
 
 
 def validate_workspace_release_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -752,6 +790,8 @@ class WorkerState:
         workspace_lifecycle_timeout: float = 10.0,
         project_readiness_enabled: bool = False,
         unactivated_release_enabled: bool = False,
+        development_change_workspace_mediator: Path | None = None,
+        development_change_workspace_timeout: float = 45.0,
     ):
         self.state_dir = state_dir
         self.state_file = state_dir / "executions.json"
@@ -781,6 +821,8 @@ class WorkerState:
         self.workspace_lifecycle_timeout = workspace_lifecycle_timeout
         self.project_readiness_enabled = project_readiness_enabled
         self.unactivated_release_enabled = unactivated_release_enabled
+        self.development_change_workspace_mediator = development_change_workspace_mediator
+        self.development_change_workspace_timeout = development_change_workspace_timeout
         self.lock = threading.RLock()
         self.wakeup = threading.Event()
         self.stop_event = threading.Event()
@@ -1039,6 +1081,13 @@ class WorkerState:
             if self._project_selection_enabled():
                 capabilities.extend([PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY])
             if (
+                self.development_change_workspace_mediator is not None
+                and self.development_change_workspace_mediator.is_file()
+                and not self.development_change_workspace_mediator.is_symlink()
+                and os.access(self.development_change_workspace_mediator, os.X_OK)
+            ):
+                capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
+            if (
                 self.codex_update_mediator is not None
                 and self.codex_update_mediator.is_file()
                 and self.codex_update_registry is not None
@@ -1065,6 +1114,149 @@ class WorkerState:
                 "queued": queued,
                 "serverTime": utc_now(),
             }
+
+    def execute_development_change_workspace(
+        self, request: dict[str, Any], operation: str
+    ) -> dict[str, Any]:
+        operation = operation.upper()
+        if (
+            operation not in {"PROVISION", "INSPECT", "RECONCILE"}
+            or not isinstance(request, dict)
+            or set(request) != DEVELOPMENT_CHANGE_WORKSPACE_REQUEST_KEYS
+            or request.get("schemaVersion") != 1
+            or request.get("protocolVersion") != DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY
+            or request.get("operation") != operation
+        ):
+            raise ProtocolError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "development_change_workspace_request_invalid",
+                "development change workspace request is invalid",
+            )
+        mediator = self.development_change_workspace_mediator
+        if (
+            mediator is None
+            or not mediator.is_file()
+            or mediator.is_symlink()
+            or not os.access(mediator, os.X_OK)
+        ):
+            raise ProtocolError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "development_change_workspace_unavailable",
+                "development change workspace capability is unavailable",
+            )
+        try:
+            with self.workspace_lifecycle_lock():
+                completed = subprocess.run(
+                    [str(mediator), operation.lower()],
+                    input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=self.development_change_workspace_timeout,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired as error:
+            raise ProtocolError(
+                HTTPStatus.GATEWAY_TIMEOUT,
+                "development_change_workspace_timeout",
+                "development change workspace mediator timed out",
+            ) from error
+        except OSError as error:
+            raise ProtocolError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "development_change_workspace_unavailable",
+                "development change workspace mediator is unavailable",
+            ) from error
+        if completed.returncode != 0:
+            try:
+                safe = reviewed_mediator_stderr_envelope(completed.stderr)
+            except ValueError as error:
+                raise ProtocolError(
+                    HTTPStatus.BAD_GATEWAY,
+                    "development_change_workspace_response_invalid",
+                    "development change workspace mediator failure is invalid",
+                ) from error
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "development_change_workspace_rejected",
+                "development change workspace mediator rejected the request",
+                safe,
+            )
+        try:
+            response = strict_json_object(completed.stdout)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            raise ProtocolError(
+                HTTPStatus.BAD_GATEWAY,
+                "development_change_workspace_response_invalid",
+                "development change workspace mediator returned invalid JSON",
+            ) from error
+        if (
+            not isinstance(response, dict)
+            or set(response) != DEVELOPMENT_CHANGE_WORKSPACE_RESPONSE_KEYS
+            or response.get("state") not in {"ABSENT", "OWNED", "FOREIGN"}
+            or response.get("schemaVersion") != request["schemaVersion"]
+            or response.get("protocolVersion") != request["protocolVersion"]
+            or response.get("effect") != request["effect"]
+            or response.get("operationId") != request["operationId"]
+            or response.get("idempotencyKey") != request["idempotencyKey"]
+            or response.get("operation") != request["operation"]
+            or response.get("predecessorOperationId") != request["predecessorOperationId"]
+            or response.get("changeKey") != request["changeKey"]
+            or response.get("databaseProjectId") != request["databaseProjectId"]
+            or response.get("projectId") != request["projectId"]
+            or response.get("repository") != request["repository"]
+            or response.get("repositoryBranch") != request["repositoryBranch"]
+            or response.get("baseCommit") != request["baseCommit"]
+            or response.get("expectedCanonicalCommit")
+                != request["expectedCanonicalCommit"]
+            or response.get("workspaceBranch") != request["workspaceBranch"]
+            or response.get("workspaceIdentity") != request["workspaceIdentity"]
+            or response.get("workerId") != request["workerId"]
+            or response.get("sourceRevision") != request["sourceRevision"]
+            or response.get("expectedSourceFingerprintSha256")
+                != request["sourceFingerprintSha256"]
+            or response.get("requestFingerprintSha256")
+                != request["requestFingerprintSha256"]
+            or not isinstance(response.get("ownershipFingerprintSha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", response["ownershipFingerprintSha256"])
+                is None
+            or response.get("valuesExposed") is not False
+        ):
+            raise ProtocolError(
+                HTTPStatus.BAD_GATEWAY,
+                "development_change_workspace_response_invalid",
+                "development change workspace mediator response is not exact",
+            )
+        owned = response["state"] == "OWNED"
+        if owned:
+            if (
+                not isinstance(response.get("canonicalCommit"), str)
+                or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", response["canonicalCommit"])
+                    is None
+                or not isinstance(response.get("sourceFingerprintSha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", response["sourceFingerprintSha256"])
+                    is None
+                or not isinstance(response.get("workspaceDirty"), bool)
+                or not isinstance(response.get("retainedDraft"), bool)
+            ):
+                raise ProtocolError(
+                    HTTPStatus.BAD_GATEWAY,
+                    "development_change_workspace_response_invalid",
+                    "owned workspace observation is invalid",
+                )
+        elif any(
+            response.get(field) is not None
+            for field in (
+                "canonicalCommit", "sourceFingerprintSha256",
+                "workspaceDirty", "retainedDraft",
+            )
+        ):
+            raise ProtocolError(
+                HTTPStatus.BAD_GATEWAY,
+                "development_change_workspace_response_invalid",
+                "non-owned workspace observation exposed values",
+            )
+        return response
 
     def codex_catalog(self) -> dict[str, Any]:
         return {
@@ -3540,6 +3732,19 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                 execution, created = self.server.state.create(body)
                 self._write(HTTPStatus.CREATED if created else HTTPStatus.OK, execution)
                 return
+            if path.startswith(DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX):
+                operation = path.removeprefix(DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX)
+                if operation not in {"provision", "inspect", "reconcile"}:
+                    raise ProtocolError(
+                        HTTPStatus.NOT_FOUND, "not_found", "route does not exist"
+                    )
+                self._write(
+                    HTTPStatus.OK,
+                    self.server.state.execute_development_change_workspace(
+                        body, operation
+                    ),
+                )
+                return
             if path == "/v1/project-workspaces/ensure":
                 self._write(HTTPStatus.OK, self.server.state.ensure_workspace(body))
                 return
@@ -3729,6 +3934,13 @@ def main() -> int:
         type=Path,
         default=Path("/srv/atenea/worker/codex-releases-v1"),
     )
+    parser.add_argument(
+        "--development-change-workspace-mediator",
+        type=Path,
+        default=Path(
+            "/usr/local/libexec/atenea/development-change-workspace-v1.py"
+        ),
+    )
     parser.add_argument("--project-timeout", type=int, default=1800)
     args = parser.parse_args()
     if not (1 <= args.port <= 65535):
@@ -3762,6 +3974,9 @@ def main() -> int:
         reconcile_materializations_on_start=True,
         project_readiness_enabled=args.project_readiness_enabled,
         unactivated_release_enabled=args.unactivated_release_enabled,
+        development_change_workspace_mediator=(
+            args.development_change_workspace_mediator
+        ),
     )
     server = AgentRunServer((args.bind, args.port), state, read_token(args.token_file))
     state.start()

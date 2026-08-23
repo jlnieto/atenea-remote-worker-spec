@@ -1,7 +1,0 @@
-ALTER TABLE task
-    ADD COLUMN review_outcome VARCHAR(32) NOT NULL DEFAULT 'PENDING',
-    ADD COLUMN review_notes VARCHAR(1000);
-
-ALTER TABLE task
-    ADD CONSTRAINT ck_task_review_outcome
-        CHECK (review_outcome IN ('PENDING', 'APPROVED_FOR_CLOSURE', 'CHANGES_REQUESTED', 'REJECTED', 'CLOSED_WITHOUT_REVIEW'));

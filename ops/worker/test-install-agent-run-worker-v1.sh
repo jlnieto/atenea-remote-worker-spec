@@ -38,6 +38,9 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
     == "${PLATFORM_INSTRUCTIONS_SHA256}" ]] || fail "platform instruction fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
+    == "${DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256}" ]] \
+  || fail "development-change workspace mediator fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/project-codex-runner-v1.py" | cut -d' ' -f1)" \
     == "${PROJECT_RUNNER_SHA256}" ]] || fail "project runner fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/beautips-project-codex-runner-v1.py" | cut -d' ' -f1)" \
@@ -114,6 +117,14 @@ SERVICE_TEMPLATE="${SCRIPT_DIR}/templates/atenea-agent-run-worker-v1.service"
 grep -F -- '--project-readiness-enabled --unactivated-release-enabled' \
   "${SERVICE_TEMPLATE}" >/dev/null \
   || fail "fresh-session worker gates are not both explicit"
+grep -F -- '--development-change-workspace-mediator /usr/local/libexec/atenea/development-change-workspace-v1.py' \
+  "${SERVICE_TEMPLATE}" >/dev/null \
+  || fail "development-change workspace mediator boundary is not explicit"
+[[ "$(grep -Fc '/srv/atenea/workspaces/changes' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
+  || fail "development-change workspace write boundary is not exact"
+grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability]' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
+  || fail "installer plan does not advertise the development-change capability"
 
 SESSION_ID=11111111-1111-4111-8111-111111111111
 WORKSPACE_IDENTITY="remote:ax42-01:work-session:${SESSION_ID}"
