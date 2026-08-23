@@ -1,0 +1,170 @@
+# This definition is an input to the allowlisted AX42 adapter. It is
+# intentionally incomplete without adapter-owned session values.
+name: ${ATENEA_SESSION_COMPOSE_PROJECT:?required allowlisted session Compose project}
+
+services:
+  db:
+    image: ${ATENEA_SESSION_POSTGRES_IMAGE:?required allowlisted PostgreSQL 16 image}
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: ${ATENEA_SESSION_DATABASE_NAME:?required synthetic session database name}
+      POSTGRES_USER: ${ATENEA_SESSION_DATABASE_USER:?required synthetic session database user}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      ATENEA_SESSION_POSTGRES_INTERNAL_PORT: ${ATENEA_SESSION_POSTGRES_INTERNAL_PORT:?required allocated PostgreSQL internal port}
+    expose:
+      - "${ATENEA_SESSION_POSTGRES_INTERNAL_PORT:?required allocated PostgreSQL internal port}"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    secrets:
+      - source: postgres-password
+        target: postgres-password
+        mode: 0400
+    networks:
+      - runtime
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready
+          --host=127.0.0.1
+          --port=$${ATENEA_SESSION_POSTGRES_INTERNAL_PORT}
+          --username="$${POSTGRES_USER}"
+          --dbname="$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /run/postgresql:rw,noexec,nosuid,size=16m
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    restart: "no"
+
+  codex-app-server:
+    image: ${ATENEA_SESSION_CODEX_IMAGE:?required allowlisted Codex App Server image}
+    working_dir: /workspace/atenea
+    environment:
+      HOME: /workspace/cache/codex
+      ATENEA_CODEX_REQUIRED_AUTH_MODE: disabled
+      ATENEA_CODEX_AUTH_STATUS_FILE: /workspace/cache/codex/auth-status.json
+      ATENEA_SESSION_CODEX_INTERNAL_PORT: ${ATENEA_SESSION_CODEX_INTERNAL_PORT:?required allocated Codex internal port}
+    command:
+      - sh
+      - -lc
+      - >-
+        exec codex app-server
+        --listen ws://0.0.0.0:$${ATENEA_SESSION_CODEX_INTERNAL_PORT}
+        -c 'approval_policy="never"'
+        -c 'sandbox_mode="workspace-write"'
+    expose:
+      - "${ATENEA_SESSION_CODEX_INTERNAL_PORT:?required allocated Codex internal port}"
+    volumes:
+      - type: bind
+        source: ${ATENEA_SESSION_WORKTREE:?required owned WorkSession worktree}
+        target: /workspace/atenea
+      - type: bind
+        source: ${ATENEA_SESSION_CODEX_CACHE:?required owned WorkSession Codex cache}
+        target: /workspace/cache/codex
+    networks:
+      - runtime
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    restart: "no"
+
+  atenea-dev:
+    image: ${ATENEA_SESSION_ATENEA_IMAGE:?required allowlisted Atenea Java 21 development image}
+    working_dir: /workspace/atenea
+    depends_on:
+      db:
+        condition: service_healthy
+      codex-app-server:
+        condition: service_started
+    environment:
+      SERVER_PORT: ${ATENEA_SESSION_WEB_INTERNAL_PORT:?required allocated Atenea internal port}
+      SPRING_CONFIG_IMPORT: configtree:/run/secrets/
+      SPRING_DATASOURCE_URL: >-
+        jdbc:postgresql://db:${ATENEA_SESSION_POSTGRES_INTERNAL_PORT:?required allocated PostgreSQL internal port}/${ATENEA_SESSION_DATABASE_NAME:?required synthetic session database name}
+      SPRING_DATASOURCE_USERNAME: ${ATENEA_SESSION_DATABASE_USER:?required synthetic session database user}
+      ATENEA_WORKSPACE_ROOT: /workspace
+      ATENEA_CODEX_APP_SERVER_URL: >-
+        ws://codex-app-server:${ATENEA_SESSION_CODEX_INTERNAL_PORT:?required allocated Codex internal port}
+      ATENEA_CODEX_APP_SERVER_CWD: /workspace/atenea
+      ATENEA_CODEX_REQUIRED_AUTH_MODE: disabled
+      ATENEA_AUTH_BOOTSTRAP_ENABLED: "false"
+      ATENEA_MOBILE_UPLOAD_ROOT: /workspace/data/uploads
+      ATENEA_OPENAI_ENABLED: "false"
+      ATENEA_OPENAI_COSTS_ENABLED: "false"
+      ATENEA_OPENAI_API_BASE_URL: http://127.0.0.1:9
+      ATENEA_OPENAI_COSTS_API_BASE_URL: http://127.0.0.1:9
+      ATENEA_CORE_INTENT_ROUTER_ENABLED: "false"
+      ATENEA_BRIEFING_ENABLED: "false"
+      ATENEA_DEEPSEEK_COSTS_ENABLED: "false"
+      ATENEA_DEEPSEEK_API_BASE_URL: http://127.0.0.1:9
+      ATENEA_MOBILE_PUSH_ENABLED: "false"
+      ATENEA_MOBILE_PUSH_FCM_TOKEN_URL: http://127.0.0.1:9
+      ATENEA_MOBILE_PUSH_FCM_API_BASE_URL: http://127.0.0.1:9
+      ATENEA_GITHUB_API_BASE_URL: http://127.0.0.1:9
+      MAVEN_CONFIG: /workspace/cache/maven
+      npm_config_cache: /workspace/cache/node
+    command:
+      - ./mvnw
+      - spring-boot:run
+    expose:
+      - "${ATENEA_SESSION_WEB_INTERNAL_PORT:?required allocated Atenea internal port}"
+    volumes:
+      - type: bind
+        source: ${ATENEA_SESSION_WORKTREE:?required owned WorkSession worktree}
+        target: /workspace/atenea
+      - type: bind
+        source: ${ATENEA_SESSION_MAVEN_CACHE:?required owned WorkSession Maven cache}
+        target: /workspace/cache/maven
+      - type: bind
+        source: ${ATENEA_SESSION_NODE_CACHE:?required owned WorkSession Node cache}
+        target: /workspace/cache/node
+      - type: bind
+        source: ${ATENEA_SESSION_UPLOAD_DATA:?required owned WorkSession upload data path}
+        target: /workspace/data/uploads
+    secrets:
+      - source: postgres-password
+        target: spring.datasource.password
+        mode: 0400
+      - source: jwt-secret
+        target: atenea.auth.jwt.secret
+        mode: 0400
+    networks:
+      - runtime
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    restart: "no"
+
+networks:
+  runtime:
+    name: ${ATENEA_SESSION_NETWORK_NAME:?required owned WorkSession network}
+    internal: true
+
+volumes:
+  db-data:
+    name: ${ATENEA_SESSION_DATABASE_VOLUME:?required new owned WorkSession PostgreSQL volume}
+
+secrets:
+  postgres-password:
+    file: ${ATENEA_SESSION_POSTGRES_PASSWORD_FILE:?required named development-only PostgreSQL secret file}
+  jwt-secret:
+    file: ${ATENEA_SESSION_JWT_SECRET_FILE:?required named development-only JWT secret file}
