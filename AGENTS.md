@@ -1,28 +1,22 @@
 # AGENTS
 
-## Scope
+This is `jlnieto/atenea-remote-worker-spec`. It owns the Atenea worker,
+runtime operations, operator tools, and machine-readable runtime contracts.
+Product application code belongs in `../app`.
 
-This repository owns the Atenea remote-worker and runtime platform. Product
-code lives in the sibling `../app` repository and must not be copied here.
+Keep app/platform integration protocol-based. Do not copy Spring, web,
+Android, or Flyway sources into this repository.
 
-Canonical implementation roots are:
+Worker operations must remain server-owned, allowlisted, ownership-checked,
+rootless where defined, and fail closed for ambiguous or foreign resources.
+Never expose secrets or arbitrary shell, paths, hosts, slots, services, or
+credentials through public contracts.
 
-- `ops/worker/`
-- `runtime-contract/`
-- `ops/operator/`
+Validate changed JSON schemas as Draft 2020-12 and use the focused tests beside
+the affected worker component.
 
-Historical `docs/` and `openspec/` content is retained for later cleanup and
-does not override code or tests.
-
-## Working rules
-
-- Preserve worker/runtime behavior from the reconciled `727da19` baseline.
-- Keep app/platform integration protocol-based; do not add a Java build
-  dependency or copy Spring, web, Android, or Flyway sources.
-- Prefer focused `ops/worker/test-*` suites while iterating.
-- Validate changed schemas with JSON Schema Draft 2020-12.
-- Do not deploy to AX42, restart services, or use real credentials during
-  repository validation without explicit authorization.
-- Treat tests requiring a real host, service, Docker slot, browser runner, or
-  backup repository as integration checks and report them as NOT RUN when the
-  infrastructure is unavailable.
+Local edits, tests, builds, inspection, commits, push, and PR creation do not
+require an Atenea-specific gate. AX42 installation/configuration/restarts,
+mutations affecting active workloads, infrastructure or secret changes,
+restore, destructive cleanup, deployment, and rollback require explicit
+authorization.
