@@ -326,17 +326,21 @@ class WorkspaceMediator:
             return
         self._git("cat-file", "-e", f"{request['baseCommit']}^{{commit}}", git_dir=True)
         try:
-            root.mkdir(mode=0o700)
-            os.chmod(root, 0o700)
-            self._git(
-                "worktree",
-                "add",
-                "-b",
-                request["workspaceBranch"],
-                str(self._worktree(request["changeKey"])),
-                request["baseCommit"],
-                git_dir=True,
-            )
+            previous_umask = os.umask(0o007)
+            try:
+                root.mkdir(mode=0o770)
+                os.chmod(root, 0o770)
+                self._git(
+                    "worktree",
+                    "add",
+                    "-b",
+                    request["workspaceBranch"],
+                    str(self._worktree(request["changeKey"])),
+                    request["baseCommit"],
+                    git_dir=True,
+                )
+            finally:
+                os.umask(previous_umask)
             self._write_record(self._record_path(request["changeKey"]), self._expected_record(request))
         except (OSError, ContractError):
             # A partial resource is deliberately retained for fail-closed diagnosis.
@@ -358,7 +362,7 @@ class WorkspaceMediator:
             return self._foreign(request, "partial")
         try:
             regular_directory(root, os.geteuid())
-            if stat.S_IMODE(root.lstat().st_mode) != 0o700:
+            if stat.S_IMODE(root.lstat().st_mode) not in {0o700, 0o770}:
                 return self._foreign(request, "root-mode")
             regular_directory(worktree, os.geteuid())
             record = self._read_record(record_path)

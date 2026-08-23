@@ -30,6 +30,7 @@ SYNTHETIC_CAPABILITY = "synthetic-routing-v1"
 PROJECT_CAPABILITY = "project-codex-v1"
 PROJECT_V2_CAPABILITY = "project-codex-v2"
 PROJECT_V3_CAPABILITY = "project-codex-v3"
+PROJECT_V4_CAPABILITY = "project-codex-v4"
 CODEX_CATALOG_CAPABILITY = "codex-model-catalog-v1"
 CODEX_UPDATE_STAGE_CAPABILITY = "codex-update-stage-v1"
 CODEX_UPDATE_ACTIVATE_CAPABILITY = "codex-update-activate-v1"
@@ -101,6 +102,7 @@ NON_TERMINAL = {"QUEUED", "STARTING", "RUNNING", "CANCELLING", "RECONCILING"}
 CREATE_KEYS = {
     "dispatchId", "sessionId", "workspaceIdentity", "workloadClass", "leaseGeneration", "workload"
 }
+CHANGE_CREATE_KEYS = CREATE_KEYS | {"changeOwnership"}
 SYNTHETIC_WORKLOAD_KEYS = {"kind", "message", "durationMs", "steps"}
 PROJECT_WORKLOAD_KEYS = {
     "kind", "projectId", "repository", "branch", "commit",
@@ -112,11 +114,18 @@ PROJECT_V2_WORKLOAD_KEYS = PROJECT_WORKLOAD_KEYS | {
     "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
 }
 PROJECT_V3_WORKLOAD_KEYS = PROJECT_V2_WORKLOAD_KEYS | {"attachments"}
+PROJECT_V4_WORKLOAD_KEYS = PROJECT_V3_WORKLOAD_KEYS
 PROJECT_V3_ATTACHMENT_KEYS = {"attachmentId", "contentType", "sizeBytes", "sha256"}
 PROJECT_V3_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
 PROJECT_V3_MAX_ATTACHMENTS = 4
 PROJECT_V3_MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 PROJECT_V3_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+CHANGE_OWNERSHIP_KEYS = {
+    "changeKey", "databaseWorkSessionId", "remoteSessionId",
+    "workspaceIdentity", "databaseProjectId", "baseCommit",
+    "expectedCanonicalCommit", "sourceRevision",
+    "sourceFingerprintSha256", "workspaceOwnershipFingerprintSha256",
+}
 WORKSPACE_ENSURE_KEYS = {
     "sessionId", "workspaceIdentity", "projectId", "repository", "branch",
     "commit", "manifestSha256", "workspaceBranch",
@@ -980,6 +989,7 @@ class WorkerState:
                     execution.get("status") == "RECONCILING"
                     and execution.get("workload", {}).get("kind") in {
                         PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY,
+                        PROJECT_V4_CAPABILITY,
                     }
                 ):
                     execution["status"] = "FAILED"
@@ -1009,7 +1019,9 @@ class WorkerState:
                     "status": execution.get("status"),
                     "attachments": (
                         execution.get("workload", {}).get("attachments", [])
-                        if execution.get("workload", {}).get("kind") == PROJECT_V3_CAPABILITY
+                        if execution.get("workload", {}).get("kind") in {
+                            PROJECT_V3_CAPABILITY, PROJECT_V4_CAPABILITY,
+                        }
                         else []
                     ),
                 }
@@ -1078,15 +1090,19 @@ class WorkerState:
             )
             queued = sum(1 for item in self.executions.values() if item["status"] in {"QUEUED", "RECONCILING"})
             capabilities = [SYNTHETIC_CAPABILITY, CODEX_CATALOG_CAPABILITY]
-            if self._project_selection_enabled():
+            project_selection_enabled = self._project_selection_enabled()
+            if project_selection_enabled:
                 capabilities.extend([PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY])
-            if (
+            change_workspace_available = (
                 self.development_change_workspace_mediator is not None
                 and self.development_change_workspace_mediator.is_file()
                 and not self.development_change_workspace_mediator.is_symlink()
                 and os.access(self.development_change_workspace_mediator, os.X_OK)
-            ):
+            )
+            if change_workspace_available:
                 capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
+                if project_selection_enabled:
+                    capabilities.append(PROJECT_V4_CAPABILITY)
             if (
                 self.codex_update_mediator is not None
                 and self.codex_update_mediator.is_file()
@@ -1573,7 +1589,10 @@ class WorkerState:
             self._append_progress(execution, category, message)
 
     def create(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-        self._validate_create(request)
+        workload = self._validate_dispatch_envelope(request)
+        change_aware = workload.get("kind") == PROJECT_V4_CAPABILITY
+        if not change_aware:
+            self._validate_create(request)
         dispatch_id = request["dispatchId"]
         fingerprint = canonical_hash(request)
         with self.lock:
@@ -1592,6 +1611,43 @@ class WorkerState:
                         "dispatchId already owns a different immutable request",
                     )
                 return self._public(existing), False
+
+            if change_aware:
+                self._validate_change_project_shape(request, workload)
+                self._validate_change_project_ownership(request, workload)
+                for active in self.executions.values():
+                    active_ownership = active.get("changeOwnership")
+                    if isinstance(active_ownership, dict) and (
+                        active_ownership.get("databaseWorkSessionId")
+                            == request["changeOwnership"]["databaseWorkSessionId"]
+                        or active_ownership.get("remoteSessionId")
+                            == request["changeOwnership"]["remoteSessionId"]
+                    ) and any(
+                        active_ownership.get(key) != request["changeOwnership"][key]
+                        for key in (
+                            "changeKey", "databaseWorkSessionId", "remoteSessionId",
+                            "workspaceIdentity", "databaseProjectId",
+                        )
+                    ):
+                        raise ProtocolError(
+                            HTTPStatus.CONFLICT,
+                            "change_session_ownership_conflict",
+                            "WorkSession already owns a different development change relationship",
+                        )
+                    if active.get("status") in NON_TERMINAL and (
+                        active.get("sessionId") == request["sessionId"]
+                        or active.get("workspaceIdentity") == request["workspaceIdentity"]
+                        or (
+                            isinstance(active_ownership, dict)
+                            and active_ownership.get("databaseWorkSessionId")
+                                == request["changeOwnership"]["databaseWorkSessionId"]
+                        )
+                    ):
+                        raise ProtocolError(
+                            HTTPStatus.CONFLICT,
+                            "change_execution_ownership_conflict",
+                            "change workspace or WorkSession already owns a non-terminal execution",
+                        )
 
             now = utc_now()
             execution = {
@@ -1617,6 +1673,8 @@ class WorkerState:
                 "progressEvents": [],
                 "nextProgressSequence": 1,
             }
+            if change_aware:
+                execution["changeOwnership"] = request["changeOwnership"]
             self._append_progress(execution, "ACCEPTED", "Execution request accepted.")
             self._append_progress(execution, "QUEUED", "Execution is queued for admission.")
             self.executions[dispatch_id] = execution
@@ -2930,11 +2988,21 @@ class WorkerState:
             self._validate_profiled_project(request, workload)
         elif workload["kind"] == PROJECT_V3_CAPABILITY:
             self._validate_profiled_project(request, workload)
+        elif workload["kind"] == PROJECT_V4_CAPABILITY:
+            self._validate_change_project_shape(request, workload)
+            self._validate_change_project_ownership(request, workload)
         else:
             raise ProtocolError(HTTPStatus.BAD_REQUEST, "unsupported_workload", "workload kind is unsupported")
 
     def _validate_dispatch_envelope(self, request: Any) -> dict[str, Any]:
-        if not isinstance(request, dict) or set(request) != CREATE_KEYS:
+        workload = request.get("workload") if isinstance(request, dict) else None
+        expected_keys = (
+            CHANGE_CREATE_KEYS
+            if isinstance(workload, dict)
+            and workload.get("kind") == PROJECT_V4_CAPABILITY
+            else CREATE_KEYS
+        )
+        if not isinstance(request, dict) or set(request) != expected_keys:
             raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_dispatch", "dispatch fields are invalid")
         try:
             uuid.UUID(request["dispatchId"])
@@ -2948,10 +3016,213 @@ class WorkerState:
             raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_workload_class", "workloadClass is invalid")
         if not isinstance(request["leaseGeneration"], int) or request["leaseGeneration"] < 1:
             raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_lease", "leaseGeneration must be positive")
-        workload = request["workload"]
         if not isinstance(workload, dict) or "kind" not in workload:
             raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_workload", "workload fields are invalid")
         return workload
+
+    def _validate_change_project_shape(
+        self,
+        request: dict[str, Any],
+        workload: dict[str, Any],
+    ) -> None:
+        if set(workload) != PROJECT_V4_WORKLOAD_KEYS:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_workload",
+                "change-aware project workload fields are invalid",
+            )
+        exact_project = {
+            "kind": PROJECT_V4_CAPABILITY,
+            "projectId": PROJECT_ID,
+            "repository": PROJECT_REPOSITORY,
+            "branch": PROJECT_BRANCH,
+            "manifestSha256": PROJECT_MANIFEST_SHA256,
+            "instructionBundleRevision": INSTRUCTION_BUNDLE_REVISION,
+            "instructionBundleSha256": ATENEA_INSTRUCTION_BUNDLE_SHA256,
+            "platformInstructionSha256": PLATFORM_INSTRUCTION_SHA256,
+            "projectInstructionPath": PROJECT_INSTRUCTION_PATH,
+            "projectInstructionSha256": ATENEA_PROJECT_INSTRUCTION_SHA256,
+        }
+        if any(workload.get(key) != value for key, value in exact_project.items()):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "project_ownership_conflict",
+                "change-aware project identity is not allowlisted",
+            )
+        if not isinstance(workload.get("commit"), str) or COMMIT_PATTERN.fullmatch(
+            workload["commit"]
+        ) is None:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST, "invalid_source", "expected source commit is invalid"
+            )
+        if not isinstance(workload.get("message"), str) or not (
+            1 <= len(workload["message"]) <= 20_000
+        ):
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST, "invalid_message", "message length is invalid"
+            )
+        thread_id = workload.get("threadId")
+        if thread_id is not None:
+            try:
+                if str(uuid.UUID(thread_id)) != thread_id:
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                raise ProtocolError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_thread",
+                    "threadId must be null or a canonical UUID",
+                ) from None
+        model = next(
+            (item for item in CODEX_MODELS if item["modelId"] == workload.get("modelId")),
+            None,
+        )
+        if (
+            model is None
+            or model["availability"] != "AVAILABLE"
+            or workload.get("reasoningEffort") not in model["supportedEfforts"]
+            or workload.get("catalogRevision") != codex_catalog_revision()
+            or workload.get("codexVersion") != CODEX_VERSION
+        ):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "profile_ownership_conflict",
+                "Codex profile is not in the accepted worker catalog",
+            )
+        ownership = request.get("changeOwnership")
+        if not isinstance(ownership, dict) or set(ownership) != CHANGE_OWNERSHIP_KEYS:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "change_ownership_invalid",
+                "development change ownership fields are invalid",
+            )
+        for key in ("changeKey", "remoteSessionId"):
+            try:
+                if str(uuid.UUID(ownership.get(key))) != ownership.get(key):
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                raise ProtocolError(
+                    HTTPStatus.BAD_REQUEST,
+                    "change_ownership_invalid",
+                    "development change ownership identity is invalid",
+                ) from None
+        change_key = ownership["changeKey"]
+        exact_workspace = f"remote:{self.worker_id}:change:{change_key}"
+        if (
+            request.get("sessionId") != ownership["remoteSessionId"]
+            or request.get("workspaceIdentity") != ownership["workspaceIdentity"]
+            or ownership["workspaceIdentity"] != exact_workspace
+            or workload["commit"] != ownership.get("expectedCanonicalCommit")
+        ):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "change_ownership_conflict",
+                "development change, WorkSession and workspace ownership do not match",
+            )
+        database_project_id = ownership.get("databaseProjectId")
+        database_work_session_id = ownership.get("databaseWorkSessionId")
+        source_revision = ownership.get("sourceRevision")
+        if (
+            not isinstance(database_project_id, int)
+            or isinstance(database_project_id, bool)
+            or database_project_id < 1
+            or not isinstance(database_work_session_id, int)
+            or isinstance(database_work_session_id, bool)
+            or database_work_session_id < 1
+            or not isinstance(source_revision, int)
+            or isinstance(source_revision, bool)
+            or source_revision < 0
+            or COMMIT_PATTERN.fullmatch(str(ownership.get("baseCommit", ""))) is None
+            or COMMIT_PATTERN.fullmatch(
+                str(ownership.get("expectedCanonicalCommit", ""))
+            ) is None
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", str(ownership.get(key, ""))) is None
+                for key in (
+                    "sourceFingerprintSha256",
+                    "workspaceOwnershipFingerprintSha256",
+                )
+            )
+        ):
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "change_ownership_invalid",
+                "development change source ownership is invalid",
+            )
+        attachments = workload.get("attachments")
+        if not isinstance(attachments, list) or len(attachments) > PROJECT_V3_MAX_ATTACHMENTS:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_attachments",
+                "project attachment count is outside the bounded policy",
+            )
+        if attachments:
+            self._validate_project_attachments(attachments)
+
+    def _validate_change_project_ownership(
+        self,
+        request: dict[str, Any],
+        workload: dict[str, Any],
+    ) -> None:
+        route = self._project_route(workload.get("projectId"))
+        if route is None or not self._project_execution_enabled(route):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN, "project_disabled", "project workload is disabled"
+            )
+        config = self._read_project_config(route, require_execution=True)
+        if (
+            workload.get("attachments")
+            and config.get("attachmentRoot") != PROJECT_ATTACHMENT_ROOT
+        ):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "project_disabled",
+                "image-bearing project configuration is not activated",
+            )
+        observed_commit = self._observe_project_commit(route)
+        if config["commit"] != observed_commit or workload["commit"] != observed_commit:
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "canonical_source_moved",
+                "worker mirror canonical source moved before admission",
+            )
+        ownership = request["changeOwnership"]
+        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request["dispatchId"] + ":inspect"))
+        inspect_request = {
+            "schemaVersion": 1,
+            "protocolVersion": DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY,
+            "effect": "OBSERVE_ONLY",
+            "operationId": operation_id,
+            "idempotencyKey": operation_id,
+            "operation": "INSPECT",
+            "predecessorOperationId": None,
+            "changeKey": ownership["changeKey"],
+            "databaseProjectId": ownership["databaseProjectId"],
+            "projectId": workload["projectId"],
+            "repository": workload["repository"],
+            "repositoryBranch": workload["branch"],
+            "baseCommit": ownership["baseCommit"],
+            "expectedCanonicalCommit": ownership["expectedCanonicalCommit"],
+            "workspaceBranch": f"atenea/change-{ownership['changeKey']}",
+            "workspaceIdentity": ownership["workspaceIdentity"],
+            "workerId": self.worker_id,
+            "sourceRevision": ownership["sourceRevision"],
+            "sourceFingerprintSha256": ownership["sourceFingerprintSha256"],
+        }
+        inspect_request["requestFingerprintSha256"] = canonical_hash(inspect_request)
+        response = self.execute_development_change_workspace(inspect_request, "INSPECT")
+        if (
+            response.get("state") != "OWNED"
+            or response.get("canonicalCommit") != ownership["expectedCanonicalCommit"]
+            or response.get("sourceFingerprintSha256")
+                != ownership["sourceFingerprintSha256"]
+            or response.get("ownershipFingerprintSha256")
+                != ownership["workspaceOwnershipFingerprintSha256"]
+        ):
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "change_workspace_ownership_conflict",
+                "development change workspace ownership or source is incompatible",
+            )
 
     def _validate_synthetic(self, workload: dict[str, Any]) -> None:
         if set(workload) != SYNTHETIC_WORKLOAD_KEYS:
@@ -3399,6 +3670,7 @@ class WorkerState:
                         continue
                     if execution["reconcileRequired"] and execution["workload"]["kind"] in {
                         PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY,
+                        PROJECT_V4_CAPABILITY,
                     }:
                         execution["status"] = "FAILED"
                         execution["statusReason"] = (
@@ -3452,6 +3724,7 @@ class WorkerState:
                     "Exact project Codex execution running"
                     if execution["workload"]["kind"] in {
                         PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY,
+                        PROJECT_V4_CAPABILITY,
                     }
                     else "Synthetic execution running"
                 )
@@ -3466,6 +3739,7 @@ class WorkerState:
                 self._persist()
                 if execution["workload"]["kind"] in {
                     PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY,
+                    PROJECT_V4_CAPABILITY,
                 }:
                     request = {
                         "dispatchId": execution["dispatchId"],
@@ -3474,6 +3748,8 @@ class WorkerState:
                         "workspaceIdentity": execution["workspaceIdentity"],
                         "workload": execution["workload"],
                     }
+                    if execution["workload"]["kind"] == PROJECT_V4_CAPABILITY:
+                        request["changeOwnership"] = execution["changeOwnership"]
                 else:
                     request = None
                     duration = execution["workload"]["durationMs"] / 1000
@@ -3519,6 +3795,18 @@ class WorkerState:
                 self.wakeup.set()
 
     def _execute_project(self, dispatch_id: str, request: dict[str, Any]) -> None:
+        if request["workload"]["kind"] == PROJECT_V4_CAPABILITY:
+            try:
+                self._validate_change_project_shape(request, request["workload"])
+                self._validate_change_project_ownership(request, request["workload"])
+            except ProtocolError:
+                self._finish_project(
+                    dispatch_id,
+                    "FAILED",
+                    "Change workspace ownership changed before execution",
+                    None,
+                )
+                return
         route = self._project_route(request["workload"]["projectId"])
         if route is None or route["runner"] is None or route["config"] is None:
             self._finish_project(
@@ -3614,7 +3902,9 @@ class WorkerState:
             return
         workload = request["workload"]
         required_result = {"threadId", "turnId", "finalAnswer", "outputSummary"}
-        if workload["kind"] in {PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY}:
+        if workload["kind"] in {
+            PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY, PROJECT_V4_CAPABILITY,
+        }:
             required_result |= {
                 "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
                 "progressEvents",
@@ -3629,11 +3919,15 @@ class WorkerState:
             or not all(isinstance(value, str) and value for value in string_result.values())
             or result.get("outputSummary") != workload["kind"] + " completed"
             or (
-                workload["kind"] in {PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY}
+                workload["kind"] in {
+                    PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY, PROJECT_V4_CAPABILITY,
+                }
                 and not isinstance(progress_events, list)
             )
             or (
-                workload["kind"] in {PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY}
+                workload["kind"] in {
+                    PROJECT_V2_CAPABILITY, PROJECT_V3_CAPABILITY, PROJECT_V4_CAPABILITY,
+                }
                 and any(result[key] != workload[key] for key in (
                     "modelId", "reasoningEffort", "catalogRevision", "codexVersion"
                 ))

@@ -17,7 +17,9 @@ Main surfaces:
 
 The current worker exposes `agent-run-worker/v1` and the exact
 `development-change-workspace/v1` capability used by `app` V78 for workspace
-provision, inspect, and reconciliation. Runtime manifests remain
+provision, inspect, and reconciliation. Its additive `project-codex-v4`
+AgentRun workload executes only an exact, previously provisioned
+development-change workspace while v1-v3 remain compatible. Runtime manifests remain
 project-owned inputs; platform code validates and executes them without a
 compile-time dependency on `app`.
 
