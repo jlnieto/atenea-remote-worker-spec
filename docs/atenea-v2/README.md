@@ -1,5 +1,14 @@
 # Programa maestro Atenea V2
 
+> **Nota histórica:** El contenido OpenSpec V2 refleja la planificación y la
+> historia del programa, puede estar desalineado con el código canónico actual
+> y sólo debe consultarse cuando aporte contexto histórico o arquitectónico.
+> No gobierna tareas nuevas, no es fuente de estado ni un gate de desarrollo,
+> y no obliga a continuar sus checkboxes, gates, receipts, evidence o handoffs.
+> El estado del trabajo ordinario vive en tickets/issues, ramas y PRs. Para
+> trabajo nuevo sólo se crea una spec breve cuando un cambio arquitectónico lo
+> justifica explícitamente; el ticket y el PR siguen siendo la fuente de estado.
+
 Estado documental: `SPECIFIED / IMPLEMENTATION_NOT_STARTED / DISABLED`
 
 Fecha de la auditoría de partida: 2026-08-11.
