@@ -13,8 +13,7 @@ PROGRAM="/usr/local/libexec/atenea/agent-run-worker-v1.py"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR="/usr/local/libexec/atenea/development-change-workspace-v1.py"
 PROJECT_RUNNER="/usr/local/libexec/atenea/project-codex-runner-v1.py"
 BEAUTIPS_PROJECT_RUNNER="/usr/local/libexec/atenea/beautips-project-codex-runner-v1.py"
-VALIDATION_MEDIATOR="/usr/local/libexec/atenea/atenea-validation-v1.sh"
-PLAYWRIGHT_VALIDATOR="/usr/local/libexec/atenea/atenea-playwright-validation-v1.sh"
+VALIDATION_MEDIATOR="/usr/local/libexec/atenea/atenea-validation-v1.py"
 PLAYWRIGHT_CHECK="/usr/local/libexec/atenea/atenea-playwright-validation-v1.js"
 ROLE_MEDIATOR="/usr/local/libexec/atenea/atenea-multi-repository-v1.sh"
 WORKSPACE_ACTIVATOR="/usr/local/libexec/atenea/atenea-workspace-activation-v1.sh"
@@ -48,9 +47,11 @@ PROJECT_TRANSITION_TARGET_COMMIT="615e539d1f2622a4ac2568ba7697b876d49ae33e"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
-SERVICE_TEMPLATE_SHA256="68f2d900cde7fc78c6346a8a898c7fafbcb912ecb09ffd2aef7b30cb49c79b29"
+SERVICE_TEMPLATE_SHA256="4bd227e39c93e69114f20fa3bc518b588df352fa4d8cddd8d0877c1194a354e4"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="32c0b91667cabbd10a0b2d9bda97973745e584a8e6b6b780ef9a17f1dd02bcf8"
+PROGRAM_SHA256="bf8ff53c0caec2a53ea94d3dd9548a3330c8227d198624706f3854f377c3ab8e"
+VALIDATION_MEDIATOR_SHA256="e66d477e1038a0797702177ee612fae105ab733968690fc1a85e73a3260fd5e9"
+PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="7d42b734b76adbfd77538404faaba5502591c152bf1977852e503d0bde16a1a3"
 PROJECT_RUNNER_SHA256="a1f0275d7e17fab255b9d7432f60b2de07c5039495ed8d2759d727500ecfb615"
 BEAUTIPS_PROJECT_RUNNER_SHA256="e3d5402fbdb4245ddfa47b1a190f8be5fa2599c81b3ab6206f70cab66bad138f"
@@ -149,6 +150,16 @@ verify_project_runner_sudoers() {
     || fail "project runner sudo authority is not exact"
 }
 
+verify_validation_sudoers() {
+  mapfile -t validation_rules < <(grep -F -- "$VALIDATION_MEDIATOR" "$SUDOERS_FILE")
+  [[ "${#validation_rules[@]}" -eq 4 \
+      && "${validation_rules[0]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR BACKEND_TEST *" \
+      && "${validation_rules[1]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR WEB_BUILD *" \
+      && "${validation_rules[2]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR ANDROID_BUILD *" \
+      && "${validation_rules[3]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR PLAYWRIGHT_ACCEPTANCE *" ]] \
+    || fail "validation sudo authority is not exact"
+}
+
 verify_beautips_project_runner_file_identity() {
   [[ -f "$BEAUTIPS_PROJECT_RUNNER" && ! -L "$BEAUTIPS_PROJECT_RUNNER" \
       && "$(stat -c '%a:%U:%G' "$BEAUTIPS_PROJECT_RUNNER")" == "755:root:root" ]] \
@@ -223,8 +234,7 @@ validate_inputs() {
   [[ -f "$SCRIPT_DIR/project-codex-runner-v1.py" ]] || fail "project runner is missing"
   [[ -f "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" ]] \
     || fail "Beautips compatibility runner is missing"
-  [[ -f "$SCRIPT_DIR/atenea-validation-v1.sh" ]] || fail "validation mediator is missing"
-  [[ -f "$SCRIPT_DIR/atenea-playwright-validation-v1.sh" ]] || fail "Playwright validator is missing"
+  [[ -f "$SCRIPT_DIR/atenea-validation-v1.py" ]] || fail "validation mediator is missing"
   [[ -f "$SCRIPT_DIR/atenea-playwright-validation-v1.js" ]] || fail "Playwright check is missing"
   [[ -f "$SCRIPT_DIR/atenea-multi-repository-v1.sh" ]] || fail "repository role mediator is missing"
   [[ -f "$SCRIPT_DIR/atenea-workspace-activation-v1.sh" ]] || fail "workspace activator is missing"
@@ -246,6 +256,12 @@ validate_inputs() {
   [[ "$(sha256sum "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" | cut -d' ' -f1)" \
       == "$BEAUTIPS_PROJECT_RUNNER_SHA256" ]] \
     || fail "Beautips compatibility runner fingerprint is stale"
+  [[ "$(sha256sum "$SCRIPT_DIR/atenea-validation-v1.py" | cut -d' ' -f1)" \
+      == "$VALIDATION_MEDIATOR_SHA256" ]] \
+    || fail "validation mediator fingerprint is stale"
+  [[ "$(sha256sum "$SCRIPT_DIR/atenea-playwright-validation-v1.js" | cut -d' ' -f1)" \
+      == "$PLAYWRIGHT_CHECK_SHA256" ]] \
+    || fail "Playwright check fingerprint is stale"
   [[ "$(sha256sum "$SCRIPT_DIR/atenea-workspace-activation-v1.sh" | cut -d' ' -f1)" \
       == "$WORKSPACE_ACTIVATOR_SHA256" ]] \
     || fail "workspace activator fingerprint is stale"
@@ -568,8 +584,7 @@ apply_install() {
   install -o root -g root -m 0755 "$SCRIPT_DIR/project-codex-runner-v1.py" "$PROJECT_RUNNER"
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" "$BEAUTIPS_PROJECT_RUNNER"
-  install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-validation-v1.sh" "$VALIDATION_MEDIATOR"
-  install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-playwright-validation-v1.sh" "$PLAYWRIGHT_VALIDATOR"
+  install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-validation-v1.py" "$VALIDATION_MEDIATOR"
   install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-playwright-validation-v1.js" "$PLAYWRIGHT_CHECK"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-multi-repository-v1.sh" "$ROLE_MEDIATOR"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-stage-v1.py" "$CODEX_UPDATE_MEDIATOR"
@@ -612,6 +627,7 @@ apply_install() {
     printf 'atenea-worker ALL=(root) NOPASSWD: %s BACKEND_TEST *\n' "$VALIDATION_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s WEB_BUILD *\n' "$VALIDATION_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ANDROID_BUILD *\n' "$VALIDATION_MEDIATOR"
+    printf 'atenea-worker ALL=(root) NOPASSWD: %s PLAYWRIGHT_ACCEPTANCE *\n' "$VALIDATION_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ensure *\n' "$ROLE_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s --registry %s --release-root %s --release-owner-uid %s\n' \
       "$CODEX_ACTIVATE_MEDIATOR" "$CODEX_UPDATE_REGISTRY" "$CODEX_RELEASE_ROOT" "$(id -u atenea-worker)"
@@ -740,6 +756,16 @@ verify() {
       && "$(sha256sum "$PLATFORM_INSTRUCTIONS" | cut -d' ' -f1)" \
         == "$PLATFORM_INSTRUCTIONS_SHA256" ]] \
     || fail "platform instructions differ from the reviewed source"
+  [[ -f "$VALIDATION_MEDIATOR" && ! -L "$VALIDATION_MEDIATOR" \
+      && "$(stat -c '%a:%U:%G' "$VALIDATION_MEDIATOR")" == "755:root:root" \
+      && "$(sha256sum "$VALIDATION_MEDIATOR" | cut -d' ' -f1)" \
+        == "$VALIDATION_MEDIATOR_SHA256" ]] \
+    || fail "validation mediator differs from the reviewed source"
+  [[ -f "$PLAYWRIGHT_CHECK" && ! -L "$PLAYWRIGHT_CHECK" \
+      && "$(stat -c '%a:%U:%G' "$PLAYWRIGHT_CHECK")" == "644:root:root" \
+      && "$(sha256sum "$PLAYWRIGHT_CHECK" | cut -d' ' -f1)" \
+        == "$PLAYWRIGHT_CHECK_SHA256" ]] \
+    || fail "Playwright check differs from the reviewed source"
   [[ "$(getent passwd atenea-program-role | cut -d: -f7)" == /usr/sbin/nologin ]] \
     || fail "programme role identity is unavailable or interactive"
   [[ "$(getent passwd atenea-worker-role | cut -d: -f7)" == /usr/sbin/nologin ]] \
@@ -747,6 +773,7 @@ verify() {
   verify_project_config_content
   visudo -cf "$SUDOERS_FILE" >/dev/null
   verify_project_runner_sudoers
+  verify_validation_sudoers
   printf '%s\n' 'agent-run-worker-v1 verification passed'
 }
 

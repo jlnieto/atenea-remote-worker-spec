@@ -46,6 +46,12 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/beautips-project-codex-runner-v1.py" | cut -d' ' -f1)" \
     == "${BEAUTIPS_PROJECT_RUNNER_SHA256}" ]] \
   || fail "Beautips compatibility runner fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-validation-v1.py" | cut -d' ' -f1)" \
+    == "${VALIDATION_MEDIATOR_SHA256}" ]] \
+  || fail "validation mediator fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-playwright-validation-v1.js" | cut -d' ' -f1)" \
+    == "${PLAYWRIGHT_CHECK_SHA256}" ]] \
+  || fail "Playwright check fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-workspace-activation-v1.sh" | cut -d' ' -f1)" \
     == "${WORKSPACE_ACTIVATOR_SHA256}" ]] \
   || fail "Atenea workspace activator fingerprint is stale"
@@ -348,6 +354,22 @@ printf '%s\n' \
 if ( verify_project_runner_sudoers ) >/dev/null 2>&1; then
   fail "broad project runner sudo authority was accepted"
 fi
+PROJECT_SUDOERS_FILE="${SUDOERS_FILE}"
+SUDOERS_FILE="${TEST_ROOT}/validation.sudoers"
+printf '%s\n' \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} BACKEND_TEST *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} WEB_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} ANDROID_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} PLAYWRIGHT_ACCEPTANCE *" \
+  >"${SUDOERS_FILE}"
+verify_validation_sudoers
+printf '%s\n' \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} ARBITRARY *" \
+  >>"${SUDOERS_FILE}"
+if ( verify_validation_sudoers ) >/dev/null 2>&1; then
+  fail "unregistered validation sudo authority was accepted"
+fi
+SUDOERS_FILE="${PROJECT_SUDOERS_FILE}"
 BEFORE="$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)"
 project_retained_draft_register "${SESSION_ID}" "${WORKSPACE_IDENTITY}" "${RETAINED_COMMIT}"
 project_retained_draft_register "${SESSION_ID}" "${WORKSPACE_IDENTITY}" "${RETAINED_COMMIT}"
