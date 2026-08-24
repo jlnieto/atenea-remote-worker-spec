@@ -28,7 +28,7 @@ RestrictSUIDSGID=false
 LockPersonality=true
 MemoryDenyWriteExecute=true
 ReadOnlyPaths=/srv/atenea/attachments-v1
-ReadWritePaths=/etc/atenea-worker /srv/atenea/worker/agent-runs-v1 /srv/atenea/worker/codex-releases-v1 /srv/atenea/worker/workspace-locks /srv/atenea/worker/runtime-admission-v1 /srv/atenea/worker/runtime-allocation-v1 /srv/atenea/worker/workspace-release-v1 /srv/atenea/repositories /srv/atenea/workspaces/sessions /srv/atenea/workspaces/changes /srv/atenea/artifacts /srv/atenea/caches /home/jose/.codex /run/atenea/codex-images
+ReadWritePaths=/etc/atenea-worker /srv/atenea/worker/agent-runs-v1 /srv/atenea/worker/validation-broker-v1 /srv/atenea/worker/codex-releases-v1 /srv/atenea/worker/workspace-locks /srv/atenea/worker/runtime-admission-v1 /srv/atenea/worker/runtime-allocation-v1 /srv/atenea/worker/workspace-release-v1 /srv/atenea/repositories /srv/atenea/workspaces/sessions /srv/atenea/workspaces/changes /srv/atenea/artifacts /srv/atenea/caches /home/jose/.codex /run/atenea/codex-images
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE
 AmbientCapabilities=
 
