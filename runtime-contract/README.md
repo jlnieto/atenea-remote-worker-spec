@@ -10,6 +10,12 @@ JSON data model and validation result.
 payload boundary used by `app` to provision, inspect, and reconcile an exact
 development-change worktree on AX42.
 
+`development-change-branch-publication-v1.request.schema.json` and its response
+schema bind one server-derived DevelopmentChange, source revision/fingerprint,
+workspace ownership fingerprint, branch, and project remote to an exact pushed
+head. The response exposes the head and a sanitized receipt, never a workspace
+path, credential, remote URL, host, or Git command.
+
 `agent-run-project-codex-v4.request.schema.json` and its result schema are the
 additive AgentRun contract for a previously provisioned development-change
 workspace. The request binds the immutable dispatch to the change key, database

@@ -37,6 +37,8 @@ CODEX_UPDATE_ACTIVATE_CAPABILITY = "codex-update-activate-v1"
 CODEX_UPDATE_ROLLBACK_CAPABILITY = "codex-update-rollback-v1"
 DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
 DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
+DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publication/v1"
+DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
 CLOSED_VALIDATION_CAPABILITY = "closed-validation-broker/v1"
 CLOSED_VALIDATION_PATH_PREFIX = "/v1/project-workspaces/validations/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
@@ -284,6 +286,24 @@ DEVELOPMENT_CHANGE_WORKSPACE_RESPONSE_KEYS = {
     "expectedSourceFingerprintSha256", "canonicalCommit",
     "sourceFingerprintSha256", "workspaceDirty", "retainedDraft",
     "requestFingerprintSha256", "ownershipFingerprintSha256", "valuesExposed",
+}
+DEVELOPMENT_CHANGE_PUBLICATION_REQUEST_KEYS = {
+    "schemaVersion", "protocolVersion", "effect", "operationId",
+    "idempotencyKey", "operation", "changeKey", "databaseProjectId",
+    "projectId", "repository", "repositoryBranch", "baseCommit",
+    "expectedCanonicalCommit", "workspaceBranch", "workspaceIdentity",
+    "workerId", "sourceRevision", "sourceFingerprintSha256",
+    "workspaceOwnershipFingerprintSha256", "requestFingerprintSha256",
+}
+DEVELOPMENT_CHANGE_PUBLICATION_RESPONSE_KEYS = {
+    "schemaVersion", "protocolVersion", "state", "effect", "operationId",
+    "idempotencyKey", "operation", "changeKey", "databaseProjectId",
+    "projectId", "repositoryBranch", "baseCommit", "expectedCanonicalCommit",
+    "workspaceBranch", "workspaceIdentity", "workerId", "sourceRevision",
+    "expectedSourceFingerprintSha256",
+    "expectedWorkspaceOwnershipFingerprintSha256", "publishedHeadSha",
+    "remoteDisposition", "requestFingerprintSha256",
+    "publicationReceiptSha256", "valuesExposed",
 }
 EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
@@ -1175,6 +1195,7 @@ class WorkerState:
             )
             if change_workspace_available:
                 capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
+                capabilities.append(DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY)
                 if project_selection_enabled:
                     capabilities.append(PROJECT_V4_CAPABILITY)
             if (
@@ -1345,6 +1366,126 @@ class WorkerState:
                 HTTPStatus.BAD_GATEWAY,
                 "development_change_workspace_response_invalid",
                 "non-owned workspace observation exposed values",
+            )
+        return response
+
+    def publish_development_change_branch(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(request, dict)
+            or set(request) != DEVELOPMENT_CHANGE_PUBLICATION_REQUEST_KEYS
+            or request.get("schemaVersion") != 1
+            or request.get("protocolVersion")
+                != DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY
+            or request.get("effect") != "PUBLISH_EXACT_CHANGE_BRANCH"
+            or request.get("operation") != "PUBLISH"
+        ):
+            raise ProtocolError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "development_change_publication_request_invalid",
+                "development change branch publication request is invalid",
+            )
+        mediator = self.development_change_workspace_mediator
+        if (
+            mediator is None
+            or not mediator.is_file()
+            or mediator.is_symlink()
+            or not os.access(mediator, os.X_OK)
+        ):
+            raise ProtocolError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "development_change_publication_unavailable",
+                "development change branch publication is unavailable",
+            )
+        try:
+            with self.workspace_lifecycle_lock():
+                completed = subprocess.run(
+                    [str(mediator), "publish"],
+                    input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=self.development_change_workspace_timeout,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired as error:
+            raise ProtocolError(
+                HTTPStatus.GATEWAY_TIMEOUT,
+                "development_change_publication_timeout",
+                "development change branch publication timed out",
+            ) from error
+        except OSError as error:
+            raise ProtocolError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "development_change_publication_unavailable",
+                "development change branch publication is unavailable",
+            ) from error
+        if completed.returncode != 0:
+            try:
+                safe = reviewed_mediator_stderr_envelope(completed.stderr)
+            except ValueError as error:
+                raise ProtocolError(
+                    HTTPStatus.BAD_GATEWAY,
+                    "development_change_publication_response_invalid",
+                    "development change branch publication failure is invalid",
+                ) from error
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "development_change_publication_rejected",
+                "development change branch publication was rejected",
+                safe,
+            )
+        try:
+            response = strict_json_object(completed.stdout)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            raise ProtocolError(
+                HTTPStatus.BAD_GATEWAY,
+                "development_change_publication_response_invalid",
+                "development change branch publication returned invalid JSON",
+            ) from error
+        exact_echo = {
+            "schemaVersion": "schemaVersion",
+            "protocolVersion": "protocolVersion",
+            "effect": "effect",
+            "operationId": "operationId",
+            "idempotencyKey": "idempotencyKey",
+            "operation": "operation",
+            "changeKey": "changeKey",
+            "databaseProjectId": "databaseProjectId",
+            "projectId": "projectId",
+            "repositoryBranch": "repositoryBranch",
+            "baseCommit": "baseCommit",
+            "expectedCanonicalCommit": "expectedCanonicalCommit",
+            "workspaceBranch": "workspaceBranch",
+            "workspaceIdentity": "workspaceIdentity",
+            "workerId": "workerId",
+            "sourceRevision": "sourceRevision",
+            "expectedSourceFingerprintSha256": "sourceFingerprintSha256",
+            "expectedWorkspaceOwnershipFingerprintSha256":
+                "workspaceOwnershipFingerprintSha256",
+            "requestFingerprintSha256": "requestFingerprintSha256",
+        }
+        if (
+            set(response) != DEVELOPMENT_CHANGE_PUBLICATION_RESPONSE_KEYS
+            or response.get("state") != "PUBLISHED"
+            or response.get("valuesExposed") is not False
+            or response.get("remoteDisposition") not in {"CREATED", "IDENTICAL"}
+            or any(response.get(output) != request.get(source)
+                   for output, source in exact_echo.items())
+            or re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                str(response.get("publishedHeadSha", "")),
+            ) is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(response.get("publicationReceiptSha256", "")),
+            ) is None
+        ):
+            raise ProtocolError(
+                HTTPStatus.BAD_GATEWAY,
+                "development_change_publication_response_invalid",
+                "development change branch publication response is not exact",
             )
         return response
 
@@ -4509,6 +4650,12 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                     self.server.state.execute_development_change_workspace(
                         body, operation
                     ),
+                )
+                return
+            if path == DEVELOPMENT_CHANGE_PUBLICATION_PATH:
+                self._write(
+                    HTTPStatus.OK,
+                    self.server.state.publish_development_change_branch(body),
                 )
                 return
             if path == "/v1/project-workspaces/ensure":

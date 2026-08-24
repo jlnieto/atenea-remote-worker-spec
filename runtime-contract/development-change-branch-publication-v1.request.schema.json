@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/development-change-branch-publication-v1.request.schema.json",
+  "title": "Development change branch publication v1 request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "protocolVersion", "effect", "operationId",
+    "idempotencyKey", "operation", "changeKey", "databaseProjectId",
+    "projectId", "repository", "repositoryBranch", "baseCommit",
+    "expectedCanonicalCommit", "workspaceBranch", "workspaceIdentity",
+    "workerId", "sourceRevision", "sourceFingerprintSha256",
+    "workspaceOwnershipFingerprintSha256", "requestFingerprintSha256"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "protocolVersion": {"const": "development-change-branch-publication/v1"},
+    "effect": {"const": "PUBLISH_EXACT_CHANGE_BRANCH"},
+    "operationId": {"type": "string", "format": "uuid"},
+    "idempotencyKey": {"type": "string", "format": "uuid"},
+    "operation": {"const": "PUBLISH"},
+    "changeKey": {"type": "string", "format": "uuid"},
+    "databaseProjectId": {"type": "integer", "minimum": 1},
+    "projectId": {"const": "atenea"},
+    "repository": {"const": "https://github.com/jlnieto/atenea.git"},
+    "repositoryBranch": {"const": "main"},
+    "baseCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "expectedCanonicalCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "workspaceBranch": {"type": "string", "pattern": "^atenea/change-[0-9a-f-]{36}$"},
+    "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"},
+    "workerId": {"const": "ax42-01"},
+    "sourceRevision": {"type": "integer", "minimum": 0},
+    "sourceFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "workspaceOwnershipFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "requestFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

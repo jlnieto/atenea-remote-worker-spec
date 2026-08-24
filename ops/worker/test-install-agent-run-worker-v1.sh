@@ -130,7 +130,7 @@ grep -F -- '--development-change-workspace-mediator /usr/local/libexec/atenea/de
   || fail "development-change workspace mediator boundary is not explicit"
 [[ "$(grep -Fc '/srv/atenea/workspaces/changes' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "development-change workspace write boundary is not exact"
-grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $validation_capability]' \
+grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $validation_capability]' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "installer plan does not advertise the durable worker capabilities"
 
