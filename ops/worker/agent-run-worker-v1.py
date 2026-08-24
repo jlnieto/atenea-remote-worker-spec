@@ -260,10 +260,10 @@ EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
 }
 VALIDATION_DEFINITIONS = {
-    "BACKEND_TEST": ("atenea-backend-test-v1", 900),
-    "WEB_BUILD": ("atenea-web-build-v1", 600),
-    "ANDROID_BUILD": ("atenea-android-build-v1", 1200),
-    "PLAYWRIGHT_ACCEPTANCE": ("atenea-playwright-acceptance-v1", 600),
+    "BACKEND_TEST": ("atenea-backend-test-v1", 960),
+    "WEB_BUILD": ("atenea-web-build-v1", 660),
+    "ANDROID_BUILD": ("atenea-android-build-v1", 1260),
+    "PLAYWRIGHT_ACCEPTANCE": ("atenea-playwright-acceptance-v1", 660),
 }
 PROJECT_ID = "atenea"
 PROJECT_REPOSITORY = "https://github.com/jlnieto/atenea.git"
@@ -4191,7 +4191,7 @@ def main() -> int:
     parser.add_argument(
         "--project-validation-mediator",
         type=Path,
-        default=Path("/usr/local/libexec/atenea/atenea-validation-v1.sh"),
+        default=Path("/usr/local/libexec/atenea/atenea-validation-v1.py"),
     )
     parser.add_argument(
         "--repository-role-mediator",
