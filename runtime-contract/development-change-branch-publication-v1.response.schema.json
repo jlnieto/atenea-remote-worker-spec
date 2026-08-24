@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/development-change-branch-publication-v1.response.schema.json",
+  "title": "Development change branch publication v1 response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "protocolVersion", "state", "effect", "operationId",
+    "idempotencyKey", "operation", "changeKey", "databaseProjectId",
+    "projectId", "repositoryBranch", "baseCommit", "expectedCanonicalCommit",
+    "workspaceBranch", "workspaceIdentity", "workerId", "sourceRevision",
+    "expectedSourceFingerprintSha256",
+    "expectedWorkspaceOwnershipFingerprintSha256", "publishedHeadSha",
+    "remoteDisposition", "requestFingerprintSha256",
+    "publicationReceiptSha256", "valuesExposed"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "protocolVersion": {"const": "development-change-branch-publication/v1"},
+    "state": {"const": "PUBLISHED"},
+    "effect": {"const": "PUBLISH_EXACT_CHANGE_BRANCH"},
+    "operationId": {"type": "string", "format": "uuid"},
+    "idempotencyKey": {"type": "string", "format": "uuid"},
+    "operation": {"const": "PUBLISH"},
+    "changeKey": {"type": "string", "format": "uuid"},
+    "databaseProjectId": {"type": "integer", "minimum": 1},
+    "projectId": {"const": "atenea"},
+    "repositoryBranch": {"const": "main"},
+    "baseCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "expectedCanonicalCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "workspaceBranch": {"type": "string", "pattern": "^atenea/change-[0-9a-f-]{36}$"},
+    "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"},
+    "workerId": {"const": "ax42-01"},
+    "sourceRevision": {"type": "integer", "minimum": 0},
+    "expectedSourceFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expectedWorkspaceOwnershipFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "publishedHeadSha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "remoteDisposition": {"enum": ["CREATED", "IDENTICAL"]},
+    "requestFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "publicationReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "valuesExposed": {"const": false}
+  }
+}

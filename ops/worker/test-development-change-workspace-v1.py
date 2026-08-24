@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -41,6 +41,7 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
         self.mirror = self.root / "atenea.git"
+        self.remote = self.root / "publication.git"
         self.workspaces = self.root / "changes"
         self.state = self.root / "state"
         self.workspaces.mkdir(mode=0o700)
@@ -55,12 +56,13 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
             "-C", str(self.source), "rev-parse", "HEAD", capture=True
         ).strip()
         self._git("clone", "--bare", str(self.source), str(self.mirror))
+        self._git("clone", "--bare", str(self.source), str(self.remote))
         self._git(
             f"--git-dir={self.mirror}",
             "remote",
             "set-url",
             "origin",
-            mediator_module.REPOSITORY,
+            str(self.remote),
         )
         self._git(
             f"--git-dir={self.mirror}",
@@ -73,6 +75,7 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
             self.workspaces,
             self.state / "workspace.lock",
             test_mode=True,
+            publication_remote=str(self.remote),
         )
         self.change_key = "8bf60472-3c0e-49aa-99bf-6dc3c7e60eaf"
 
@@ -123,6 +126,39 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         }
         body["requestFingerprintSha256"] = mediator_module.canonical_sha256(body)
         return body
+
+    def publication_request(self, observation: dict, **overrides) -> dict:
+        body = {
+            "schemaVersion": 1,
+            "protocolVersion": "development-change-branch-publication/v1",
+            "effect": "PUBLISH_EXACT_CHANGE_BRANCH",
+            "operationId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"publish:{self.change_key}")),
+            "idempotencyKey": str(uuid.uuid5(uuid.NAMESPACE_URL, f"publish-idempotency:{self.change_key}")),
+            "operation": "PUBLISH",
+            "changeKey": self.change_key,
+            "databaseProjectId": 7,
+            "projectId": "atenea",
+            "repository": "https://github.com/jlnieto/atenea.git",
+            "repositoryBranch": "main",
+            "baseCommit": self.base_commit,
+            "expectedCanonicalCommit": self.base_commit,
+            "workspaceBranch": f"atenea/change-{self.change_key}",
+            "workspaceIdentity": f"remote:ax42-01:change:{self.change_key}",
+            "workerId": "ax42-01",
+            "sourceRevision": 1,
+            "sourceFingerprintSha256": observation["sourceFingerprintSha256"],
+            "workspaceOwnershipFingerprintSha256": observation["ownershipFingerprintSha256"],
+        }
+        body.update(overrides)
+        body["requestFingerprintSha256"] = mediator_module.canonical_sha256(body)
+        return body
+
+    def dirty_publication(self) -> tuple[dict, dict]:
+        self.mediator.execute(self.request(), "PROVISION")
+        worktree = self.workspaces / self.change_key / "atenea"
+        (worktree / "published.txt").write_text("exact change\n", encoding="utf-8")
+        observation = self.mediator.execute(self.request("INSPECT"), "INSPECT")
+        return self.publication_request(observation), observation
 
     def test_provision_creates_one_exact_owned_worktree_without_exposing_path(self) -> None:
         request = self.request()
@@ -232,6 +268,99 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         with self.assertRaises(mediator_module.ContractError):
             self.mediator.execute(request, "PROVISION")
 
+    def test_publish_materializes_and_pushes_exact_change_branch(self) -> None:
+        request, _ = self.dirty_publication()
+        response = self.mediator.publish(request)
+        remote_head = self._git(
+            f"--git-dir={self.remote}",
+            "rev-parse",
+            f"refs/heads/{request['workspaceBranch']}",
+            capture=True,
+        ).strip()
+        self.assertEqual("PUBLISHED", response["state"])
+        self.assertEqual(response["publishedHeadSha"], remote_head)
+        self.assertEqual("CREATED", response["remoteDisposition"])
+        self.assertFalse(response["valuesExposed"])
+        self.assertNotIn(str(self.remote), json.dumps(response))
+        for suffix, value in (("request", request), ("response", response)):
+            schema = json.loads((CONTRACT_ROOT /
+                f"development-change-branch-publication-v1.{suffix}.schema.json")
+                .read_text(encoding="utf-8"))
+            Draft202012Validator.check_schema(schema)
+            Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+
+    def test_publish_replay_and_lost_response_return_same_exact_head(self) -> None:
+        request, _ = self.dirty_publication()
+        original_response = self.mediator._publication_response
+        with mock.patch.object(
+            self.mediator,
+            "_publication_response",
+            side_effect=RuntimeError("synthetic lost response"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.mediator.publish(request)
+        with mock.patch.object(
+            self.mediator, "_publication_response", wraps=original_response
+        ):
+            recovered = self.mediator.publish(request)
+            replayed = self.mediator.publish(request)
+        self.assertEqual(recovered, replayed)
+        self.assertEqual("PUBLISHED", recovered["state"])
+
+    def test_publish_accepts_remote_branch_already_identical(self) -> None:
+        self.mediator.execute(self.request(), "PROVISION")
+        worktree = self.workspaces / self.change_key / "atenea"
+        (worktree / "committed.txt").write_text("committed\n", encoding="utf-8")
+        self._git("-C", str(worktree), "add", "committed.txt")
+        self._git("-C", str(worktree), "-c", "user.name=Synthetic", "-c",
+                  "user.email=synthetic@example.invalid", "commit", "-m", "already committed")
+        observation = self.mediator.execute(self.request("INSPECT"), "INSPECT")
+        request = self.publication_request(observation)
+        self._git(
+            "-C", str(worktree), "push", "origin",
+            f"refs/heads/{request['workspaceBranch']}:refs/heads/{request['workspaceBranch']}",
+        )
+        response = self.mediator.publish(request)
+        self.assertEqual("IDENTICAL", response["remoteDisposition"])
+
+    def test_publish_rejects_incompatible_remote_without_force_push(self) -> None:
+        request, _ = self.dirty_publication()
+        self._git(
+            f"--git-dir={self.remote}", "update-ref",
+            f"refs/heads/{request['workspaceBranch']}", self.base_commit,
+        )
+        with mock.patch.object(self.mediator, "_git", wraps=self.mediator._git) as git_call:
+            with self.assertRaises(mediator_module.ContractError):
+                self.mediator.publish(request)
+        flattened = [str(value) for call in git_call.call_args_list for value in call.args]
+        self.assertFalse(any("force" in value for value in flattened))
+        remote_head = self._git(
+            f"--git-dir={self.remote}", "rev-parse",
+            f"refs/heads/{request['workspaceBranch']}", capture=True,
+        ).strip()
+        self.assertEqual(self.base_commit, remote_head)
+
+    def test_publish_rejects_cross_ownership_foreign_stale_and_arbitrary_branch(self) -> None:
+        request, observation = self.dirty_publication()
+        for overrides in (
+            {"databaseProjectId": 8},
+            {"sourceFingerprintSha256": "b" * 64},
+            {"workspaceBranch": "client/chosen"},
+        ):
+            crossed = self.publication_request(observation, **overrides)
+            with self.assertRaises(mediator_module.ContractError):
+                self.mediator.publish(crossed)
+        record = self.workspaces / self.change_key / "workspace-v1.json"
+        stored = json.loads(record.read_text(encoding="utf-8"))
+        stored["databaseProjectId"] = 99
+        body = dict(stored)
+        body.pop("recordSha256")
+        stored["recordSha256"] = mediator_module.canonical_sha256(body)
+        record.write_text(json.dumps(stored, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        record.chmod(0o600)
+        with self.assertRaises(mediator_module.ContractError):
+            self.mediator.publish(request)
+
 
 class WorkerIntegrationTest(unittest.TestCase):
     def test_health_advertises_capability_only_when_exact_mediator_exists(self) -> None:
@@ -249,9 +378,17 @@ class WorkerIntegrationTest(unittest.TestCase):
             self.assertIn(
                 "development-change-workspace/v1", state.health()["capabilities"]
             )
+            self.assertIn(
+                "development-change-branch-publication/v1",
+                state.health()["capabilities"],
+            )
             mediator.unlink()
             self.assertNotIn(
                 "development-change-workspace/v1", state.health()["capabilities"]
+            )
+            self.assertNotIn(
+                "development-change-branch-publication/v1",
+                state.health()["capabilities"],
             )
 
     def test_worker_validates_exact_mediator_response(self) -> None:

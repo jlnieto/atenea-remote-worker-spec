@@ -50,10 +50,10 @@ PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="d59c5940d9810a30db5000dec26d78d91ab21f15e2b735a4db5760e16da53356"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="65a6f6df558c94360988fb110215ccd8d2a5f5cfbb63655ff998a703f2489d31"
+PROGRAM_SHA256="232433787837a76b20e9e17ba9b3eff8900ea2d2eb9fdc2f865db160e73082b1"
 VALIDATION_MEDIATOR_SHA256="e7339c3dc68050b3315b70649bfaee0399d4d2b34c4f52bb26dcd036d3eb9d7d"
 PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
-DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="7d42b734b76adbfd77538404faaba5502591c152bf1977852e503d0bde16a1a3"
+DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="dcfd0daaeeabf6e9e8c447f18d035c091a3eadd39e5450296a11d5cb137c9038"
 PROJECT_RUNNER_SHA256="0bf1b1b137a4dc2baaf29ca6bd607532d95c07b1736b4e40bce6b31257c3dbf5"
 BEAUTIPS_PROJECT_RUNNER_SHA256="e3d5402fbdb4245ddfa47b1a190f8be5fa2599c81b3ab6206f70cab66bad138f"
 BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a413b4feee5a59ce8152954d97b983"
@@ -297,6 +297,7 @@ plan() {
     --arg protocol "agent-run-worker/v1" \
     --arg synthetic_capability "synthetic-routing-v1" \
     --arg development_change_capability "development-change-workspace/v1" \
+    --arg development_change_publication_capability "development-change-branch-publication/v1" \
     --arg validation_capability "closed-validation-broker/v1" \
     --arg project_capability "project-codex-v1" \
     '{
@@ -306,7 +307,7 @@ plan() {
       port: $port,
       controlPlaneIp: (if $control_plane_ip == "" then null else $control_plane_ip end),
       protocol: $protocol,
-      capabilities: [$synthetic_capability, $development_change_capability, $validation_capability],
+      capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $validation_capability],
       availableDisabledCapabilities: [$project_capability],
       normalCapacity: 4,
       heavyCapacity: 2,
