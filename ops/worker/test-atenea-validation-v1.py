@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -187,6 +188,128 @@ class ClosedValidationSandboxTests(unittest.TestCase):
                 (foreign_stage / name).write_text(name)
             with self.assertRaises(MODULE.Rejected):
                 MODULE.publish_browser_artifacts(foreign_stage, root / "foreign-id")
+
+    def test_durable_start_replays_exact_unit_and_conflict_fails_closed(self):
+        session_id = str(uuid.uuid4())
+        operation_id = str(uuid.uuid4())
+        arguments = ["BACKEND_TEST", session_id, "a" * 64, operation_id]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o750)
+            with mock.patch.object(MODULE, "JOURNAL_ROOT", root), mock.patch.object(
+                MODULE, "require_root"
+            ), mock.patch.object(
+                MODULE, "unit_active", side_effect=[False, True]
+            ), mock.patch.object(MODULE, "launch_durable_unit") as launch:
+                first = MODULE.start_durable(arguments)
+                second = MODULE.start_durable(list(arguments))
+                conflicting = list(arguments)
+                conflicting[2] = "b" * 64
+                with self.assertRaises(MODULE.Rejected):
+                    MODULE.start_durable(conflicting)
+        self.assertEqual("RUNNING", first["state"])
+        self.assertEqual(first, second)
+        launch.assert_called_once()
+
+    def test_inactive_confirmed_start_fails_without_second_execution(self):
+        arguments = [
+            "BACKEND_TEST",
+            str(uuid.uuid4()),
+            "a" * 64,
+            str(uuid.uuid4()),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o750)
+            with mock.patch.object(MODULE, "JOURNAL_ROOT", root), mock.patch.object(
+                MODULE, "require_root"
+            ), mock.patch.object(
+                MODULE, "unit_active", return_value=False
+            ), mock.patch.object(MODULE, "launch_durable_unit") as launch:
+                first = MODULE.start_durable(arguments)
+                replay = MODULE.start_durable(list(arguments))
+        self.assertEqual("RUNNING", first["state"])
+        self.assertEqual("INFRASTRUCTURE_FAILED", replay["state"])
+        launch.assert_called_once()
+
+    def test_durable_cancel_is_exact_repeatable_and_terminal(self):
+        session_id = str(uuid.uuid4())
+        operation_id = str(uuid.uuid4())
+        arguments = ["WEB_BUILD", session_id, "a" * 64, operation_id]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o750)
+            with mock.patch.object(MODULE, "JOURNAL_ROOT", root), mock.patch.object(
+                MODULE, "require_root"
+            ), mock.patch.object(
+                MODULE, "unit_active", return_value=False
+            ), mock.patch.object(MODULE, "launch_durable_unit"):
+                MODULE.start_durable(arguments)
+                first = MODULE.cancel_durable(arguments)
+                second = MODULE.cancel_durable(list(arguments))
+        self.assertEqual("CANCELLED", first["state"])
+        self.assertEqual("CANCELLED", first["terminalCause"])
+        self.assertEqual(first, second)
+
+    def test_durable_terminal_result_survives_fresh_inspection(self):
+        session_id = str(uuid.uuid4())
+        operation_id = str(uuid.uuid4())
+        arguments = ["BACKEND_TEST", session_id, "a" * 64, operation_id]
+        result = {
+            "validationId": operation_id,
+            "sessionId": session_id,
+            "operation": "BACKEND_TEST",
+            "definitionRevision": "atenea-backend-test-v1",
+            "sourceTreeFingerprintSha256": "a" * 64,
+            "status": "SUCCEEDED",
+            "exitCode": 0,
+            "durationMillis": 9,
+            "artifactManifestSha256": "b" * 64,
+            "summary": "Closed validation passed",
+            "valuesExposed": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o750)
+            with mock.patch.object(MODULE, "JOURNAL_ROOT", root), mock.patch.object(
+                MODULE, "require_root"
+            ), mock.patch.object(
+                MODULE, "unit_active", return_value=False
+            ), mock.patch.object(MODULE, "launch_durable_unit"), mock.patch.object(
+                MODULE, "execute_validation", return_value=result
+            ):
+                MODULE.start_durable(arguments)
+                MODULE.execute_durable(arguments)
+                recovered = MODULE.inspect_durable(list(arguments))
+        self.assertEqual("SUCCEEDED", recovered["state"])
+        self.assertEqual("NONE", recovered["terminalCause"])
+        self.assertEqual("b" * 64, recovered["artifactManifestSha256"])
+
+    def test_durable_coordinator_unit_preserves_bounded_symbolic_authority(self):
+        arguments = [
+            "ANDROID_BUILD",
+            "11111111-1111-4111-8111-111111111111",
+            "a" * 64,
+            "22222222-2222-4222-8222-222222222222",
+        ]
+        identity = MODULE.durable_identity(arguments)
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            MODULE.launch_durable_unit(identity)
+        command = run.call_args.args[0]
+        rendered = "\0".join(command)
+        for required in (
+            "--no-block",
+            "RuntimeMaxSec=1320s",
+            "KillMode=control-group",
+            "ProtectSystem=strict",
+            "RestrictAddressFamilies=AF_UNIX",
+            f"ReadOnlyPaths={MODULE.WORKSPACE_ROOT} {MODULE.CONFIG.parent} /run/user",
+            "--durable-execute\0ANDROID_BUILD",
+        ):
+            self.assertIn(required, rendered)
+        self.assertNotIn("--shell", rendered)
+        self.assertNotIn("--privileged", rendered)
 
 
 if __name__ == "__main__":

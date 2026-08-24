@@ -14,6 +14,7 @@ DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR="/usr/local/libexec/atenea/development-cha
 PROJECT_RUNNER="/usr/local/libexec/atenea/project-codex-runner-v1.py"
 BEAUTIPS_PROJECT_RUNNER="/usr/local/libexec/atenea/beautips-project-codex-runner-v1.py"
 VALIDATION_MEDIATOR="/usr/local/libexec/atenea/atenea-validation-v1.py"
+VALIDATION_JOURNAL_ROOT="/srv/atenea/worker/validation-broker-v1"
 PLAYWRIGHT_CHECK="/usr/local/libexec/atenea/atenea-playwright-validation-v1.js"
 ROLE_MEDIATOR="/usr/local/libexec/atenea/atenea-multi-repository-v1.sh"
 WORKSPACE_ACTIVATOR="/usr/local/libexec/atenea/atenea-workspace-activation-v1.sh"
@@ -47,10 +48,10 @@ PROJECT_TRANSITION_TARGET_COMMIT="615e539d1f2622a4ac2568ba7697b876d49ae33e"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
-SERVICE_TEMPLATE_SHA256="4bd227e39c93e69114f20fa3bc518b588df352fa4d8cddd8d0877c1194a354e4"
+SERVICE_TEMPLATE_SHA256="d59c5940d9810a30db5000dec26d78d91ab21f15e2b735a4db5760e16da53356"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="bf8ff53c0caec2a53ea94d3dd9548a3330c8227d198624706f3854f377c3ab8e"
-VALIDATION_MEDIATOR_SHA256="e66d477e1038a0797702177ee612fae105ab733968690fc1a85e73a3260fd5e9"
+PROGRAM_SHA256="c662c1db8cd42dd484631bed295c82f81893e93e83d1509800fc63ab15dca75f"
+VALIDATION_MEDIATOR_SHA256="e7339c3dc68050b3315b70649bfaee0399d4d2b34c4f52bb26dcd036d3eb9d7d"
 PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="7d42b734b76adbfd77538404faaba5502591c152bf1977852e503d0bde16a1a3"
 PROJECT_RUNNER_SHA256="a1f0275d7e17fab255b9d7432f60b2de07c5039495ed8d2759d727500ecfb615"
@@ -152,11 +153,23 @@ verify_project_runner_sudoers() {
 
 verify_validation_sudoers() {
   mapfile -t validation_rules < <(grep -F -- "$VALIDATION_MEDIATOR" "$SUDOERS_FILE")
-  [[ "${#validation_rules[@]}" -eq 4 \
+  [[ "${#validation_rules[@]}" -eq 16 \
       && "${validation_rules[0]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR BACKEND_TEST *" \
       && "${validation_rules[1]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR WEB_BUILD *" \
       && "${validation_rules[2]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR ANDROID_BUILD *" \
-      && "${validation_rules[3]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR PLAYWRIGHT_ACCEPTANCE *" ]] \
+      && "${validation_rules[3]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR PLAYWRIGHT_ACCEPTANCE *" \
+      && "${validation_rules[4]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR start BACKEND_TEST *" \
+      && "${validation_rules[5]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR inspect BACKEND_TEST *" \
+      && "${validation_rules[6]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR cancel BACKEND_TEST *" \
+      && "${validation_rules[7]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR start WEB_BUILD *" \
+      && "${validation_rules[8]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR inspect WEB_BUILD *" \
+      && "${validation_rules[9]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR cancel WEB_BUILD *" \
+      && "${validation_rules[10]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR start ANDROID_BUILD *" \
+      && "${validation_rules[11]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR inspect ANDROID_BUILD *" \
+      && "${validation_rules[12]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR cancel ANDROID_BUILD *" \
+      && "${validation_rules[13]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR start PLAYWRIGHT_ACCEPTANCE *" \
+      && "${validation_rules[14]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR inspect PLAYWRIGHT_ACCEPTANCE *" \
+      && "${validation_rules[15]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR cancel PLAYWRIGHT_ACCEPTANCE *" ]] \
     || fail "validation sudo authority is not exact"
 }
 
@@ -284,6 +297,7 @@ plan() {
     --arg protocol "agent-run-worker/v1" \
     --arg synthetic_capability "synthetic-routing-v1" \
     --arg development_change_capability "development-change-workspace/v1" \
+    --arg validation_capability "closed-validation-broker/v1" \
     --arg project_capability "project-codex-v1" \
     '{
       action: $action,
@@ -292,7 +306,7 @@ plan() {
       port: $port,
       controlPlaneIp: (if $control_plane_ip == "" then null else $control_plane_ip end),
       protocol: $protocol,
-      capabilities: [$synthetic_capability, $development_change_capability],
+      capabilities: [$synthetic_capability, $development_change_capability, $validation_capability],
       availableDisabledCapabilities: [$project_capability],
       normalCapacity: 4,
       heavyCapacity: 2,
@@ -597,6 +611,7 @@ apply_install() {
   install -o root -g root -m 0755 "$SCRIPT_DIR/install-agent-run-worker-v1.sh" "$INSTALLER"
   install -d -o root -g atenea -m 0750 /etc/atenea-worker
   install_exact_directory atenea-worker atenea 0700 "$STATE_DIR"
+  install_exact_directory root atenea 0750 "$VALIDATION_JOURNAL_ROOT"
   prepare_development_change_workspace_root
   prepare_materialization_root
   install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT"
@@ -628,6 +643,11 @@ apply_install() {
     printf 'atenea-worker ALL=(root) NOPASSWD: %s WEB_BUILD *\n' "$VALIDATION_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ANDROID_BUILD *\n' "$VALIDATION_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s PLAYWRIGHT_ACCEPTANCE *\n' "$VALIDATION_MEDIATOR"
+    for validation_definition in BACKEND_TEST WEB_BUILD ANDROID_BUILD PLAYWRIGHT_ACCEPTANCE; do
+      printf 'atenea-worker ALL=(root) NOPASSWD: %s start %s *\n' "$VALIDATION_MEDIATOR" "$validation_definition"
+      printf 'atenea-worker ALL=(root) NOPASSWD: %s inspect %s *\n' "$VALIDATION_MEDIATOR" "$validation_definition"
+      printf 'atenea-worker ALL=(root) NOPASSWD: %s cancel %s *\n' "$VALIDATION_MEDIATOR" "$validation_definition"
+    done
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ensure *\n' "$ROLE_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s --registry %s --release-root %s --release-owner-uid %s\n' \
       "$CODEX_ACTIVATE_MEDIATOR" "$CODEX_UPDATE_REGISTRY" "$CODEX_RELEASE_ROOT" "$(id -u atenea-worker)"
@@ -678,6 +698,8 @@ verify() {
     || fail "token file ownership or mode is invalid"
   [[ "$(stat -c '%a:%U:%G' "$STATE_DIR")" == "700:atenea-worker:atenea" ]] \
     || fail "state directory ownership or mode is invalid"
+  [[ "$(stat -c '%a:%U:%G' "$VALIDATION_JOURNAL_ROOT")" == "750:root:atenea" ]] \
+    || fail "validation journal ownership or mode is invalid"
   verify_development_change_workspace_root
   verify_attachment_root
   verify_materialization_parent

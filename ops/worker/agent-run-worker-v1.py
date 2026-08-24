@@ -37,6 +37,8 @@ CODEX_UPDATE_ACTIVATE_CAPABILITY = "codex-update-activate-v1"
 CODEX_UPDATE_ROLLBACK_CAPABILITY = "codex-update-rollback-v1"
 DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
 DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
+CLOSED_VALIDATION_CAPABILITY = "closed-validation-broker/v1"
+CLOSED_VALIDATION_PATH_PREFIX = "/v1/project-workspaces/validations/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
 CODEX_VERSION = "0.145.0"
 CODEX_MODELS = [
@@ -196,10 +198,32 @@ SOURCE_TREE_FINGERPRINT_KEYS = {
     "sessionId", "workspaceIdentity", "projectId", "repository", "branch",
     "commit", "manifestSha256",
 }
-VALIDATION_KEYS = {
+LEGACY_VALIDATION_KEYS = {
     "validationId", "sessionId", "workspaceIdentity", "projectId",
     "repository", "branch", "commit", "manifestSha256", "operation",
     "definitionRevision", "sourceTreeFingerprintSha256",
+}
+VALIDATION_START_KEYS = {
+    "schemaVersion", "protocolVersion", "operationId", "sessionId",
+    "workspaceIdentity", "projectId", "repository", "branch", "commit",
+    "manifestSha256", "operation", "definitionRevision",
+    "sourceTreeFingerprintSha256",
+}
+VALIDATION_EXACT_KEYS = {
+    "schemaVersion", "protocolVersion", "operationId", "sessionId",
+    "workspaceIdentity", "projectId",
+}
+VALIDATION_NON_TERMINAL = {
+    "QUEUED", "RUNNING", "CANCELLING", "RECONCILING",
+}
+VALIDATION_TERMINAL = {
+    "SUCCEEDED", "CANDIDATE_FAILED", "INFRASTRUCTURE_FAILED",
+    "POLICY_FAILED", "VALIDATION_FAILED", "OWNERSHIP_FAILED", "CANCELLED",
+}
+VALIDATION_STATES = VALIDATION_NON_TERMINAL | VALIDATION_TERMINAL
+VALIDATION_TERMINAL_CAUSES = {
+    "NONE", "CANDIDATE", "INFRASTRUCTURE", "POLICY", "VALIDATION",
+    "OWNERSHIP", "CANCELLED",
 }
 REPOSITORY_ROLE_KEYS = {
     "sessionId", "workspaceIdentity", "changeIdentity", "codeCommit",
@@ -260,10 +284,10 @@ EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
 }
 VALIDATION_DEFINITIONS = {
-    "BACKEND_TEST": ("atenea-backend-test-v1", 960),
-    "WEB_BUILD": ("atenea-web-build-v1", 660),
-    "ANDROID_BUILD": ("atenea-android-build-v1", 1260),
-    "PLAYWRIGHT_ACCEPTANCE": ("atenea-playwright-acceptance-v1", 660),
+    "BACKEND_TEST": ("atenea-backend-test-v1", 960, "NORMAL"),
+    "WEB_BUILD": ("atenea-web-build-v1", 660, "NORMAL"),
+    "ANDROID_BUILD": ("atenea-android-build-v1", 1260, "HEAVY"),
+    "PLAYWRIGHT_ACCEPTANCE": ("atenea-playwright-acceptance-v1", 660, "HEAVY"),
 }
 PROJECT_ID = "atenea"
 PROJECT_REPOSITORY = "https://github.com/jlnieto/atenea.git"
@@ -839,6 +863,7 @@ class WorkerState:
         self.validations: dict[str, dict[str, Any]] = {}
         self.unactivated_workspace_releases: dict[str, dict[str, Any]] = {}
         self.threads: dict[str, threading.Thread] = {}
+        self.validation_threads: dict[str, threading.Thread] = {}
         self.processes: dict[str, subprocess.Popen[str]] = {}
         self.scheduler: threading.Thread | None = None
         self.codex_update_in_progress = False
@@ -915,18 +940,14 @@ class WorkerState:
             validate_workspace_release_receipt(
                 value.get("request"), self.worker_id, value.get("receipt")
             )
-        for validation in self.validations.values():
-            if validation.get("status") == "RUNNING":
-                validation["status"] = "BLOCKED"
-                validation["exitCode"] = None
-                validation["durationMillis"] = max(0, int(validation.get("durationMillis") or 0))
-                validation["artifactManifestSha256"] = hashlib.sha256(
-                    f"{validation.get('validationId')}:worker-restart".encode()
-                ).hexdigest()
-                validation["summary"] = (
-                    "Worker restarted; the persisted validation requires an exact retry"
-                )
-                validation["finishedAt"] = utc_now()
+        for operation_id, validation in self.validations.items():
+            self._upgrade_legacy_validation(operation_id, validation)
+            if validation.get("state") in {"RUNNING", "CANCELLING"}:
+                validation["state"] = "RECONCILING"
+                validation["transportState"] = "UNCERTAIN"
+                validation["summary"] = "Recovering the durable validation state"
+                validation["revision"] += 1
+                validation["updatedAt"] = utc_now()
         for execution in self.executions.values():
             execution.setdefault("progressEvents", [])
             execution.setdefault(
@@ -980,6 +1001,35 @@ class WorkerState:
         self.scheduler = threading.Thread(target=self._schedule_loop, name="agent-run-scheduler", daemon=True)
         self.scheduler.start()
         self.wakeup.set()
+
+    def _upgrade_legacy_validation(
+        self, operation_id: str, validation: dict[str, Any]
+    ) -> None:
+        """Read the predecessor synchronous record without replaying it."""
+        if "state" in validation:
+            return
+        legacy_status = validation.pop("status", "BLOCKED")
+        state = {
+            "SUCCEEDED": "SUCCEEDED",
+            "FAILED": "CANDIDATE_FAILED",
+            "BLOCKED": "INFRASTRUCTURE_FAILED",
+        }.get(legacy_status, "INFRASTRUCTURE_FAILED")
+        validation["legacyRequestFingerprint"] = validation["requestFingerprint"]
+        validation["operationId"] = validation.pop("validationId", operation_id)
+        validation["schemaVersion"] = 1
+        validation["protocolVersion"] = CLOSED_VALIDATION_CAPABILITY
+        validation.setdefault("projectId", PROJECT_ID)
+        validation.setdefault("sourceRevision", None)
+        validation["validationDefinition"] = validation.pop("operation")
+        validation["state"] = state
+        validation["terminalCause"] = {
+            "SUCCEEDED": "NONE",
+            "CANDIDATE_FAILED": "CANDIDATE",
+            "INFRASTRUCTURE_FAILED": "INFRASTRUCTURE",
+        }[state]
+        validation["transportState"] = "CONFIRMED"
+        validation.setdefault("revision", 1)
+        validation.setdefault("updatedAt", validation.get("finishedAt") or utc_now())
 
     def _resolve_uncertain_project_executions(self) -> None:
         changed = False
@@ -1073,7 +1123,7 @@ class WorkerState:
         if self.scheduler:
             self.scheduler.join(timeout=5)
         with self.lock:
-            threads = list(self.threads.values())
+            threads = [*self.threads.values(), *self.validation_threads.values()]
             processes = list(self.processes.values())
         for process in processes:
             if process.poll() is None:
@@ -1083,16 +1133,35 @@ class WorkerState:
 
     def health(self) -> dict[str, Any]:
         with self.lock:
-            normal = sum(1 for item in self.executions.values() if item["status"] in {"STARTING", "RUNNING"} )
+            normal = sum(
+                1 for item in self.executions.values()
+                if item["status"] in {"STARTING", "RUNNING"}
+            ) + len(self.validation_threads)
             heavy = sum(
                 1 for item in self.executions.values()
                 if item["status"] in {"STARTING", "RUNNING"} and item["workloadClass"] == "HEAVY"
+            ) + sum(
+                1 for operation_id in self.validation_threads
+                if self.validations[operation_id]["workloadClass"] == "HEAVY"
             )
-            queued = sum(1 for item in self.executions.values() if item["status"] in {"QUEUED", "RECONCILING"})
+            queued = sum(
+                1 for item in self.executions.values()
+                if item["status"] in {"QUEUED", "RECONCILING"}
+            ) + sum(
+                1 for item in self.validations.values() if item["state"] == "QUEUED"
+            )
             capabilities = [SYNTHETIC_CAPABILITY, CODEX_CATALOG_CAPABILITY]
             project_selection_enabled = self._project_selection_enabled()
             if project_selection_enabled:
                 capabilities.extend([PROJECT_CAPABILITY, PROJECT_V2_CAPABILITY])
+            validation_available = (
+                self.project_validation_mediator is not None
+                and self.project_validation_mediator.is_file()
+                and not self.project_validation_mediator.is_symlink()
+                and os.access(self.project_validation_mediator, os.X_OK)
+            )
+            if validation_available:
+                capabilities.append(CLOSED_VALIDATION_CAPABILITY)
             change_workspace_available = (
                 self.development_change_workspace_mediator is not None
                 and self.development_change_workspace_mediator.is_file()
@@ -2418,190 +2487,227 @@ class WorkerState:
             "valuesExposed": False,
         }
 
-    def run_validation(self, request: dict[str, Any]) -> dict[str, Any]:
-        if set(request) != VALIDATION_KEYS:
-            raise ProtocolError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_validation_request",
-                "validation request fields are invalid",
-            )
-        try:
-            validation_id = str(uuid.UUID(request.get("validationId")))
-        except (ValueError, TypeError, AttributeError):
-            raise ProtocolError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_validation",
-                "validationId must be a canonical UUID",
-            )
-        operation = request.get("operation")
-        definition = VALIDATION_DEFINITIONS.get(operation)
-        if (
-            validation_id != request.get("validationId")
-            or definition is None
-            or request.get("definitionRevision") != definition[0]
-            or not isinstance(request.get("sourceTreeFingerprintSha256"), str)
-            or re.fullmatch(r"[0-9a-f]{64}", request["sourceTreeFingerprintSha256"]) is None
-        ):
-            raise ProtocolError(
-                HTTPStatus.FORBIDDEN,
-                "validation_authority_conflict",
-                "validation definition is not exact",
-            )
-        source_request = {
-            key: request[key]
-            for key in SOURCE_TREE_FINGERPRINT_KEYS
-        }
+    def start_validation(
+        self, request: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        self._validate_validation_start_shape(request)
+        operation_id = request["operationId"]
+        request_fingerprint = canonical_hash(request)
+        with self.lock:
+            existing = self.validations.get(operation_id)
+            if existing is not None:
+                if existing["requestFingerprint"] != request_fingerprint:
+                    raise ProtocolError(
+                        HTTPStatus.CONFLICT,
+                        "validation_identity_conflict",
+                        "operationId already owns a different immutable request",
+                        worker_error_envelope(
+                            "VALIDATION_IDENTITY_CONFLICT", "OWNERSHIP", False,
+                            "CONTACT_PLATFORM_ADMINISTRATOR",
+                        ),
+                    )
+                return self._public_validation(existing), False
+
+        source_request = {key: request[key] for key in SOURCE_TREE_FINGERPRINT_KEYS}
         source = self.fingerprint_source_tree(source_request)
         if source["fingerprintSha256"] != request["sourceTreeFingerprintSha256"]:
             raise ProtocolError(
                 HTTPStatus.CONFLICT,
                 "source_tree_changed",
                 "source tree changed before validation admission",
+                worker_error_envelope(
+                    "VALIDATION_SOURCE_CHANGED", "VALIDATION", False, "NONE"
+                ),
             )
 
-        request_fingerprint = canonical_hash(request)
+        definition = VALIDATION_DEFINITIONS[request["operation"]]
+        now = utc_now()
+        validation = {
+            "schemaVersion": 1,
+            "protocolVersion": CLOSED_VALIDATION_CAPABILITY,
+            "operationId": operation_id,
+            "sessionId": request["sessionId"],
+            "workspaceIdentity": request["workspaceIdentity"],
+            "projectId": request["projectId"],
+            "sourceRevision": request["commit"],
+            "sourceTreeFingerprintSha256": request["sourceTreeFingerprintSha256"],
+            "validationDefinition": request["operation"],
+            "definitionRevision": request["definitionRevision"],
+            "requestFingerprint": request_fingerprint,
+            "workloadClass": definition[2],
+            "state": "QUEUED",
+            "terminalCause": "NONE",
+            "transportState": "CONFIRMED",
+            "cancelRequested": False,
+            "exitCode": None,
+            "durationMillis": 0,
+            "artifactManifestSha256": None,
+            "summary": "Closed validation is queued for admission",
+            "valuesExposed": False,
+            "createdAt": now,
+            "startedAt": None,
+            "finishedAt": None,
+            "updatedAt": now,
+            "revision": 1,
+        }
         with self.lock:
-            existing = self.validations.get(validation_id)
+            existing = self.validations.get(operation_id)
             if existing is not None:
                 if existing["requestFingerprint"] != request_fingerprint:
                     raise ProtocolError(
                         HTTPStatus.CONFLICT,
                         "validation_identity_conflict",
+                        "operationId already owns a different immutable request",
+                    )
+                return self._public_validation(existing), False
+            self.validations[operation_id] = validation
+            self._persist()
+            self.wakeup.set()
+            return self._public_validation(validation), True
+
+    def inspect_validation(self, request: dict[str, Any]) -> dict[str, Any]:
+        validation = self._exact_validation(request)
+        if validation["state"] == "RECONCILING":
+            self._reconcile_validation_once(validation["operationId"])
+        with self.lock:
+            return self._public_validation(self.validations[validation["operationId"]])
+
+    def cancel_validation(self, request: dict[str, Any]) -> dict[str, Any]:
+        validation = self._exact_validation(request)
+        operation_id = validation["operationId"]
+        with self.lock:
+            validation = self.validations[operation_id]
+            if validation["state"] in VALIDATION_TERMINAL:
+                return self._public_validation(validation)
+            validation["cancelRequested"] = True
+            if (
+                validation["state"] == "QUEUED"
+                and operation_id not in self.validation_threads
+            ):
+                self._finish_validation(
+                    validation, "CANCELLED", "CANCELLED",
+                    "Closed validation was cancelled",
+                )
+            else:
+                validation["state"] = "CANCELLING"
+                validation["summary"] = "Closed validation cancellation is in progress"
+                validation["revision"] += 1
+                validation["updatedAt"] = utc_now()
+                self._persist()
+                self.wakeup.set()
+            return self._public_validation(validation)
+
+    def run_validation(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Compatibility adapter for the predecessor synchronous endpoint."""
+        if set(request) != LEGACY_VALIDATION_KEYS:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_validation_request",
+                "validation request fields are invalid",
+            )
+        with self.lock:
+            existing = self.validations.get(str(request.get("validationId")))
+            if existing is not None and "legacyRequestFingerprint" in existing:
+                if existing["legacyRequestFingerprint"] != canonical_hash(request):
+                    raise ProtocolError(
+                        HTTPStatus.CONFLICT,
+                        "validation_identity_conflict",
                         "validationId already owns a different immutable request",
                     )
-                return self._public_validation(existing)
-            now = utc_now()
-            validation = {
-                "validationId": validation_id,
-                "sessionId": request["sessionId"],
-                "workspaceIdentity": request["workspaceIdentity"],
-                "operation": operation,
-                "definitionRevision": definition[0],
-                "sourceTreeFingerprintSha256": request["sourceTreeFingerprintSha256"],
-                "requestFingerprint": request_fingerprint,
-                "status": "RUNNING",
-                "exitCode": None,
-                "durationMillis": 0,
-                "artifactManifestSha256": None,
-                "summary": "Bounded validation is running",
-                "valuesExposed": False,
-                "createdAt": now,
-                "finishedAt": None,
-            }
-            self.validations[validation_id] = validation
-            self._persist()
-
-        started = time.monotonic()
-        mediator = self.project_validation_mediator
-        if mediator is None or not mediator.is_file():
-            return self._finish_validation(
-                validation_id,
-                "BLOCKED",
-                None,
-                started,
-                hashlib.sha256(b"validation mediator unavailable").hexdigest(),
-                "Validation mediator is unavailable",
-            )
-        try:
-            completed = subprocess.run(
-                [
-                    *self.privilege_command,
-                    str(mediator),
-                    operation,
-                    request["sessionId"],
-                    request["sourceTreeFingerprintSha256"],
-                    validation_id,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=definition[1],
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return self._finish_validation(
-                validation_id,
-                "BLOCKED",
-                None,
-                started,
-                hashlib.sha256(f"{operation}:timeout".encode()).hexdigest(),
-                "Validation exceeded its finite timeout",
-            )
-        except OSError:
-            return self._finish_validation(
-                validation_id,
-                "BLOCKED",
-                None,
-                started,
-                hashlib.sha256(f"{operation}:unavailable".encode()).hexdigest(),
-                "Validation mediator could not be started",
-            )
-        if completed.returncode != 0:
-            return self._finish_validation(
-                validation_id,
-                "BLOCKED",
-                None,
-                started,
-                hashlib.sha256(f"{operation}:mediator-failed".encode()).hexdigest(),
-                "Validation mediator failed closed",
-            )
-        try:
-            result = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            result = None
-        required = {
-            "validationId", "sessionId", "operation", "definitionRevision",
-            "sourceTreeFingerprintSha256", "status", "exitCode",
-            "durationMillis", "artifactManifestSha256", "summary",
-            "valuesExposed",
+                return self._legacy_public_validation(existing)
+        durable_request = {
+            "schemaVersion": 1,
+            "protocolVersion": CLOSED_VALIDATION_CAPABILITY,
+            "operationId": request["validationId"],
+            **{key: value for key, value in request.items() if key != "validationId"},
         }
+        operation, _created = self.start_validation(durable_request)
+        operation_id = operation["operationId"]
+        if self.scheduler is None and operation["state"] not in VALIDATION_TERMINAL:
+            self._execute_validation(operation_id)
+        deadline = time.monotonic() + VALIDATION_DEFINITIONS[request["operation"]][1]
+        exact = {
+            key: durable_request[key] for key in VALIDATION_EXACT_KEYS
+        }
+        while operation["state"] not in VALIDATION_TERMINAL:
+            if time.monotonic() >= deadline:
+                return self._legacy_public_validation(operation)
+            time.sleep(0.05)
+            operation = self.inspect_validation(exact)
+        return self._legacy_public_validation(operation)
+
+    def _validate_validation_start_shape(self, request: dict[str, Any]) -> None:
         if (
-            not isinstance(result, dict)
-            or set(result) != required
-            or result.get("validationId") != validation_id
-            or result.get("sessionId") != request["sessionId"]
-            or result.get("operation") != operation
-            or result.get("definitionRevision") != definition[0]
-            or result.get("sourceTreeFingerprintSha256")
-                != request["sourceTreeFingerprintSha256"]
-            or result.get("status") not in {"SUCCEEDED", "FAILED", "BLOCKED"}
-            or not isinstance(result.get("durationMillis"), int)
-            or result["durationMillis"] < 0
-            or not isinstance(result.get("artifactManifestSha256"), str)
-            or re.fullmatch(r"[0-9a-f]{64}", result["artifactManifestSha256"]) is None
-            or not isinstance(result.get("summary"), str)
-            or not (1 <= len(result["summary"]) <= 500)
-            or result.get("valuesExposed") is not False
-            or (
-                result["status"] == "SUCCEEDED"
-                and result.get("exitCode") != 0
-            )
-            or (
-                result["status"] == "FAILED"
-                and (
-                    not isinstance(result.get("exitCode"), int)
-                    or result["exitCode"] == 0
-                )
-            )
+            not isinstance(request, dict)
+            or set(request) != VALIDATION_START_KEYS
+            or request.get("schemaVersion") != 1
+            or request.get("protocolVersion") != CLOSED_VALIDATION_CAPABILITY
         ):
-            return self._finish_validation(
-                validation_id,
-                "BLOCKED",
-                None,
-                started,
-                hashlib.sha256(f"{operation}:invalid-result".encode()).hexdigest(),
-                "Validation mediator returned an invalid closed result",
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_validation_start_request",
+                "validation start request fields are invalid",
             )
-        return self._finish_validation(
-            validation_id,
-            result["status"],
-            result["exitCode"],
-            started,
-            result["artifactManifestSha256"],
-            result["summary"],
-            duration_millis=result["durationMillis"],
-        )
+        try:
+            operation_id = str(uuid.UUID(request.get("operationId")))
+        except (ValueError, TypeError, AttributeError):
+            operation_id = None
+        definition = VALIDATION_DEFINITIONS.get(request.get("operation"))
+        if (
+            operation_id != request.get("operationId")
+            or definition is None
+            or request.get("definitionRevision") != definition[0]
+            or re.fullmatch(
+                r"[0-9a-f]{64}", str(request.get("sourceTreeFingerprintSha256"))
+            ) is None
+        ):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "validation_authority_conflict",
+                "validation definition is not exact",
+                worker_error_envelope(
+                    "VALIDATION_AUTHORITY_CONFLICT", "POLICY", False, "NONE"
+                ),
+            )
+
+    def _exact_validation(self, request: dict[str, Any]) -> dict[str, Any]:
+        if (
+            not isinstance(request, dict)
+            or set(request) != VALIDATION_EXACT_KEYS
+            or request.get("schemaVersion") != 1
+            or request.get("protocolVersion") != CLOSED_VALIDATION_CAPABILITY
+        ):
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_validation_exact_request",
+                "validation exact request fields are invalid",
+            )
+        try:
+            operation_id = str(uuid.UUID(request.get("operationId")))
+        except (ValueError, TypeError, AttributeError):
+            operation_id = None
+        with self.lock:
+            validation = self.validations.get(str(request.get("operationId")))
+            if validation is None or operation_id != request.get("operationId"):
+                raise ProtocolError(
+                    HTTPStatus.NOT_FOUND,
+                    "validation_not_found",
+                    "validation operation does not exist",
+                )
+            if any(
+                request.get(key) != validation.get(key)
+                for key in ("sessionId", "workspaceIdentity", "projectId")
+            ):
+                raise ProtocolError(
+                    HTTPStatus.FORBIDDEN,
+                    "validation_ownership_conflict",
+                    "validation operation ownership is not exact",
+                    worker_error_envelope(
+                        "VALIDATION_OWNERSHIP_CONFLICT", "OWNERSHIP", False,
+                        "CONTACT_PLATFORM_ADMINISTRATOR",
+                    ),
+                )
+            return dict(validation)
 
     def ensure_repository_roles(self, request: dict[str, Any]) -> dict[str, Any]:
         if set(request) != REPOSITORY_ROLE_KEYS:
@@ -2721,26 +2827,26 @@ class WorkerState:
 
     def _finish_validation(
         self,
-        validation_id: str,
-        status: str,
-        exit_code: int | None,
-        started: float,
-        artifact_manifest_sha256: str,
+        validation: dict[str, Any],
+        state: str,
+        terminal_cause: str,
         summary: str,
+        *,
+        exit_code: int | None = None,
         duration_millis: int | None = None,
+        artifact_manifest_sha256: str | None = None,
     ) -> dict[str, Any]:
         with self.lock:
-            validation = self.validations[validation_id]
-            validation["status"] = status
+            validation["state"] = state
+            validation["terminalCause"] = terminal_cause
+            validation["transportState"] = "CONFIRMED"
             validation["exitCode"] = exit_code
-            validation["durationMillis"] = (
-                duration_millis
-                if duration_millis is not None
-                else int((time.monotonic() - started) * 1000)
-            )
+            validation["durationMillis"] = max(0, duration_millis or 0)
             validation["artifactManifestSha256"] = artifact_manifest_sha256
             validation["summary"] = summary
             validation["finishedAt"] = utc_now()
+            validation["updatedAt"] = validation["finishedAt"]
+            validation["revision"] += 1
             self._persist()
             return self._public_validation(validation)
 
@@ -2748,12 +2854,200 @@ class WorkerState:
         return {
             key: validation.get(key)
             for key in (
-                "validationId", "sessionId", "workspaceIdentity", "operation",
-                "definitionRevision", "sourceTreeFingerprintSha256", "status",
-                "exitCode", "durationMillis", "artifactManifestSha256",
-                "summary", "valuesExposed",
+                "schemaVersion", "protocolVersion", "operationId", "sessionId",
+                "workspaceIdentity", "projectId", "sourceRevision",
+                "sourceTreeFingerprintSha256", "validationDefinition",
+                "definitionRevision", "state", "terminalCause", "transportState",
+                "exitCode", "durationMillis", "artifactManifestSha256", "summary",
+                "createdAt", "startedAt", "finishedAt", "updatedAt", "revision",
+                "valuesExposed",
             )
         }
+
+    def _legacy_public_validation(self, validation: dict[str, Any]) -> dict[str, Any]:
+        legacy_status = {
+            "SUCCEEDED": "SUCCEEDED",
+            "CANDIDATE_FAILED": "FAILED",
+        }.get(validation["state"], "BLOCKED")
+        artifact = validation.get("artifactManifestSha256")
+        if artifact is None:
+            artifact = hashlib.sha256(
+                f"{validation['operationId']}:{validation['state']}".encode()
+            ).hexdigest()
+        return {
+            "validationId": validation["operationId"],
+            "sessionId": validation["sessionId"],
+            "workspaceIdentity": validation["workspaceIdentity"],
+            "operation": validation["validationDefinition"],
+            "definitionRevision": validation["definitionRevision"],
+            "sourceTreeFingerprintSha256": validation["sourceTreeFingerprintSha256"],
+            "status": legacy_status,
+            "exitCode": validation.get("exitCode") if legacy_status == "FAILED" else (
+                0 if legacy_status == "SUCCEEDED" else None
+            ),
+            "durationMillis": validation.get("durationMillis", 0),
+            "artifactManifestSha256": artifact,
+            "summary": validation["summary"],
+            "valuesExposed": False,
+        }
+
+    def _mark_validation_uncertain(self, validation: dict[str, Any]) -> None:
+        with self.lock:
+            if validation["state"] in VALIDATION_TERMINAL:
+                return
+            validation["state"] = "RECONCILING"
+            validation["transportState"] = "UNCERTAIN"
+            validation["summary"] = "Recovering the durable validation state"
+            validation["revision"] += 1
+            validation["updatedAt"] = utc_now()
+            self._persist()
+
+    def _validation_mediator_observation(
+        self, action: str, validation: dict[str, Any]
+    ) -> dict[str, Any]:
+        mediator = self.project_validation_mediator
+        if mediator is None or not mediator.is_file():
+            raise OSError("validation mediator unavailable")
+        completed = subprocess.run(
+            [
+                *self.privilege_command,
+                str(mediator),
+                action,
+                validation["validationDefinition"],
+                validation["sessionId"],
+                validation["sourceTreeFingerprintSha256"],
+                validation["operationId"],
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise ValueError("validation mediator rejected the exact operation")
+        try:
+            observation = strict_json_object(completed.stdout)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            raise ValueError("validation mediator response is invalid") from error
+        required = {
+            "schemaVersion", "protocolVersion", "operationId", "sessionId",
+            "operation", "definitionRevision", "sourceTreeFingerprintSha256",
+            "state", "terminalCause", "exitCode", "durationMillis",
+            "artifactManifestSha256", "summary", "valuesExposed",
+        }
+        expected_cause = {
+            "SUCCEEDED": "NONE",
+            "CANDIDATE_FAILED": "CANDIDATE",
+            "INFRASTRUCTURE_FAILED": "INFRASTRUCTURE",
+            "POLICY_FAILED": "POLICY",
+            "VALIDATION_FAILED": "VALIDATION",
+            "OWNERSHIP_FAILED": "OWNERSHIP",
+            "CANCELLED": "CANCELLED",
+        }
+        if (
+            set(observation) != required
+            or observation.get("schemaVersion") != 1
+            or observation.get("protocolVersion") != CLOSED_VALIDATION_CAPABILITY
+            or observation.get("operationId") != validation["operationId"]
+            or observation.get("sessionId") != validation["sessionId"]
+            or observation.get("operation") != validation["validationDefinition"]
+            or observation.get("definitionRevision") != validation["definitionRevision"]
+            or observation.get("sourceTreeFingerprintSha256")
+                != validation["sourceTreeFingerprintSha256"]
+            or observation.get("state") not in VALIDATION_STATES
+            or observation.get("terminalCause") not in VALIDATION_TERMINAL_CAUSES
+            or observation.get("valuesExposed") is not False
+            or not isinstance(observation.get("durationMillis"), int)
+            or isinstance(observation.get("durationMillis"), bool)
+            or observation["durationMillis"] < 0
+            or not isinstance(observation.get("summary"), str)
+            or not (1 <= len(observation["summary"]) <= 200)
+            or (
+                observation["state"] in VALIDATION_NON_TERMINAL
+                and observation["terminalCause"] != "NONE"
+            )
+            or (
+                observation["state"] in VALIDATION_TERMINAL
+                and observation["terminalCause"] != expected_cause[observation["state"]]
+            )
+            or (
+                observation.get("artifactManifestSha256") is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}", str(observation["artifactManifestSha256"])
+                ) is None
+            )
+            or (observation["state"] == "SUCCEEDED" and observation.get("exitCode") != 0)
+            or (
+                observation["state"] == "CANDIDATE_FAILED"
+                and (
+                    not isinstance(observation.get("exitCode"), int)
+                    or isinstance(observation.get("exitCode"), bool)
+                    or observation["exitCode"] == 0
+                )
+            )
+            or (
+                observation["state"] not in {"SUCCEEDED", "CANDIDATE_FAILED"}
+                and observation.get("exitCode") is not None
+            )
+        ):
+            raise ValueError("validation mediator response is conflicting")
+        return observation
+
+    def _apply_validation_observation(
+        self, validation: dict[str, Any], observation: dict[str, Any]
+    ) -> None:
+        safe_summary = {
+            "QUEUED": "Closed validation is queued for admission",
+            "RUNNING": "Closed validation is running",
+            "CANCELLING": "Closed validation cancellation is in progress",
+            "RECONCILING": "Recovering the durable validation state",
+            "SUCCEEDED": "Closed validation passed",
+            "CANDIDATE_FAILED": "Closed validation failed",
+            "INFRASTRUCTURE_FAILED": "Closed validation failed in infrastructure",
+            "POLICY_FAILED": "Closed validation failed policy checks",
+            "VALIDATION_FAILED": "Closed validation contract was rejected",
+            "OWNERSHIP_FAILED": "Closed validation ownership was rejected",
+            "CANCELLED": "Closed validation was cancelled",
+        }[observation["state"]]
+        with self.lock:
+            if validation["state"] in VALIDATION_TERMINAL:
+                return
+            validation["state"] = observation["state"]
+            validation["terminalCause"] = observation["terminalCause"]
+            validation["transportState"] = "CONFIRMED"
+            validation["exitCode"] = observation["exitCode"]
+            validation["durationMillis"] = observation["durationMillis"]
+            validation["artifactManifestSha256"] = observation[
+                "artifactManifestSha256"
+            ]
+            validation["summary"] = safe_summary
+            if validation["state"] == "RUNNING" and validation["startedAt"] is None:
+                validation["startedAt"] = utc_now()
+            if validation["state"] in VALIDATION_TERMINAL:
+                validation["finishedAt"] = utc_now()
+            validation["updatedAt"] = utc_now()
+            validation["revision"] += 1
+            self._persist()
+
+    def _reconcile_validation_once(self, operation_id: str) -> None:
+        with self.lock:
+            validation = self.validations[operation_id]
+            if validation["state"] in VALIDATION_TERMINAL:
+                return
+        try:
+            observation = self._validation_mediator_observation("inspect", validation)
+        except (OSError, subprocess.TimeoutExpired):
+            self._mark_validation_uncertain(validation)
+            return
+        except ValueError:
+            self._finish_validation(
+                validation, "INFRASTRUCTURE_FAILED", "INFRASTRUCTURE",
+                "Closed validation failed in infrastructure",
+            )
+            return
+        self._apply_validation_observation(validation, observation)
 
     def _source_tree_fingerprint(self, worktree: Path, head: str) -> dict[str, Any]:
         staged = self._z_entries(self._draft_git(worktree, "diff", "--cached", "--name-only", "-z"))
@@ -3646,15 +3940,40 @@ class WorkerState:
             self.wakeup.wait(timeout=0.25)
             self.wakeup.clear()
             with self.lock:
+                # Reattach persisted operations before admitting new work. Their
+                # detached units may still consume the permits they owned before
+                # the worker restart.
+                recovering_validations = sorted(
+                    (
+                        item for item in self.validations.values()
+                        if item["state"] in {"RECONCILING", "CANCELLING"}
+                        and item["operationId"] not in self.validation_threads
+                    ),
+                    key=lambda item: (item["createdAt"], item["operationId"]),
+                )
+                for validation in recovering_validations:
+                    operation_id = validation["operationId"]
+                    thread = threading.Thread(
+                        target=self._execute_validation,
+                        args=(operation_id,),
+                        name=f"closed-validation-{operation_id}",
+                        daemon=True,
+                    )
+                    self.validation_threads[operation_id] = thread
+                    thread.start()
+
                 active_normal = sum(
                     1 for item in self.executions.values()
                     if item["status"] in {"STARTING", "RUNNING"} and item["dispatchId"] in self.threads
-                )
+                ) + len(self.validation_threads)
                 active_heavy = sum(
                     1 for item in self.executions.values()
                     if item["status"] in {"STARTING", "RUNNING"}
                     and item["dispatchId"] in self.threads
                     and item["workloadClass"] == "HEAVY"
+                ) + sum(
+                    1 for operation_id in self.validation_threads
+                    if self.validations[operation_id]["workloadClass"] == "HEAVY"
                 )
                 candidates = sorted(
                     (
@@ -3711,6 +4030,105 @@ class WorkerState:
                     if execution["workloadClass"] == "HEAVY":
                         active_heavy += 1
                     thread.start()
+
+                validation_candidates = sorted(
+                    (
+                        item for item in self.validations.values()
+                        if item["state"] == "QUEUED"
+                        and item["operationId"] not in self.validation_threads
+                    ),
+                    key=lambda item: (item["createdAt"], item["operationId"]),
+                )
+                for validation in validation_candidates:
+                    if (
+                        validation["cancelRequested"]
+                        and validation["state"] == "QUEUED"
+                    ):
+                        self._finish_validation(
+                            validation, "CANCELLED", "CANCELLED",
+                            "Closed validation was cancelled",
+                        )
+                        continue
+                    if active_normal >= self.normal_capacity:
+                        break
+                    if (
+                        validation["workloadClass"] == "HEAVY"
+                        and active_heavy >= self.heavy_capacity
+                    ):
+                        continue
+                    operation_id = validation["operationId"]
+                    thread = threading.Thread(
+                        target=self._execute_validation,
+                        args=(operation_id,),
+                        name=f"closed-validation-{operation_id}",
+                        daemon=True,
+                    )
+                    self.validation_threads[operation_id] = thread
+                    active_normal += 1
+                    if validation["workloadClass"] == "HEAVY":
+                        active_heavy += 1
+                    thread.start()
+
+    def _execute_validation(self, operation_id: str) -> None:
+        try:
+            while not self.stop_event.is_set():
+                with self.lock:
+                    validation = self.validations[operation_id]
+                    state = validation["state"]
+                    cancel_requested = validation["cancelRequested"]
+                    if state in VALIDATION_TERMINAL:
+                        return
+                    if cancel_requested and state == "QUEUED":
+                        self._finish_validation(
+                            validation, "CANCELLED", "CANCELLED",
+                            "Closed validation was cancelled",
+                        )
+                        return
+                    if cancel_requested or state == "CANCELLING":
+                        action = "cancel"
+                    elif state == "QUEUED":
+                        action = "start"
+                    else:
+                        action = "inspect"
+                try:
+                    observation = self._validation_mediator_observation(
+                        action, validation
+                    )
+                except subprocess.TimeoutExpired:
+                    self._mark_validation_uncertain(validation)
+                except OSError:
+                    if action == "start":
+                        self._finish_validation(
+                            validation, "INFRASTRUCTURE_FAILED", "INFRASTRUCTURE",
+                            "Closed validation failed in infrastructure",
+                        )
+                        return
+                    self._mark_validation_uncertain(validation)
+                except ValueError:
+                    terminal_state = (
+                        "VALIDATION_FAILED" if action == "start"
+                        else "INFRASTRUCTURE_FAILED"
+                    )
+                    terminal_cause = (
+                        "VALIDATION" if action == "start" else "INFRASTRUCTURE"
+                    )
+                    self._finish_validation(
+                        validation, terminal_state, terminal_cause,
+                        (
+                            "Closed validation contract was rejected"
+                            if action == "start"
+                            else "Closed validation failed in infrastructure"
+                        ),
+                    )
+                    return
+                else:
+                    self._apply_validation_observation(validation, observation)
+                if self.stop_event.wait(0.25):
+                    return
+        finally:
+            with self.lock:
+                self.validation_threads.pop(operation_id, None)
+                self.wakeup.set()
 
     def _execute(self, dispatch_id: str) -> None:
         try:
@@ -4074,6 +4492,16 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                 return
             if path == "/v1/project-workspaces/source-tree-fingerprint":
                 self._write(HTTPStatus.OK, self.server.state.fingerprint_source_tree(body))
+                return
+            if path == CLOSED_VALIDATION_PATH_PREFIX + "start":
+                validation, created = self.server.state.start_validation(body)
+                self._write(HTTPStatus.ACCEPTED if created else HTTPStatus.OK, validation)
+                return
+            if path == CLOSED_VALIDATION_PATH_PREFIX + "inspect":
+                self._write(HTTPStatus.OK, self.server.state.inspect_validation(body))
+                return
+            if path == CLOSED_VALIDATION_PATH_PREFIX + "cancel":
+                self._write(HTTPStatus.OK, self.server.state.cancel_validation(body))
                 return
             if path == "/v1/project-workspaces/validations":
                 self._write(HTTPStatus.OK, self.server.state.run_validation(body))

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import hashlib
 import json
 import os
@@ -11,17 +12,20 @@ import pwd
 import re
 import resource
 import shutil
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, NoReturn
+from typing import IO, Any, Iterator, NoReturn
 
 
 CONFIG = Path("/etc/atenea-worker/project-codex-v1.json")
 ARTIFACT_ROOT = Path("/srv/atenea/artifacts/validations")
+JOURNAL_ROOT = Path("/srv/atenea/worker/validation-broker-v1")
 WORKSPACE_ROOT = Path("/srv/atenea/workspaces/sessions")
 PLAYWRIGHT_CHECK = Path("/usr/local/libexec/atenea/atenea-playwright-validation-v1.js")
 PLAYWRIGHT_IMAGE = (
@@ -40,6 +44,12 @@ UUID_RE = re.compile(
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+DURABLE_PROTOCOL = "closed-validation-broker/v1"
+DURABLE_NON_TERMINAL = {"QUEUED", "RUNNING", "CANCELLING", "RECONCILING"}
+DURABLE_TERMINAL = {
+    "SUCCEEDED", "CANDIDATE_FAILED", "INFRASTRUCTURE_FAILED",
+    "POLICY_FAILED", "VALIDATION_FAILED", "OWNERSHIP_FAILED", "CANCELLED",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,6 +127,11 @@ class Rejected(RuntimeError):
 
 def reject() -> NoReturn:
     raise Rejected("validation authority rejected")
+
+
+def require_root() -> None:
+    if os.geteuid() != 0:
+        reject()
 
 
 def canonical_uuid(value: str) -> bool:
@@ -279,7 +294,7 @@ def sandbox_command(
     artifact_stage: Path,
     resolv_path: Path,
 ) -> list[str]:
-    unit = "atenea-validation-" + validation_id.replace("-", "")
+    unit = "atenea-validation-sandbox-" + validation_id.replace("-", "")
     helper = Path(__file__).resolve()
     runtime_limit = 300 if definition.runner == "playwright" else definition.timeout
     tmpfs = (
@@ -831,7 +846,7 @@ def prepare_session_artifacts(session_id: str) -> Path:
     return ARTIFACT_ROOT / session_id
 
 
-def run_validation(arguments: list[str]) -> int:
+def execute_validation(arguments: list[str]) -> dict:
     if os.geteuid() != 0 or len(arguments) != 4:
         reject()
     operation, session_id, source_sha, validation_id = arguments
@@ -964,27 +979,457 @@ def run_validation(arguments: list[str]) -> int:
             )
         else:
             status, summary, public_exit = "FAILED", "Closed validation failed", exit_code
-        print(
-            json.dumps(
-                {
-                    "validationId": validation_id,
-                    "sessionId": session_id,
-                    "operation": operation,
-                    "definitionRevision": definition.revision,
-                    "sourceTreeFingerprintSha256": source_sha,
-                    "status": status,
-                    "exitCode": public_exit,
-                    "durationMillis": duration,
-                    "artifactManifestSha256": manifest,
-                    "summary": summary,
-                    "valuesExposed": False,
-                },
-                separators=(",", ":"),
-            )
-        )
-        return 0
+        return {
+            "validationId": validation_id,
+            "sessionId": session_id,
+            "operation": operation,
+            "definitionRevision": definition.revision,
+            "sourceTreeFingerprintSha256": source_sha,
+            "status": status,
+            "exitCode": public_exit,
+            "durationMillis": duration,
+            "artifactManifestSha256": manifest,
+            "summary": summary,
+            "valuesExposed": False,
+        }
     finally:
         shutil.rmtree(run_root, ignore_errors=True)
+
+
+def run_validation(arguments: list[str]) -> int:
+    print(json.dumps(execute_validation(arguments), separators=(",", ":")))
+    return 0
+
+
+def durable_unit_name(operation_id: str) -> str:
+    if not canonical_uuid(operation_id):
+        reject()
+    return "atenea-validation-broker-" + operation_id.replace("-", "")
+
+
+def durable_identity(arguments: list[str]) -> dict[str, str]:
+    if len(arguments) != 4:
+        reject()
+    operation, session_id, source_sha, operation_id = arguments
+    definition = DEFINITIONS.get(operation)
+    if (
+        definition is None
+        or not canonical_uuid(session_id)
+        or not canonical_uuid(operation_id)
+        or SHA256_RE.fullmatch(source_sha) is None
+    ):
+        reject()
+    return {
+        "operation": operation,
+        "sessionId": session_id,
+        "sourceTreeFingerprintSha256": source_sha,
+        "operationId": operation_id,
+        "definitionRevision": definition.revision,
+    }
+
+
+def operation_directory(identity: dict[str, str]) -> Path:
+    owner = os.geteuid()
+    try:
+        root_stat = JOURNAL_ROOT.lstat()
+    except OSError:
+        reject()
+    if (
+        not JOURNAL_ROOT.is_dir()
+        or JOURNAL_ROOT.is_symlink()
+        or root_stat.st_uid != owner
+        or root_stat.st_mode & 0o7777 != 0o750
+    ):
+        reject()
+    current = JOURNAL_ROOT
+    for name in (identity["sessionId"], identity["operationId"]):
+        current = current / name
+        if not current.exists():
+            try:
+                current.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+        try:
+            observed = current.lstat()
+        except OSError:
+            reject()
+        if (
+            not current.is_dir()
+            or current.is_symlink()
+            or observed.st_uid != owner
+            or observed.st_mode & 0o7777 != 0o700
+        ):
+            reject()
+    return current
+
+
+@contextmanager
+def locked_operation(identity: dict[str, str]) -> Iterator[Path]:
+    directory = operation_directory(identity)
+    lock_path = directory / "operation-v1.lock"
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        observed = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(observed.st_mode)
+            or observed.st_uid != os.geteuid()
+            or observed.st_mode & 0o7777 != 0o600
+        ):
+            reject()
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield directory
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def durable_fingerprint(identity: dict[str, str]) -> str:
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def load_operation(directory: Path, identity: dict[str, str]) -> dict[str, Any] | None:
+    path = directory / "operation-v1.json"
+    if not path.exists():
+        return None
+    if not exact_regular_file(
+        path, 0o600, uid=os.geteuid(), gid=os.getegid()
+    ):
+        reject()
+    record = load_json(path)
+    if (
+        record.get("protocolVersion") != DURABLE_PROTOCOL
+        or record.get("requestFingerprintSha256") != durable_fingerprint(identity)
+        or any(record.get(key) != value for key, value in identity.items())
+        or record.get("state") not in DURABLE_NON_TERMINAL | DURABLE_TERMINAL
+        or not isinstance(record.get("cancelRequested"), bool)
+    ):
+        reject()
+    return record
+
+
+def write_operation(directory: Path, record: dict[str, Any]) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=".operation-v1.", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, sort_keys=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, directory / "operation-v1.json")
+        directory_descriptor = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def new_operation(identity: dict[str, str]) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "protocolVersion": DURABLE_PROTOCOL,
+        **identity,
+        "requestFingerprintSha256": durable_fingerprint(identity),
+        "state": "QUEUED",
+        "terminalCause": "NONE",
+        "cancelRequested": False,
+        "exitCode": None,
+        "durationMillis": 0,
+        "artifactManifestSha256": None,
+        "summary": "Closed validation is queued for admission",
+        "valuesExposed": False,
+    }
+
+
+def public_operation(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: record.get(key)
+        for key in (
+            "schemaVersion", "protocolVersion", "operationId", "sessionId",
+            "operation", "definitionRevision", "sourceTreeFingerprintSha256",
+            "state", "terminalCause", "exitCode", "durationMillis",
+            "artifactManifestSha256", "summary", "valuesExposed",
+        )
+    }
+
+
+def unit_active(operation_id: str) -> bool:
+    completed = subprocess.run(
+        ["/usr/bin/systemctl", "is-active", "--quiet", durable_unit_name(operation_id)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode in {3, 4}:
+        return False
+    reject()
+
+
+def launch_durable_unit(identity: dict[str, str]) -> None:
+    definition = DEFINITIONS[identity["operation"]]
+    helper = Path(__file__).resolve()
+    command = [
+        "/usr/bin/systemd-run",
+        "--no-block",
+        "--collect",
+        "--quiet",
+        "--service-type=exec",
+        "--unit",
+        durable_unit_name(identity["operationId"]),
+        "--property",
+        f"RuntimeMaxSec={definition.timeout + 120}s",
+        "--property",
+        "KillMode=control-group",
+        "--property",
+        "PrivateTmp=yes",
+        "--property",
+        "PrivateDevices=yes",
+        "--property",
+        "ProtectSystem=strict",
+        "--property",
+        "ProtectHome=read-only",
+        "--property",
+        "ProtectKernelTunables=yes",
+        "--property",
+        "ProtectKernelModules=yes",
+        "--property",
+        "ProtectControlGroups=yes",
+        "--property",
+        "RestrictSUIDSGID=yes",
+        "--property",
+        "LockPersonality=yes",
+        "--property",
+        "RestrictAddressFamilies=AF_UNIX",
+        "--property",
+        "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE",
+        "--property",
+        f"ReadWritePaths={ARTIFACT_ROOT.parent} {JOURNAL_ROOT}",
+        "--property",
+        f"ReadOnlyPaths={WORKSPACE_ROOT} {CONFIG.parent} /run/user",
+        "--",
+        "/usr/bin/python3",
+        str(helper),
+        "--durable-execute",
+        identity["operation"],
+        identity["sessionId"],
+        identity["sourceTreeFingerprintSha256"],
+        identity["operationId"],
+    ]
+    completed = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+    if completed.returncode != 0:
+        reject()
+
+
+def start_durable(arguments: list[str]) -> dict[str, Any]:
+    require_root()
+    identity = durable_identity(arguments)
+    with locked_operation(identity) as directory:
+        record = load_operation(directory, identity)
+        if record is None:
+            record = new_operation(identity)
+            write_operation(directory, record)
+        if record["state"] in DURABLE_TERMINAL:
+            return public_operation(record)
+        if unit_active(identity["operationId"]):
+            record["state"] = "CANCELLING" if record["cancelRequested"] else "RUNNING"
+            record["summary"] = (
+                "Closed validation cancellation is in progress"
+                if record["cancelRequested"]
+                else "Closed validation is running"
+            )
+            write_operation(directory, record)
+            return public_operation(record)
+        if record["state"] != "QUEUED":
+            if record["cancelRequested"]:
+                record.update(
+                    state="CANCELLED", terminalCause="CANCELLED",
+                    summary="Closed validation was cancelled",
+                )
+            else:
+                record.update(
+                    state="INFRASTRUCTURE_FAILED", terminalCause="INFRASTRUCTURE",
+                    summary="Closed validation failed in infrastructure",
+                )
+            write_operation(directory, record)
+            return public_operation(record)
+        launch_durable_unit(identity)
+        latest = load_operation(directory, identity)
+        if latest is not None and latest["state"] in DURABLE_TERMINAL:
+            return public_operation(latest)
+        record["state"] = "RUNNING"
+        record["summary"] = "Closed validation is running"
+        write_operation(directory, record)
+        return public_operation(record)
+
+
+def inspect_durable(arguments: list[str]) -> dict[str, Any]:
+    require_root()
+    identity = durable_identity(arguments)
+    with locked_operation(identity) as directory:
+        record = load_operation(directory, identity)
+        if record is None:
+            reject()
+        if record["state"] in DURABLE_TERMINAL:
+            return public_operation(record)
+        if unit_active(identity["operationId"]):
+            record["state"] = "CANCELLING" if record["cancelRequested"] else "RUNNING"
+            record["summary"] = (
+                "Closed validation cancellation is in progress"
+                if record["cancelRequested"]
+                else "Closed validation is running"
+            )
+        elif record["state"] == "QUEUED":
+            pass
+        elif record["cancelRequested"]:
+            record.update(
+                state="CANCELLED", terminalCause="CANCELLED",
+                summary="Closed validation was cancelled",
+            )
+        else:
+            record.update(
+                state="INFRASTRUCTURE_FAILED", terminalCause="INFRASTRUCTURE",
+                summary="Closed validation failed in infrastructure",
+            )
+        write_operation(directory, record)
+        return public_operation(record)
+
+
+def cancel_durable(arguments: list[str]) -> dict[str, Any]:
+    require_root()
+    identity = durable_identity(arguments)
+    active = False
+    with locked_operation(identity) as directory:
+        record = load_operation(directory, identity)
+        if record is None:
+            reject()
+        if record["state"] in DURABLE_TERMINAL:
+            return public_operation(record)
+        active = unit_active(identity["operationId"])
+        record["cancelRequested"] = True
+        if active:
+            record["state"] = "CANCELLING"
+            record["summary"] = "Closed validation cancellation is in progress"
+        else:
+            record.update(
+                state="CANCELLED", terminalCause="CANCELLED",
+                summary="Closed validation was cancelled",
+            )
+        write_operation(directory, record)
+    if active:
+        completed = subprocess.run(
+            ["/usr/bin/systemctl", "stop", durable_unit_name(identity["operationId"])],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return inspect_durable(arguments)
+        with locked_operation(identity) as directory:
+            record = load_operation(directory, identity)
+            if record is None:
+                reject()
+            if record["state"] not in DURABLE_TERMINAL:
+                record.update(
+                    state="CANCELLED", terminalCause="CANCELLED",
+                    summary="Closed validation was cancelled",
+                )
+                write_operation(directory, record)
+            return public_operation(record)
+    return inspect_durable(arguments)
+
+
+def execute_durable(arguments: list[str]) -> int:
+    identity = durable_identity(arguments)
+    require_root()
+    with locked_operation(identity) as directory:
+        record = load_operation(directory, identity)
+        if record is None:
+            reject()
+        if record["cancelRequested"]:
+            record.update(
+                state="CANCELLED", terminalCause="CANCELLED",
+                summary="Closed validation was cancelled",
+            )
+            write_operation(directory, record)
+            return 0
+        record["state"] = "RUNNING"
+        record["summary"] = "Closed validation is running"
+        write_operation(directory, record)
+    try:
+        result = execute_validation(arguments)
+        state = {
+            "SUCCEEDED": "SUCCEEDED",
+            "FAILED": "CANDIDATE_FAILED",
+            "BLOCKED": "INFRASTRUCTURE_FAILED",
+        }[result["status"]]
+        cause = {
+            "SUCCEEDED": "NONE",
+            "CANDIDATE_FAILED": "CANDIDATE",
+            "INFRASTRUCTURE_FAILED": "INFRASTRUCTURE",
+        }[state]
+        terminal = {
+            "state": state,
+            "terminalCause": cause,
+            "exitCode": result["exitCode"],
+            "durationMillis": result["durationMillis"],
+            "artifactManifestSha256": result["artifactManifestSha256"],
+            "summary": {
+                "SUCCEEDED": "Closed validation passed",
+                "CANDIDATE_FAILED": "Closed validation failed",
+                "INFRASTRUCTURE_FAILED": "Closed validation failed in infrastructure",
+            }[state],
+        }
+    except Rejected:
+        terminal = {
+            "state": "OWNERSHIP_FAILED",
+            "terminalCause": "OWNERSHIP",
+            "exitCode": None,
+            "durationMillis": 0,
+            "artifactManifestSha256": None,
+            "summary": "Closed validation ownership was rejected",
+        }
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        terminal = {
+            "state": "INFRASTRUCTURE_FAILED",
+            "terminalCause": "INFRASTRUCTURE",
+            "exitCode": None,
+            "durationMillis": 0,
+            "artifactManifestSha256": None,
+            "summary": "Closed validation failed in infrastructure",
+        }
+    with locked_operation(identity) as directory:
+        record = load_operation(directory, identity)
+        if record is None:
+            reject()
+        if record["cancelRequested"]:
+            record.update(
+                state="CANCELLED", terminalCause="CANCELLED", exitCode=None,
+                artifactManifestSha256=None,
+                summary="Closed validation was cancelled",
+            )
+        else:
+            record.update(terminal)
+        write_operation(directory, record)
+    return 0
 
 
 def main() -> int:
@@ -993,6 +1438,16 @@ def main() -> int:
             return sandbox_exec(sys.argv[2])
         if len(sys.argv) == 3 and sys.argv[1] == "--sandbox-supervise":
             return sandbox_supervise(sys.argv[2])
+        if len(sys.argv) == 6 and sys.argv[1] == "--durable-execute":
+            return execute_durable(sys.argv[2:])
+        if len(sys.argv) == 6 and sys.argv[1] in {"start", "inspect", "cancel"}:
+            result = {
+                "start": start_durable,
+                "inspect": inspect_durable,
+                "cancel": cancel_durable,
+            }[sys.argv[1]](sys.argv[2:])
+            print(json.dumps(result, separators=(",", ":")))
+            return 0
         return run_validation(sys.argv[1:])
     except Rejected as error:
         print(str(error), file=sys.stderr)

@@ -18,6 +18,15 @@ revision and both source/ownership fingerprints. It contains no workspace path,
 host selector, slot, shell or command authority. Versions v1-v3 remain valid
 legacy WorkSession-owned contracts.
 
+`closed-validation-start-v1.request.schema.json`,
+`closed-validation-inspect-v1.request.schema.json`, and
+`closed-validation-cancel-v1.request.schema.json` define the versioned durable
+broker operations. `closed-validation-operation-v1.schema.json` is their common
+sanitized state envelope. The immutable operation binds the project,
+WorkSession workspace, source revision and fingerprint, and one of the four
+reviewed symbolic validation definitions. The predecessor synchronous worker
+route remains available as a compatibility adapter.
+
 The schema deliberately:
 
 - uses argument arrays instead of shell command strings;

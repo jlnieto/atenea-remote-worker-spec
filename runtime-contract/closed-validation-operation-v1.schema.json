@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/closed-validation-operation-v1.schema.json",
+  "title": "Closed validation durable operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "protocolVersion", "operationId", "sessionId",
+    "workspaceIdentity", "projectId", "sourceRevision",
+    "sourceTreeFingerprintSha256", "validationDefinition",
+    "definitionRevision", "state", "terminalCause", "transportState",
+    "exitCode", "durationMillis", "artifactManifestSha256", "summary",
+    "createdAt", "startedAt", "finishedAt", "updatedAt", "revision",
+    "valuesExposed"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "protocolVersion": {"const": "closed-validation-broker/v1"},
+    "operationId": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]{36}$"},
+    "sessionId": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]{36}$"},
+    "workspaceIdentity": {"type": "string", "pattern": "^remote:[a-zA-Z0-9._-]{1,80}:work-session:[0-9a-f-]{36}$"},
+    "projectId": {"const": "atenea"},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTreeFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "validationDefinition": {
+      "enum": ["BACKEND_TEST", "WEB_BUILD", "ANDROID_BUILD", "PLAYWRIGHT_ACCEPTANCE"]
+    },
+    "definitionRevision": {
+      "enum": [
+        "atenea-backend-test-v1", "atenea-web-build-v1",
+        "atenea-android-build-v1", "atenea-playwright-acceptance-v1"
+      ]
+    },
+    "state": {
+      "enum": [
+        "QUEUED", "RUNNING", "CANCELLING", "RECONCILING", "SUCCEEDED",
+        "CANDIDATE_FAILED", "INFRASTRUCTURE_FAILED", "POLICY_FAILED",
+        "VALIDATION_FAILED", "OWNERSHIP_FAILED", "CANCELLED"
+      ]
+    },
+    "terminalCause": {
+      "enum": ["NONE", "CANDIDATE", "INFRASTRUCTURE", "POLICY", "VALIDATION", "OWNERSHIP", "CANCELLED"]
+    },
+    "transportState": {"enum": ["CONFIRMED", "UNCERTAIN"]},
+    "exitCode": {"type": ["integer", "null"]},
+    "durationMillis": {"type": "integer", "minimum": 0},
+    "artifactManifestSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 200},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "startedAt": {"type": ["string", "null"], "format": "date-time"},
+    "finishedAt": {"type": ["string", "null"], "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "revision": {"type": "integer", "minimum": 1},
+    "valuesExposed": {"const": false}
+  }
+}

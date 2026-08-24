@@ -118,6 +118,8 @@ SERVICE_TEMPLATE="${SCRIPT_DIR}/templates/atenea-agent-run-worker-v1.service"
   || fail "service materialization write boundary is not exact"
 [[ "$(grep -Fc '/srv/atenea/worker/workspace-release-v1' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "service release journal write boundary is not exact"
+[[ "$(grep -Fc '/srv/atenea/worker/validation-broker-v1' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
+  || fail "service validation journal write boundary is not exact"
 ! grep -E '^ReadWritePaths=.*attachments-v1' "${SERVICE_TEMPLATE}" >/dev/null \
   || fail "service grants attachment write access"
 grep -F -- '--project-readiness-enabled --unactivated-release-enabled' \
@@ -128,9 +130,9 @@ grep -F -- '--development-change-workspace-mediator /usr/local/libexec/atenea/de
   || fail "development-change workspace mediator boundary is not explicit"
 [[ "$(grep -Fc '/srv/atenea/workspaces/changes' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "development-change workspace write boundary is not exact"
-grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability]' \
+grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $validation_capability]' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
-  || fail "installer plan does not advertise the development-change capability"
+  || fail "installer plan does not advertise the durable worker capabilities"
 
 SESSION_ID=11111111-1111-4111-8111-111111111111
 WORKSPACE_IDENTITY="remote:ax42-01:work-session:${SESSION_ID}"
@@ -361,6 +363,18 @@ printf '%s\n' \
   "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} WEB_BUILD *" \
   "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} ANDROID_BUILD *" \
   "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} PLAYWRIGHT_ACCEPTANCE *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} start BACKEND_TEST *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} inspect BACKEND_TEST *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} cancel BACKEND_TEST *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} start WEB_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} inspect WEB_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} cancel WEB_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} start ANDROID_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} inspect ANDROID_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} cancel ANDROID_BUILD *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} start PLAYWRIGHT_ACCEPTANCE *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} inspect PLAYWRIGHT_ACCEPTANCE *" \
+  "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} cancel PLAYWRIGHT_ACCEPTANCE *" \
   >"${SUDOERS_FILE}"
 verify_validation_sudoers
 printf '%s\n' \
