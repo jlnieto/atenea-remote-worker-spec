@@ -128,6 +128,11 @@ CHANGE_OWNERSHIP_KEYS = {
     "expectedCanonicalCommit", "sourceRevision",
     "sourceFingerprintSha256", "workspaceOwnershipFingerprintSha256",
 }
+CHANGE_SOURCE_IDENTITY_KEYS = {
+    "changeKey", "databaseWorkSessionId", "remoteSessionId",
+    "workspaceIdentity", "executionId", "sourceFingerprintSha256",
+    "workspaceOwnershipFingerprintSha256", "workspaceDirty",
+}
 WORKSPACE_ENSURE_KEYS = {
     "sessionId", "workspaceIdentity", "projectId", "repository", "branch",
     "commit", "manifestSha256", "workspaceBranch",
@@ -4327,14 +4332,18 @@ class WorkerState:
                 "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
                 "progressEvents",
             }
+        if workload["kind"] == PROJECT_V4_CAPABILITY:
+            required_result.add("sourceIdentity")
         progress_events = result.get("progressEvents", []) if isinstance(result, dict) else []
-        string_result = {
-            key: value for key, value in result.items() if key != "progressEvents"
-        } if isinstance(result, dict) else {}
+        string_keys = required_result - {"progressEvents", "sourceIdentity"}
+        source_identity = result.get("sourceIdentity") if isinstance(result, dict) else None
         if (
             not isinstance(result, dict)
             or set(result) != required_result
-            or not all(isinstance(value, str) and value for value in string_result.values())
+            or not all(
+                isinstance(result.get(key), str) and result[key]
+                for key in string_keys
+            )
             or result.get("outputSummary") != workload["kind"] + " completed"
             or (
                 workload["kind"] in {
@@ -4350,6 +4359,10 @@ class WorkerState:
                     "modelId", "reasoningEffort", "catalogRevision", "codexVersion"
                 ))
             )
+            or (
+                workload["kind"] == PROJECT_V4_CAPABILITY
+                and not self._valid_change_source_identity(request, source_identity)
+            )
         ):
             self._finish_project(dispatch_id, "FAILED", "Project runner returned invalid output", None)
             return
@@ -4362,7 +4375,7 @@ class WorkerState:
         self._finish_project(dispatch_id, "SUCCEEDED", "Exact project Codex execution completed", result)
 
     def _finish_project(
-        self, dispatch_id: str, status: str, reason: str, result: dict[str, str] | None
+        self, dispatch_id: str, status: str, reason: str, result: dict[str, Any] | None
     ) -> None:
         with self.lock:
             execution = self.executions[dispatch_id]
@@ -4379,6 +4392,47 @@ class WorkerState:
                 "Execution completed." if status == "SUCCEEDED" else "Execution failed.",
             )
             self._persist()
+
+    def _valid_change_source_identity(
+        self,
+        request: dict[str, Any],
+        source_identity: Any,
+    ) -> bool:
+        if (
+            not isinstance(source_identity, dict)
+            or set(source_identity) != CHANGE_SOURCE_IDENTITY_KEYS
+        ):
+            return False
+        ownership = request["changeOwnership"]
+        exact = {
+            "changeKey": ownership["changeKey"],
+            "databaseWorkSessionId": ownership["databaseWorkSessionId"],
+            "remoteSessionId": ownership["remoteSessionId"],
+            "workspaceIdentity": ownership["workspaceIdentity"],
+            "executionId": request["executionId"],
+        }
+        if any(source_identity.get(key) != value for key, value in exact.items()):
+            return False
+        if (
+            re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(source_identity.get("sourceFingerprintSha256", "")),
+            ) is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(source_identity.get(
+                    "workspaceOwnershipFingerprintSha256", ""
+                )),
+            ) is None
+            or not isinstance(source_identity.get("workspaceDirty"), bool)
+        ):
+            return False
+        return not (
+            source_identity["sourceFingerprintSha256"]
+                == ownership["sourceFingerprintSha256"]
+            and source_identity["workspaceOwnershipFingerprintSha256"]
+                != ownership["workspaceOwnershipFingerprintSha256"]
+        )
 
     def _finish_cancelled(self, execution: dict[str, Any]) -> None:
         execution["status"] = "CANCELLED"

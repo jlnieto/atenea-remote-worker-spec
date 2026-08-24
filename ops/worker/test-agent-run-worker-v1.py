@@ -1741,7 +1741,17 @@ print(json.dumps({
          "message": "Checking the accepted project."}
     ]} if request["workload"]["kind"] in {
         "project-codex-v2", "project-codex-v3", "project-codex-v4"
-    } else {})
+    } else {}),
+    **({"sourceIdentity": {
+        "changeKey": request["changeOwnership"]["changeKey"],
+        "databaseWorkSessionId": request["changeOwnership"]["databaseWorkSessionId"],
+        "remoteSessionId": request["changeOwnership"]["remoteSessionId"],
+        "workspaceIdentity": request["changeOwnership"]["workspaceIdentity"],
+        "executionId": request["executionId"],
+        "sourceFingerprintSha256": request["changeOwnership"]["sourceFingerprintSha256"],
+        "workspaceOwnershipFingerprintSha256": request["changeOwnership"]["workspaceOwnershipFingerprintSha256"],
+        "workspaceDirty": True,
+    }} if request["workload"]["kind"] == "project-codex-v4" else {})
 }))
 """,
             encoding="utf-8",
@@ -1951,6 +1961,16 @@ print(json.dumps({
         self.assertEqual(created["executionId"], duplicate["executionId"])
         self.assertEqual("SUCCEEDED", terminal["status"])
         self.assertEqual("project-codex-v4 completed", terminal["result"]["outputSummary"])
+        source_identity = terminal["result"]["sourceIdentity"]
+        self.assertEqual(
+            request["changeOwnership"]["changeKey"], source_identity["changeKey"]
+        )
+        self.assertEqual(
+            terminal["executionId"], source_identity["executionId"]
+        )
+        self.assertEqual(
+            request["workspaceIdentity"], source_identity["workspaceIdentity"]
+        )
         self.assertEqual(["INSPECT", "INSPECT"], calls_before_replay)
         self.assertEqual(
             calls_before_replay, self.change_mediator_calls.read_text().splitlines()
@@ -1958,6 +1978,32 @@ print(json.dumps({
         durable = self.state.executions[request["dispatchId"]]
         self.assertEqual(request["changeOwnership"], durable["changeOwnership"])
         self.assertNotIn("path", json.dumps(self.state.get(request["dispatchId"])).lower())
+
+    def test_change_source_identity_rejects_foreign_execution_and_ambiguous_fingerprint(self):
+        request = self.change_request()
+        request["executionId"] = str(uuid.uuid4())
+        ownership = request["changeOwnership"]
+        identity = {
+            "changeKey": ownership["changeKey"],
+            "databaseWorkSessionId": ownership["databaseWorkSessionId"],
+            "remoteSessionId": ownership["remoteSessionId"],
+            "workspaceIdentity": ownership["workspaceIdentity"],
+            "executionId": request["executionId"],
+            "sourceFingerprintSha256": "d" * 64,
+            "workspaceOwnershipFingerprintSha256": "e" * 64,
+            "workspaceDirty": True,
+        }
+        self.assertTrue(self.state._valid_change_source_identity(request, identity))
+
+        foreign = json.loads(json.dumps(identity))
+        foreign["executionId"] = str(uuid.uuid4())
+        self.assertFalse(self.state._valid_change_source_identity(request, foreign))
+
+        ambiguous = json.loads(json.dumps(identity))
+        ambiguous["sourceFingerprintSha256"] = ownership[
+            "sourceFingerprintSha256"
+        ]
+        self.assertFalse(self.state._valid_change_source_identity(request, ambiguous))
 
     def test_change_owned_dispatch_rejects_crossed_or_incompatible_ownership(self):
         cases = []

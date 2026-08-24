@@ -203,6 +203,20 @@ class ProjectCodexContractTest(unittest.TestCase):
             "reasoningEffort": "high",
             "catalogRevision": MODULE.CODEX_CATALOG_REVISION,
             "codexVersion": MODULE.CODEX_VERSION,
+            "sourceIdentity": {
+                "changeKey": request["changeOwnership"]["changeKey"],
+                "databaseWorkSessionId": request["changeOwnership"][
+                    "databaseWorkSessionId"
+                ],
+                "remoteSessionId": request["changeOwnership"]["remoteSessionId"],
+                "workspaceIdentity": request["changeOwnership"][
+                    "workspaceIdentity"
+                ],
+                "executionId": "44444444-4444-4444-8444-444444444444",
+                "sourceFingerprintSha256": "c" * 64,
+                "workspaceOwnershipFingerprintSha256": "d" * 64,
+                "workspaceDirty": True,
+            },
         }
         request_validator = Draft202012Validator(
             request_schema, format_checker=FormatChecker()
@@ -1436,6 +1450,22 @@ class ProjectCodexContractTest(unittest.TestCase):
                     (worktree / "tracked.txt").write_text("changed\n", encoding="utf-8")
                     with self.assertRaises(SystemExit):
                         MODULE.validate_change_worktree(runner_request, worktree)
+                    first_post_run = MODULE.post_run_source_identity(
+                        runner_request, worktree
+                    )
+                    self.assertNotEqual(
+                        ownership["sourceFingerprintSha256"],
+                        first_post_run["sourceFingerprintSha256"],
+                    )
+                    self.assertEqual(
+                        ownership["workspaceOwnershipFingerprintSha256"],
+                        first_post_run["workspaceOwnershipFingerprintSha256"],
+                    )
+                    self.assertTrue(first_post_run["workspaceDirty"])
+                    self.assertEqual(
+                        runner_request["executionId"],
+                        first_post_run["executionId"],
+                    )
 
                     observed = mediator.execute(
                         mediator_request("INSPECT", 1), "INSPECT"
@@ -1446,6 +1476,27 @@ class ProjectCodexContractTest(unittest.TestCase):
                     ]
                     ownership["workspaceOwnershipFingerprintSha256"] = observed[
                         "ownershipFingerprintSha256"
+                    ]
+                    self.assertEqual(
+                        mirror, MODULE.validate_change_worktree(runner_request, worktree)
+                    )
+
+                    (worktree / "tracked.txt").write_text(
+                        "changed twice\n", encoding="utf-8"
+                    )
+                    second_post_run = MODULE.post_run_source_identity(
+                        runner_request, worktree
+                    )
+                    self.assertNotEqual(
+                        first_post_run["sourceFingerprintSha256"],
+                        second_post_run["sourceFingerprintSha256"],
+                    )
+                    ownership["sourceRevision"] += 1
+                    ownership["sourceFingerprintSha256"] = second_post_run[
+                        "sourceFingerprintSha256"
+                    ]
+                    ownership["workspaceOwnershipFingerprintSha256"] = second_post_run[
+                        "workspaceOwnershipFingerprintSha256"
                     ]
                     self.assertEqual(
                         mirror, MODULE.validate_change_worktree(runner_request, worktree)
