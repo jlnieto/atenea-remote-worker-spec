@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import io
+import hashlib
 import json
 import tempfile
 import threading
@@ -1076,9 +1077,10 @@ import hashlib
 import json
 import pathlib
 import sys
-operation, session_id, source_sha, validation_id = sys.argv[1:]
+action, operation, session_id, source_sha, validation_id = sys.argv[1:]
 calls = pathlib.Path(__file__).with_name("validation-calls")
-calls.write_text(calls.read_text() + "call\\n" if calls.exists() else "call\\n")
+if action == "start":
+    calls.write_text(calls.read_text() + "call\\n" if calls.exists() else "call\\n")
 definitions = {
     "BACKEND_TEST": "atenea-backend-test-v1",
     "WEB_BUILD": "atenea-web-build-v1",
@@ -1086,16 +1088,19 @@ definitions = {
     "PLAYWRIGHT_ACCEPTANCE": "atenea-playwright-acceptance-v1",
 }
 print(json.dumps({
-    "validationId": validation_id,
+    "schemaVersion": 1,
+    "protocolVersion": "closed-validation-broker/v1",
+    "operationId": validation_id,
     "sessionId": session_id,
     "operation": operation,
     "definitionRevision": definitions[operation],
     "sourceTreeFingerprintSha256": source_sha,
-    "status": "SUCCEEDED",
-    "exitCode": 0,
+    "state": "CANCELLED" if action == "cancel" else "SUCCEEDED",
+    "terminalCause": "CANCELLED" if action == "cancel" else "NONE",
+    "exitCode": None if action == "cancel" else 0,
     "durationMillis": 7,
-    "artifactManifestSha256": hashlib.sha256(validation_id.encode()).hexdigest(),
-    "summary": "Closed validation passed",
+    "artifactManifestSha256": None if action == "cancel" else hashlib.sha256(validation_id.encode()).hexdigest(),
+    "summary": "Closed validation was cancelled" if action == "cancel" else "Closed validation passed",
     "valuesExposed": False,
 }))
 """,
@@ -1165,6 +1170,8 @@ print(json.dumps({"sessionId": session,
         self.state._observe_project_commit = lambda _route: self.accepted_commit
 
     def tearDown(self):
+        if self.state.scheduler is not None:
+            self.state.stop()
         self.temporary.cleanup()
 
     def request(self):
@@ -1274,6 +1281,282 @@ print(json.dumps({"sessionId": session,
             "sourceTreeFingerprintSha256": source["fingerprintSha256"],
         }
 
+    def durable_validation_request(self, validation_id=None, operation="BACKEND_TEST"):
+        legacy = self.validation_request(validation_id)
+        revision = MODULE.VALIDATION_DEFINITIONS[operation][0]
+        return {
+            "schemaVersion": 1,
+            "protocolVersion": MODULE.CLOSED_VALIDATION_CAPABILITY,
+            "operationId": legacy.pop("validationId"),
+            **legacy,
+            "operation": operation,
+            "definitionRevision": revision,
+        }
+
+    @staticmethod
+    def exact_validation(request):
+        return {key: request[key] for key in MODULE.VALIDATION_EXACT_KEYS}
+
+    @staticmethod
+    def mediator_observation(request, state, cause="NONE", exit_code=None):
+        artifact = None
+        if state in {"SUCCEEDED", "CANDIDATE_FAILED"}:
+            artifact = hashlib.sha256(request["operationId"].encode()).hexdigest()
+        return {
+            "schemaVersion": 1,
+            "protocolVersion": MODULE.CLOSED_VALIDATION_CAPABILITY,
+            "operationId": request["operationId"],
+            "sessionId": request["sessionId"],
+            "operation": request["operation"],
+            "definitionRevision": request["definitionRevision"],
+            "sourceTreeFingerprintSha256": request["sourceTreeFingerprintSha256"],
+            "state": state,
+            "terminalCause": cause,
+            "exitCode": exit_code,
+            "durationMillis": 7,
+            "artifactManifestSha256": artifact,
+            "summary": "safe",
+            "valuesExposed": False,
+        }
+
+    def wait_validation(self, request, timeout=3):
+        deadline = time.monotonic() + timeout
+        exact = self.exact_validation(request)
+        while time.monotonic() < deadline:
+            observed = self.state.inspect_validation(exact)
+            if observed["state"] in MODULE.VALIDATION_TERMINAL:
+                return observed
+            time.sleep(0.02)
+        self.fail("validation did not become terminal")
+
+    def test_durable_validation_start_running_terminal(self):
+        request = self.durable_validation_request()
+        release = threading.Event()
+
+        def observe(action, _validation):
+            if action == "start" or not release.is_set():
+                return self.mediator_observation(request, "RUNNING")
+            return self.mediator_observation(request, "SUCCEEDED", exit_code=0)
+
+        with mock.patch.object(
+            self.state, "_validation_mediator_observation", side_effect=observe
+        ):
+            self.state.start()
+            queued, created = self.state.start_validation(request)
+            self.assertTrue(created)
+            self.assertEqual("QUEUED", queued["state"])
+            deadline = time.monotonic() + 3
+            running = queued
+            while running["state"] == "QUEUED":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+                running = self.state.inspect_validation(self.exact_validation(request))
+            self.assertEqual("RUNNING", running["state"])
+            release.set()
+            terminal = self.wait_validation(request)
+        self.assertEqual("SUCCEEDED", terminal["state"])
+        self.assertEqual("NONE", terminal["terminalCause"])
+
+    def test_durable_validation_exact_replay_and_conflict(self):
+        request = self.durable_validation_request()
+        first, created = self.state.start_validation(request)
+        (self.worktree / "untracked.txt").write_text("changed after admission\n")
+        replay, created_again = self.state.start_validation(dict(request))
+        self.assertTrue(created)
+        self.assertFalse(created_again)
+        self.assertEqual(first, replay)
+
+        conflicting = dict(request)
+        conflicting["operation"] = "WEB_BUILD"
+        conflicting["definitionRevision"] = "atenea-web-build-v1"
+        with self.assertRaisesRegex(MODULE.ProtocolError, "different immutable request"):
+            self.state.start_validation(conflicting)
+
+    def test_durable_validation_cancel_before_start_is_repeatable_and_owned(self):
+        request = self.durable_validation_request()
+        self.state.start_validation(request)
+        exact = self.exact_validation(request)
+        first = self.state.cancel_validation(exact)
+        second = self.state.cancel_validation(dict(exact))
+        self.assertEqual(first, second)
+        self.assertEqual("CANCELLED", first["state"])
+        self.assertEqual("CANCELLED", first["terminalCause"])
+
+        foreign = dict(exact)
+        foreign["sessionId"] = str(uuid.uuid4())
+        with self.assertRaisesRegex(MODULE.ProtocolError, "ownership is not exact"):
+            self.state.cancel_validation(foreign)
+
+    def test_durable_validation_cancel_while_running_does_not_touch_other(self):
+        first = self.durable_validation_request()
+        second = self.durable_validation_request()
+
+        def observe(action, validation):
+            request = first if validation["operationId"] == first["operationId"] else second
+            if action == "cancel":
+                return self.mediator_observation(request, "CANCELLED", "CANCELLED")
+            return self.mediator_observation(request, "RUNNING")
+
+        with mock.patch.object(
+            self.state, "_validation_mediator_observation", side_effect=observe
+        ):
+            self.state.start()
+            self.state.start_validation(first)
+            self.state.start_validation(second)
+            deadline = time.monotonic() + 3
+            while self.state.inspect_validation(self.exact_validation(first))["state"] == "QUEUED":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+            self.state.cancel_validation(self.exact_validation(first))
+            cancelled = self.wait_validation(first)
+            other = self.state.inspect_validation(self.exact_validation(second))
+        self.assertEqual("CANCELLED", cancelled["state"])
+        self.assertEqual("RUNNING", other["state"])
+
+    def test_durable_validation_restart_inspect_adopts_terminal_result(self):
+        request = self.durable_validation_request()
+        self.state.start_validation(request)
+        with self.state.lock:
+            stored = self.state.validations[request["operationId"]]
+            stored["state"] = "RUNNING"
+            stored["startedAt"] = MODULE.utc_now()
+            self.state._persist()
+        recovered = MODULE.WorkerState(
+            Path(self.temporary.name) / "state",
+            "ax42-01",
+            project_config=self.config,
+            project_runner=self.runner,
+            project_config_uid=os.getuid(),
+            privilege_command=(),
+            project_validation_mediator=self.validation_mediator,
+        )
+        recovered._observe_project_commit = lambda _route: self.retained_head
+        self.state = recovered
+        with mock.patch.object(
+            recovered,
+            "_validation_mediator_observation",
+            return_value=self.mediator_observation(request, "SUCCEEDED", exit_code=0),
+        ):
+            result = recovered.inspect_validation(self.exact_validation(request))
+        self.assertEqual("SUCCEEDED", result["state"])
+        self.assertEqual("CONFIRMED", result["transportState"])
+
+    def test_validation_capacity_is_server_owned_and_shared(self):
+        self.state.normal_capacity = 2
+        requests = [self.durable_validation_request() for _ in range(3)]
+
+        def observe(_action, validation):
+            request = next(
+                item for item in requests
+                if item["operationId"] == validation["operationId"]
+            )
+            return self.mediator_observation(request, "RUNNING")
+
+        with mock.patch.object(
+            self.state, "_validation_mediator_observation", side_effect=observe
+        ):
+            self.state.start()
+            for request in requests:
+                self.state.start_validation(request)
+            deadline = time.monotonic() + 3
+            states = []
+            while time.monotonic() < deadline:
+                states = [
+                    self.state.inspect_validation(self.exact_validation(request))["state"]
+                    for request in requests
+                ]
+                if states.count("RUNNING") == 2 and states.count("QUEUED") == 1:
+                    break
+                time.sleep(0.02)
+        self.assertEqual(2, states.count("RUNNING"))
+        self.assertEqual(1, states.count("QUEUED"))
+
+    def test_restart_reserves_capacity_for_adopted_validation(self):
+        request = self.durable_validation_request()
+        self.state.start_validation(request)
+        with self.state.lock:
+            self.state.validations[request["operationId"]]["state"] = "RUNNING"
+            self.state._persist()
+        recovered = MODULE.WorkerState(
+            Path(self.temporary.name) / "state",
+            "ax42-01",
+            normal_capacity=1,
+            heavy_capacity=1,
+            project_config=self.config,
+            project_runner=self.runner,
+            project_config_uid=os.getuid(),
+            privilege_command=(),
+            project_validation_mediator=self.validation_mediator,
+        )
+        recovered._observe_project_commit = lambda _route: self.retained_head
+        dispatch = {
+            "dispatchId": str(uuid.uuid4()),
+            "sessionId": str(uuid.uuid4()),
+            "workspaceIdentity": "remote:test:" + str(uuid.uuid4()),
+            "workloadClass": "NORMAL",
+            "leaseGeneration": 1,
+            "workload": {
+                "kind": "synthetic-routing-v1",
+                "message": "queued behind durable validation",
+                "durationMs": 100,
+                "steps": 2,
+            },
+        }
+        recovered.create(dispatch)
+        self.state = recovered
+        with mock.patch.object(
+            recovered,
+            "_validation_mediator_observation",
+            return_value=self.mediator_observation(request, "RUNNING"),
+        ):
+            recovered.start()
+            deadline = time.monotonic() + 3
+            while request["operationId"] not in recovered.validation_threads:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+            self.assertEqual("QUEUED", recovered.get(dispatch["dispatchId"])["status"])
+
+    def test_terminal_causes_and_four_symbolic_definitions_are_preserved(self):
+        expected = {
+            "BACKEND_TEST": "atenea-backend-test-v1",
+            "WEB_BUILD": "atenea-web-build-v1",
+            "ANDROID_BUILD": "atenea-android-build-v1",
+            "PLAYWRIGHT_ACCEPTANCE": "atenea-playwright-acceptance-v1",
+        }
+        for operation, revision in expected.items():
+            request = self.durable_validation_request(operation=operation)
+            queued, _ = self.state.start_validation(request)
+            self.assertEqual(operation, queued["validationDefinition"])
+            self.assertEqual(revision, queued["definitionRevision"])
+
+        candidate = self.durable_validation_request()
+        infrastructure = self.durable_validation_request()
+        self.state.start_validation(candidate)
+        self.state.start_validation(infrastructure)
+        with self.state.lock:
+            self.state._apply_validation_observation(
+                self.state.validations[candidate["operationId"]],
+                self.mediator_observation(
+                    candidate, "CANDIDATE_FAILED", "CANDIDATE", 1
+                ),
+            )
+            self.state._apply_validation_observation(
+                self.state.validations[infrastructure["operationId"]],
+                self.mediator_observation(
+                    infrastructure, "INFRASTRUCTURE_FAILED", "INFRASTRUCTURE"
+                ),
+            )
+        self.assertEqual(
+            "CANDIDATE",
+            self.state.inspect_validation(self.exact_validation(candidate))["terminalCause"],
+        )
+        self.assertEqual(
+            "INFRASTRUCTURE",
+            self.state.inspect_validation(self.exact_validation(infrastructure))[
+                "terminalCause"
+            ],
+        )
+
     def test_closed_validation_is_sanitized_idempotent_and_durable(self):
         request = self.validation_request()
         first = self.state.run_validation(request)
@@ -1300,6 +1583,46 @@ print(json.dumps({"sessionId": session,
         self.assertNotIn("environment", serialized)
         self.assertNotIn("secret-shaped", serialized)
 
+    def test_predecessor_terminal_validation_record_remains_replayable(self):
+        request = self.validation_request()
+        with self.state.lock:
+            self.state.validations[request["validationId"]] = {
+                "validationId": request["validationId"],
+                "sessionId": request["sessionId"],
+                "workspaceIdentity": request["workspaceIdentity"],
+                "operation": request["operation"],
+                "definitionRevision": request["definitionRevision"],
+                "sourceTreeFingerprintSha256": request[
+                    "sourceTreeFingerprintSha256"
+                ],
+                "requestFingerprint": MODULE.canonical_hash(request),
+                "status": "SUCCEEDED",
+                "exitCode": 0,
+                "durationMillis": 7,
+                "artifactManifestSha256": hashlib.sha256(
+                    request["validationId"].encode()
+                ).hexdigest(),
+                "summary": "Closed validation passed",
+                "valuesExposed": False,
+                "createdAt": MODULE.utc_now(),
+                "finishedAt": MODULE.utc_now(),
+            }
+            self.state._persist()
+        recovered = MODULE.WorkerState(
+            Path(self.temporary.name) / "state",
+            "ax42-01",
+            project_config=self.config,
+            project_runner=self.runner,
+            project_config_uid=os.getuid(),
+            privilege_command=(),
+            project_validation_mediator=self.validation_mediator,
+        )
+        recovered._observe_project_commit = lambda _route: self.retained_head
+        result = recovered.run_validation(request)
+        self.assertEqual("SUCCEEDED", result["status"])
+        self.assertEqual(request["validationId"], result["validationId"])
+        self.assertFalse(self.validation_calls.exists())
+
     def test_closed_validation_rejects_altered_authority_before_process(self):
         for key, value in (
             ("operation", "ARBITRARY_COMMAND"),
@@ -1316,27 +1639,40 @@ print(json.dumps({"sessionId": session,
             self.state.run_validation(foreign)
         self.assertFalse(self.validation_calls.exists())
 
-    def test_closed_validation_timeout_is_finite_sanitized_and_retained(self):
-        request = self.validation_request()
+    def test_closed_validation_lost_start_response_reconciles_without_replay(self):
+        request = self.durable_validation_request()
         original_run = subprocess.run
+        lost = False
 
         def bounded_timeout(command, *args, **kwargs):
-            if str(self.validation_mediator) in command:
-                raise subprocess.TimeoutExpired(command, timeout=900)
+            nonlocal lost
+            if str(self.validation_mediator) in command and not lost:
+                lost = True
+                raise subprocess.TimeoutExpired(command, timeout=30)
             return original_run(command, *args, **kwargs)
 
+        self.state.start()
         with mock.patch.object(
                 MODULE.subprocess,
                 "run",
                 side_effect=bounded_timeout,
         ):
-            result = self.state.run_validation(request)
+            started, created = self.state.start_validation(request)
+            self.assertTrue(created)
+            deadline = time.monotonic() + 3
+            result = started
+            while result["state"] not in MODULE.VALIDATION_TERMINAL:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+                result = self.state.inspect_validation(self.exact_validation(request))
 
-        self.assertEqual("BLOCKED", result["status"])
-        self.assertIsNone(result["exitCode"])
+        self.assertEqual("SUCCEEDED", result["state"])
+        self.assertEqual("CONFIRMED", result["transportState"])
         self.assertRegex(result["artifactManifestSha256"], r"^[0-9a-f]{64}$")
         self.assertFalse(result["valuesExposed"])
-        self.assertEqual(result, self.state.run_validation(request))
+        replay, created_again = self.state.start_validation(request)
+        self.assertFalse(created_again)
+        self.assertEqual(result, replay)
 
     def test_multi_repository_roles_are_fixed_separate_and_sanitized(self):
         request = {
@@ -2524,6 +2860,44 @@ class WorkerHttpTest(unittest.TestCase):
                 method="POST",
             ),
             timeout=2,
+        )
+
+    def test_durable_validation_routes_dispatch_versioned_operations(self):
+        request = {"operation": "opaque-test-request"}
+        response = {"state": "QUEUED", "valuesExposed": False}
+        observed = []
+
+        def start(body):
+            observed.append(("start", body))
+            return response, True
+
+        def inspect(body):
+            observed.append(("inspect", body))
+            return response
+
+        def cancel(body):
+            observed.append(("cancel", body))
+            return {**response, "state": "CANCELLED"}
+
+        self.state.start_validation = start
+        self.state.inspect_validation = inspect
+        self.state.cancel_validation = cancel
+        states = []
+        statuses = []
+        for action in ("start", "inspect", "cancel"):
+            with self.post(
+                MODULE.CLOSED_VALIDATION_PATH_PREFIX + action,
+                request,
+                "t" * 64,
+            ) as http_response:
+                statuses.append(http_response.status)
+                states.append(json.load(http_response)["state"])
+
+        self.assertEqual([202, 200, 200], statuses)
+        self.assertEqual(["QUEUED", "QUEUED", "CANCELLED"], states)
+        self.assertEqual(
+            [("start", request), ("inspect", request), ("cancel", request)],
+            observed,
         )
 
     def test_workspace_release_route_dispatches_exact_authenticated_request(self):
