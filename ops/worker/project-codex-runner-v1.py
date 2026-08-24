@@ -146,6 +146,13 @@ class InstructionProjection(NamedTuple):
     project_source: Path
 
 
+class ChangeSourceObservation(NamedTuple):
+    common_dir: Path
+    source_fingerprint_sha256: str
+    workspace_ownership_fingerprint_sha256: str
+    workspace_dirty: bool
+
+
 def reject(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(2)
@@ -1117,13 +1124,13 @@ def prepare_change_workspace_access(
 
 def change_source_fingerprint(
     worktree: Path, record: dict[str, Any], head: str
-) -> str:
+) -> tuple[str, bool]:
     status = checked_bytes(
         ["git", "status", "--porcelain=v2", "-z", "--untracked-files=all"],
         worktree,
     )
     if not status and head == record["baseCommit"]:
-        return record["initialSourceFingerprintSha256"]
+        return record["initialSourceFingerprintSha256"], False
     diff = checked_bytes(
         ["git", "diff", "--binary", "--no-ext-diff", "HEAD"], worktree
     )
@@ -1163,12 +1170,12 @@ def change_source_fingerprint(
         "statusSha256": hashlib.sha256(status).hexdigest(),
         "diffSha256": hashlib.sha256(diff).hexdigest(),
         "untracked": untracked,
-    })
+    }), bool(status)
 
 
-def validate_change_worktree(
+def observe_change_worktree(
     request: dict[str, Any], worktree: Path
-) -> Path:
+) -> ChangeSourceObservation:
     ownership = request["changeOwnership"]
     record = read_change_workspace_record(worktree, ownership)
     root = checked(["git", "rev-parse", "--show-toplevel"], worktree)
@@ -1208,7 +1215,9 @@ def validate_change_worktree(
         or canonical != ownership["expectedCanonicalCommit"]
     ):
         reject("worktree fingerprint rejected")
-    source_fingerprint = change_source_fingerprint(worktree, record, head)
+    source_fingerprint, workspace_dirty = change_source_fingerprint(
+        worktree, record, head
+    )
     head_after = checked(["git", "rev-parse", "--verify", "HEAD^{commit}"], worktree)
     branch_head_after = checked(
         [
@@ -1217,7 +1226,7 @@ def validate_change_worktree(
         ],
         worktree,
     )
-    source_fingerprint_after = change_source_fingerprint(
+    source_fingerprint_after, workspace_dirty_after = change_source_fingerprint(
         worktree, record, head_after
     )
     ownership_fingerprint = canonical_sha256({
@@ -1226,12 +1235,10 @@ def validate_change_worktree(
         "workspaceIdentity": ownership["workspaceIdentity"],
     })
     if (
-        source_fingerprint != ownership["sourceFingerprintSha256"]
-        or source_fingerprint_after != source_fingerprint
+        source_fingerprint_after != source_fingerprint
+        or workspace_dirty_after != workspace_dirty
         or head_after != head
         or branch_head_after != branch_head
-        or ownership_fingerprint
-            != ownership["workspaceOwnershipFingerprintSha256"]
     ):
         reject("worktree fingerprint rejected")
     manifest = worktree / "ops" / "atenea-runtime.json"
@@ -1241,9 +1248,48 @@ def validate_change_worktree(
         reject("worktree fingerprint rejected")
     if digest != MANIFEST_SHA256:
         reject("worktree fingerprint rejected")
+    return ChangeSourceObservation(
+        common_dir,
+        source_fingerprint,
+        ownership_fingerprint,
+        workspace_dirty,
+    )
+
+
+def validate_change_worktree(
+    request: dict[str, Any], worktree: Path
+) -> Path:
+    ownership = request["changeOwnership"]
+    observation = observe_change_worktree(request, worktree)
+    if (
+        observation.source_fingerprint_sha256
+            != ownership["sourceFingerprintSha256"]
+        or observation.workspace_ownership_fingerprint_sha256
+            != ownership["workspaceOwnershipFingerprintSha256"]
+    ):
+        reject("worktree fingerprint rejected")
     _service_uid, owner_uids, owner_gid = change_workspace_owner_ids()
     prepare_change_workspace_access(worktree, owner_uids, owner_gid)
-    return common_dir
+    return observation.common_dir
+
+
+def post_run_source_identity(
+    request: dict[str, Any], worktree: Path
+) -> dict[str, Any]:
+    observation = observe_change_worktree(request, worktree)
+    ownership = request["changeOwnership"]
+    return {
+        "changeKey": ownership["changeKey"],
+        "databaseWorkSessionId": ownership["databaseWorkSessionId"],
+        "remoteSessionId": ownership["remoteSessionId"],
+        "workspaceIdentity": ownership["workspaceIdentity"],
+        "executionId": request["executionId"],
+        "sourceFingerprintSha256": observation.source_fingerprint_sha256,
+        "workspaceOwnershipFingerprintSha256": (
+            observation.workspace_ownership_fingerprint_sha256
+        ),
+        "workspaceDirty": observation.workspace_dirty,
+    }
 
 
 def validate_worktree(worktree: Path, record: dict[str, Any]) -> Path:
@@ -1492,7 +1538,7 @@ def execute(
     execution_id: str,
     timeout: int,
     materialized_attachments: list[MaterializedAttachment] | tuple[MaterializedAttachment, ...] = (),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(
         prefix=".atenea-codex-result-",
         dir=worktree.parent,
@@ -1632,6 +1678,10 @@ def main() -> int:
                 args.timeout,
                 materialized,
             )
+            if workload["kind"] == CHANGE_CAPABILITY:
+                result["sourceIdentity"] = post_run_source_identity(
+                    request, worktree
+                )
     except SystemExit:
         raise
     except Exception as exception:

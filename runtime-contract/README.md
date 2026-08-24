@@ -16,7 +16,10 @@ workspace. The request binds the immutable dispatch to the change key, database
 WorkSession identity, remote session UUID, exact workspace identity, source
 revision and both source/ownership fingerprints. It contains no workspace path,
 host selector, slot, shell or command authority. Versions v1-v3 remain valid
-legacy WorkSession-owned contracts.
+legacy WorkSession-owned contracts. A successful v4 result binds the
+worker-derived post-run source and workspace-ownership fingerprints to the
+exact change, WorkSession, workspace, and execution, and reports only whether
+the resulting worktree is dirty.
 
 `closed-validation-start-v1.request.schema.json`,
 `closed-validation-inspect-v1.request.schema.json`, and
