@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import tempfile
 import unittest
 import uuid
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -44,8 +46,26 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         self.remote = self.root / "publication.git"
         self.workspaces = self.root / "changes"
         self.state = self.root / "state"
+        self.credentials = self.root / "credentials"
+        self.known_hosts = self.root / "github-known-hosts"
         self.workspaces.mkdir(mode=0o700)
         self.state.mkdir(mode=0o700)
+        self.credentials.mkdir(mode=0o700)
+        self.private_key = self.credentials / "atenea-publication-deploy-key"
+        self.private_key.write_text(
+            "synthetic-private-key-material\n", encoding="utf-8"
+        )
+        self.private_key.chmod(0o600)
+        self.known_hosts.write_text(
+            "github.com ssh-ed25519 "
+            "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n",
+            encoding="ascii",
+        )
+        self.environment = mock.patch.dict(
+            mediator_module.os.environ,
+            {"CREDENTIALS_DIRECTORY": str(self.credentials)},
+        )
+        self.environment.start()
         self._git("init", "--initial-branch=main", str(self.source))
         self._git("-C", str(self.source), "config", "user.name", "Synthetic")
         self._git("-C", str(self.source), "config", "user.email", "synthetic@example.invalid")
@@ -76,10 +96,13 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
             self.state / "workspace.lock",
             test_mode=True,
             publication_remote=str(self.remote),
+            publication_transport=str(self.remote),
+            publication_known_hosts=self.known_hosts,
         )
         self.change_key = "8bf60472-3c0e-49aa-99bf-6dc3c7e60eaf"
 
     def tearDown(self) -> None:
+        self.environment.stop()
         self.temporary.cleanup()
 
     def _git(self, *arguments: str, capture: bool = False) -> str:
@@ -270,7 +293,10 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
 
     def test_publish_materializes_and_pushes_exact_change_branch(self) -> None:
         request, _ = self.dirty_publication()
-        response = self.mediator.publish(request)
+        with mock.patch.object(
+            mediator_module.subprocess, "run", wraps=subprocess.run
+        ) as run:
+            response = self.mediator.publish(request)
         remote_head = self._git(
             f"--git-dir={self.remote}",
             "rev-parse",
@@ -282,6 +308,27 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         self.assertEqual("CREATED", response["remoteDisposition"])
         self.assertFalse(response["valuesExposed"])
         self.assertNotIn(str(self.remote), json.dumps(response))
+        publication_calls = []
+        non_publication_calls = []
+        for call in run.call_args_list:
+            command = call.args[0]
+            if "ls-remote" in command or "push" in command:
+                publication_calls.append(call)
+            else:
+                non_publication_calls.append(call)
+            self.assertNotIn("CREDENTIALS_DIRECTORY", call.kwargs["env"])
+        self.assertTrue(publication_calls)
+        self.assertTrue(non_publication_calls)
+        for call in publication_calls:
+            ssh = call.kwargs["env"].get("GIT_SSH_COMMAND", "")
+            self.assertIn(str(self.private_key), ssh)
+            self.assertIn("IdentitiesOnly=yes", ssh)
+            self.assertIn("StrictHostKeyChecking=yes", ssh)
+            self.assertIn(f"UserKnownHostsFile={self.known_hosts}", ssh)
+        self.assertTrue(all(
+            "GIT_SSH_COMMAND" not in call.kwargs["env"]
+            for call in non_publication_calls
+        ))
         for suffix, value in (("request", request), ("response", response)):
             schema = json.loads((CONTRACT_ROOT /
                 f"development-change-branch-publication-v1.{suffix}.schema.json")
@@ -339,6 +386,98 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
             f"refs/heads/{request['workspaceBranch']}", capture=True,
         ).strip()
         self.assertEqual(self.base_commit, remote_head)
+
+    def test_publication_transport_is_fixed_and_server_owned(self) -> None:
+        fixed = mediator_module.WorkspaceMediator(
+            self.mirror,
+            self.workspaces,
+            self.state / "fixed-transport.lock",
+            test_mode=True,
+            publication_remote=str(self.remote),
+            publication_known_hosts=self.known_hosts,
+        )
+        with mock.patch.object(
+            mediator_module.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout=b"", stderr=b""),
+        ) as run:
+            fixed._git("ls-remote", "--heads", fixed.publication_transport,
+                       "refs/heads/atenea/change-" + self.change_key,
+                       publication=True)
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(
+            "git@github.com:jlnieto/atenea.git", fixed.publication_transport
+        )
+        self.assertEqual(
+            Path("/etc/atenea-worker/github-known-hosts"),
+            mediator_module.PUBLICATION_KNOWN_HOSTS,
+        )
+        self.assertIn("git@github.com:jlnieto/atenea.git", command)
+        self.assertNotIn("origin", command)
+        self.assertEqual("/dev/null", environment["GIT_CONFIG_GLOBAL"])
+        self.assertNotIn("SSH_AUTH_SOCK", environment)
+
+    def test_missing_or_unsafe_publication_credential_fails_closed(self) -> None:
+        request, _ = self.dirty_publication()
+        secret = self.private_key.read_text(encoding="utf-8").strip()
+        with mock.patch.dict(mediator_module.os.environ, {}, clear=True):
+            with self.assertRaises(mediator_module.ContractError) as missing:
+                self.mediator.publish(request)
+        self.assertEqual("publication authentication is unavailable", str(missing.exception))
+        self.assertNotIn(secret, str(missing.exception))
+        self.private_key.chmod(0o644)
+        with self.assertRaises(mediator_module.ContractError) as unsafe:
+            self.mediator.publish(request)
+        self.assertEqual("publication authentication is unavailable", str(unsafe.exception))
+        self.assertNotIn(str(self.private_key), str(unsafe.exception))
+
+    def test_missing_or_incompatible_fixed_known_hosts_fails_closed(self) -> None:
+        request, _ = self.dirty_publication()
+        self.known_hosts.write_text(
+            "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+            encoding="ascii",
+        )
+        with self.assertRaises(mediator_module.ContractError) as incompatible:
+            self.mediator.publish(request)
+        self.assertEqual("publication trust is unavailable", str(incompatible.exception))
+        self.assertNotIn(str(self.known_hosts), str(incompatible.exception))
+        self.known_hosts.unlink()
+        with self.assertRaises(mediator_module.ContractError) as missing:
+            self.mediator.publish(request)
+        self.assertEqual("publication trust is unavailable", str(missing.exception))
+
+    def test_git_failure_does_not_expose_secret_or_stderr(self) -> None:
+        secret = self.private_key.read_text(encoding="utf-8").strip()
+        captured = io.StringIO()
+        with mock.patch.object(
+            mediator_module.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                [], 1, stdout=b"", stderr=("remote:" + secret).encode()
+            ),
+        ):
+            with redirect_stderr(captured):
+                with self.assertRaises(mediator_module.ContractError) as rejected:
+                    self.mediator._git(
+                        "ls-remote", "--heads", self.mediator.publication_transport,
+                        "refs/heads/atenea/change-" + self.change_key,
+                        publication=True,
+                    )
+        public_material = str(rejected.exception) + captured.getvalue()
+        self.assertEqual("Git operation failed closed", str(rejected.exception))
+        self.assertNotIn(secret, public_material)
+        self.assertNotIn(str(self.private_key), public_material)
+
+    def test_publish_rejects_unexpected_canonical_remote(self) -> None:
+        request, _ = self.dirty_publication()
+        self._git(
+            f"--git-dir={self.mirror}", "remote", "set-url", "origin",
+            str(self.root / "unexpected.git"),
+        )
+        with self.assertRaises(mediator_module.ContractError) as rejected:
+            self.mediator.publish(request)
+        self.assertEqual("canonical mirror remote is invalid", str(rejected.exception))
 
     def test_publish_rejects_cross_ownership_foreign_stale_and_arbitrary_branch(self) -> None:
         request, observation = self.dirty_publication()
@@ -424,6 +563,28 @@ json.dump(out,sys.stdout,sort_keys=True,separators=(',',':'))
         )
         self.assertIn("/srv/atenea/workspaces/changes", service)
         self.assertEqual(1, service.count("development-change-workspace-v1.py"))
+        self.assertEqual(
+            1,
+            service.count(
+                "LoadCredential=atenea-publication-deploy-key:"
+                "/etc/atenea-worker/atenea-publication-deploy-key"
+            ),
+        )
+
+    def test_worker_projects_systemd_credentials_only_to_publication_mediator(self) -> None:
+        credential_directory = "/run/credentials/atenea-agent-run-worker-v1.service"
+        with mock.patch.dict(
+            worker_module.os.environ,
+            {"CREDENTIALS_DIRECTORY": credential_directory},
+        ):
+            ordinary = worker_module.subprocess_environment()
+            publication = worker_module.subprocess_environment(
+                systemd_credentials=True
+            )
+        self.assertNotIn("CREDENTIALS_DIRECTORY", ordinary)
+        self.assertEqual(
+            credential_directory, publication["CREDENTIALS_DIRECTORY"]
+        )
 
     def _request(self) -> dict:
         key = "8bf60472-3c0e-49aa-99bf-6dc3c7e60eaf"

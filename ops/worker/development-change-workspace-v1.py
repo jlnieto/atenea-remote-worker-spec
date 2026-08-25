@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -24,7 +26,13 @@ PUBLICATION_PROTOCOL_VERSION = "development-change-branch-publication/v1"
 WORKER_ID = "ax42-01"
 PROJECT_ID = "atenea"
 REPOSITORY = "https://github.com/jlnieto/atenea.git"
+PUBLICATION_REPOSITORY = "git@github.com:jlnieto/atenea.git"
 REPOSITORY_BRANCH = "main"
+PUBLICATION_CREDENTIAL_NAME = "atenea-publication-deploy-key"
+PUBLICATION_CREDENTIALS_DIRECTORY = Path(
+    "/run/credentials/atenea-agent-run-worker-v1.service"
+)
+PUBLICATION_KNOWN_HOSTS = Path("/etc/atenea-worker/github-known-hosts")
 MIRROR = Path("/srv/atenea/repositories/atenea.git")
 WORKSPACE_PARENT = Path("/srv/atenea/workspaces/changes")
 LOCK_FILE = Path("/srv/atenea/worker/agent-runs-v1/development-change-workspace-v1.lock")
@@ -292,16 +300,22 @@ class WorkspaceMediator:
         *,
         test_mode: bool = False,
         publication_remote: str = REPOSITORY,
+        publication_transport: str = PUBLICATION_REPOSITORY,
+        publication_known_hosts: Path = PUBLICATION_KNOWN_HOSTS,
     ) -> None:
         self.mirror = Path(mirror)
         self.workspace_parent = Path(workspace_parent)
         self.lock_file = Path(lock_file)
         self.publication_remote = publication_remote
+        self.publication_transport = publication_transport
+        self.publication_known_hosts = Path(publication_known_hosts)
         if not test_mode and (
             self.mirror != MIRROR
             or self.workspace_parent != WORKSPACE_PARENT
             or self.lock_file != LOCK_FILE
             or self.publication_remote != REPOSITORY
+            or self.publication_transport != PUBLICATION_REPOSITORY
+            or self.publication_known_hosts != PUBLICATION_KNOWN_HOSTS
         ):
             raise ContractError("production roots are fixed")
         self.test_mode = test_mode
@@ -497,9 +511,10 @@ class WorkspaceMediator:
             self._git(
                 "push",
                 "--porcelain",
-                "origin",
+                self.publication_transport,
                 f"{branch_ref}:{branch_ref}",
                 cwd=worktree,
+                publication=True,
             )
             remote_disposition = "CREATED"
         elif remote_head == published_head:
@@ -649,7 +664,8 @@ class WorkspaceMediator:
     ) -> str | None:
         branch_ref = self._branch_ref(request)
         raw = self._git(
-            "ls-remote", "--heads", "origin", branch_ref, cwd=worktree
+            "ls-remote", "--heads", self.publication_transport, branch_ref,
+            cwd=worktree, publication=True,
         ).decode().strip()
         if not raw:
             return None
@@ -987,18 +1003,120 @@ class WorkspaceMediator:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
+    def _publication_credential(self) -> Path:
+        raw_directory = os.environ.get("CREDENTIALS_DIRECTORY")
+        if not raw_directory:
+            raise ContractError("publication authentication is unavailable")
+        directory = Path(raw_directory)
+        if (
+            not directory.is_absolute()
+            or (not self.test_mode and directory != PUBLICATION_CREDENTIALS_DIRECTORY)
+        ):
+            raise ContractError("publication authentication is unavailable")
+        try:
+            directory_state = directory.lstat()
+        except OSError as error:
+            raise ContractError("publication authentication is unavailable") from error
+        if not stat.S_ISDIR(directory_state.st_mode) or directory.is_symlink():
+            raise ContractError("publication authentication is unavailable")
+
+        credential = directory / PUBLICATION_CREDENTIAL_NAME
+        if credential.parent != directory:
+            raise ContractError("publication authentication is unavailable")
+        try:
+            credential_state = credential.lstat()
+        except OSError as error:
+            raise ContractError("publication authentication is unavailable") from error
+        if (
+            not stat.S_ISREG(credential_state.st_mode)
+            or credential.is_symlink()
+            or credential_state.st_nlink != 1
+            or credential_state.st_size < 1
+            or credential_state.st_size > 1024 * 1024
+            or stat.S_IMODE(credential_state.st_mode) & 0o077
+        ):
+            raise ContractError("publication authentication is unavailable")
+        return credential
+
+    def _require_publication_known_hosts(self) -> None:
+        path = self.publication_known_hosts
+        try:
+            observed = path.lstat()
+            raw = path.read_bytes()
+        except OSError as error:
+            raise ContractError("publication trust is unavailable") from error
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or path.is_symlink()
+            or observed.st_nlink != 1
+            or len(raw) < 1
+            or len(raw) > 64 * 1024
+            or (
+                not self.test_mode
+                and (observed.st_uid != 0 or stat.S_IMODE(observed.st_mode) != 0o644)
+            )
+        ):
+            raise ContractError("publication trust is unavailable")
+        try:
+            records = [line.split() for line in raw.decode("ascii").splitlines() if line]
+            compatible = (
+                len(records) == 1
+                and len(records[0]) == 3
+                and records[0][0] == "github.com"
+                and records[0][1] == "ssh-ed25519"
+                and bool(base64.b64decode(records[0][2], validate=True))
+            )
+        except (UnicodeDecodeError, ValueError):
+            compatible = False
+        if not compatible:
+            raise ContractError("publication trust is unavailable")
+
+    def _publication_git_environment(self) -> dict[str, str]:
+        credential = self._publication_credential()
+        self._require_publication_known_hosts()
+        ssh_command = " ".join(
+            shlex.quote(value)
+            for value in (
+                "/usr/bin/ssh",
+                "-F", "/dev/null",
+                "-i", str(credential),
+                "-o", "IdentitiesOnly=yes",
+                "-o", "IdentityAgent=none",
+                "-o", "BatchMode=yes",
+                "-o", "PasswordAuthentication=no",
+                "-o", "KbdInteractiveAuthentication=no",
+                "-o", "PreferredAuthentications=publickey",
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", f"UserKnownHostsFile={self.publication_known_hosts}",
+                "-o", "GlobalKnownHostsFile=/dev/null",
+            )
+        )
+        return {
+            "GIT_SSH_COMMAND": ssh_command,
+            "GIT_SSH_VARIANT": "ssh",
+            "GIT_ALLOW_PROTOCOL": "file:ssh" if self.test_mode else "ssh",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "credential.helper",
+            "GIT_CONFIG_VALUE_0": "",
+        }
+
     def _git_result(
         self,
         *arguments: str,
         git_dir: bool = False,
         cwd: Path | None = None,
         env_extra: dict[str, str] | None = None,
+        publication: bool = False,
     ) -> subprocess.CompletedProcess[bytes]:
         command = ["/usr/bin/git"]
         if git_dir:
             command.append(f"--git-dir={self.mirror}")
         command.extend(arguments)
-        environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+        environment = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+        if publication:
+            environment.update(self._publication_git_environment())
         if env_extra:
             environment.update(env_extra)
         try:
@@ -1021,9 +1139,11 @@ class WorkspaceMediator:
         git_dir: bool = False,
         cwd: Path | None = None,
         env_extra: dict[str, str] | None = None,
+        publication: bool = False,
     ) -> bytes:
         completed = self._git_result(
-            *arguments, git_dir=git_dir, cwd=cwd, env_extra=env_extra
+            *arguments, git_dir=git_dir, cwd=cwd, env_extra=env_extra,
+            publication=publication,
         )
         if completed.returncode != 0 or len(completed.stdout) > MAX_GIT_OUTPUT_BYTES:
             raise ContractError("Git operation failed closed")

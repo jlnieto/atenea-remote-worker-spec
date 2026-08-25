@@ -346,6 +346,13 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def subprocess_environment(*, systemd_credentials: bool = False) -> dict[str, str]:
+    environment = dict(os.environ)
+    if not systemd_credentials:
+        environment.pop("CREDENTIALS_DIRECTORY", None)
+    return environment
+
+
 def strict_json_object(raw: str) -> dict[str, Any]:
     def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -1118,6 +1125,7 @@ class WorkerState:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                env=subprocess_environment(),
                 timeout=30,
                 check=False,
             )
@@ -1263,6 +1271,7 @@ class WorkerState:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    env=subprocess_environment(),
                     timeout=self.development_change_workspace_timeout,
                     check=False,
                 )
@@ -1406,6 +1415,7 @@ class WorkerState:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    env=subprocess_environment(systemd_credentials=True),
                     timeout=self.development_change_workspace_timeout,
                     check=False,
                 )
@@ -4389,6 +4399,7 @@ class WorkerState:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=subprocess_environment(),
             start_new_session=True,
         )
         with self.lock:

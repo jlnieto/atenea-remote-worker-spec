@@ -112,6 +112,16 @@ grep -Fqx 'RemainAfterExit=yes' "${SCRIPT_DIR}/templates/${MATERIALIZATION_SERVI
   || fail "materialization preparation is not retained for the worker lifetime"
 
 SERVICE_TEMPLATE="${SCRIPT_DIR}/templates/atenea-agent-run-worker-v1.service"
+[[ "$(grep -Fxc \
+  'LoadCredential=atenea-publication-deploy-key:/etc/atenea-worker/atenea-publication-deploy-key' \
+  "${SERVICE_TEMPLATE}")" -eq 1 ]] \
+  || fail "publication deploy key systemd credential is not exact"
+! grep -E 'Environment=.*(publication-deploy-key|CREDENTIALS_DIRECTORY|PRIVATE.KEY)' \
+  "${SERVICE_TEMPLATE}" >/dev/null \
+  || fail "publication credential is projected through the service environment"
+! grep -F 'atenea-publication-deploy-key' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
+  || fail "installer must not create or install the publication deploy key"
 [[ "$(grep -Fxc 'ReadOnlyPaths=/srv/atenea/attachments-v1' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "service does not expose only the fixed retained root read-only"
 [[ "$(grep -Fc '/run/atenea/codex-images' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
