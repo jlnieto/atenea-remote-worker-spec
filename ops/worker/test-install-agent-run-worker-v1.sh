@@ -116,6 +116,10 @@ SERVICE_TEMPLATE="${SCRIPT_DIR}/templates/atenea-agent-run-worker-v1.service"
   'LoadCredential=atenea-publication-deploy-key:/etc/atenea-worker/atenea-publication-deploy-key' \
   "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "publication deploy key systemd credential is not exact"
+grep -Fqx 'RuntimeDirectory=atenea-publication' "${SERVICE_TEMPLATE}" \
+  || fail "publication runtime directory is not exact"
+grep -Fqx 'RuntimeDirectoryMode=0700' "${SERVICE_TEMPLATE}" \
+  || fail "publication runtime directory mode is not private"
 ! grep -E 'Environment=.*(publication-deploy-key|CREDENTIALS_DIRECTORY|PRIVATE.KEY)' \
   "${SERVICE_TEMPLATE}" >/dev/null \
   || fail "publication credential is projected through the service environment"
