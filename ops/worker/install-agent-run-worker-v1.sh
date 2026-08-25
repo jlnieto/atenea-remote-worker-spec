@@ -48,8 +48,11 @@ PROJECT_TRANSITION_TARGET_COMMIT="615e539d1f2622a4ac2568ba7697b876d49ae33e"
 PROJECT_PINNED_WORKSPACE_SESSION_ID="6547081d-895e-4be1-a8fd-d115b7743cdf"
 PROJECT_PINNED_WORKSPACE_COMMIT="e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5"
 PROJECT_PINNED_SOURCE_TARGET_COMMIT="96220cd4eb0cf2f6ec985588d086f159eb2baebc"
+PROJECT_PINNED_WORKSPACE_RECORD_SHA256="3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7"
 PROJECT_PINNED_ALLOCATION_SHA256="08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87"
-PROJECT_PINNED_DIRTY_STATUS=" M android/core-console/src/main/java/com/atenea/android/coreconsole/WorkSessionConversationScreen.kt"
+PROJECT_PINNED_DIRTY_PATH="android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt"
+PROJECT_PINNED_DIRTY_STATUS=" M ${PROJECT_PINNED_DIRTY_PATH}"
+PROJECT_PINNED_DIRTY_CONTENT_SHA256="c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
@@ -551,6 +554,9 @@ verify_project_config_pinned_workspace_content() {
       && -f "$workspace_record" && ! -L "$workspace_record" \
       && -f "$allocation" && ! -L "$allocation" ]] \
     || fail "pinned WS19 ownership files are unavailable"
+  [[ "$(sha256sum "$workspace_record" | cut -d' ' -f1)" \
+      == "$PROJECT_PINNED_WORKSPACE_RECORD_SHA256" ]] \
+    || fail "pinned WS19 workspace record fingerprint changed"
   jq -e \
     --arg session "$PROJECT_PINNED_WORKSPACE_SESSION_ID" \
     --arg remote "$PROJECT_REPOSITORY" \
@@ -597,6 +603,11 @@ verify_project_config_pinned_workspace_content() {
   [[ "$(git -c safe.directory="$expected_worktree" -C "$expected_worktree" \
       status --porcelain=v1 --untracked-files=all)" == "$PROJECT_PINNED_DIRTY_STATUS" ]] \
     || fail "pinned WS19 retained draft is not exact"
+  local dirty_file="${expected_worktree}/${PROJECT_PINNED_DIRTY_PATH}"
+  [[ -f "$dirty_file" && ! -L "$dirty_file" \
+      && "$(sha256sum "$dirty_file" | cut -d' ' -f1)" \
+        == "$PROJECT_PINNED_DIRTY_CONTENT_SHA256" ]] \
+    || fail "pinned WS19 retained draft content changed"
 }
 
 fetch_project_pinned_source_target() {

@@ -61,7 +61,10 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "${PROJECT_PINNED_WORKSPACE_SESSION_ID}" == "6547081d-895e-4be1-a8fd-d115b7743cdf" \
     && "${PROJECT_PINNED_WORKSPACE_COMMIT}" == "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5" \
     && "${PROJECT_PINNED_SOURCE_TARGET_COMMIT}" == "96220cd4eb0cf2f6ec985588d086f159eb2baebc" \
-    && "${PROJECT_PINNED_ALLOCATION_SHA256}" == "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87" ]] \
+    && "${PROJECT_PINNED_WORKSPACE_RECORD_SHA256}" == "3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7" \
+    && "${PROJECT_PINNED_ALLOCATION_SHA256}" == "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87" \
+    && "${PROJECT_PINNED_DIRTY_PATH}" == "android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt" \
+    && "${PROJECT_PINNED_DIRTY_CONTENT_SHA256}" == "c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563" ]] \
   || fail "reviewed WS19 pinned source identity changed"
 [[ "$(workspace_activation_sudoers_content | wc -l)" -eq 5 ]] \
   || fail "workspace lifecycle sudo authority count is not exact"
@@ -170,6 +173,11 @@ git -C "${WORKTREE}" remote add origin "${PROJECT_REPOSITORY}"
 mkdir -p "${WORKTREE}/ops"
 printf '{}\n' >"${WORKTREE}/ops/atenea-runtime.json"
 PROJECT_MANIFEST_SHA256="$(sha256sum "${WORKTREE}/ops/atenea-runtime.json" | cut -d' ' -f1)"
+PINNED_DIRTY_RELATIVE_PATH="android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt"
+PINNED_OLD_DIRTY_RELATIVE_PATH="android/core-console/src/main/java/com/atenea/android/coreconsole/WorkSessionConversationScreen.kt"
+mkdir -p "${WORKTREE}/$(dirname -- "${PINNED_DIRTY_RELATIVE_PATH}")"
+printf 'shell base\n' >"${WORKTREE}/${PINNED_DIRTY_RELATIVE_PATH}"
+printf 'screen base\n' >"${WORKTREE}/${PINNED_OLD_DIRTY_RELATIVE_PATH}"
 printf 'base\n' >"${WORKTREE}/tracked.txt"
 git -C "${WORKTREE}" add .
 git -C "${WORKTREE}" commit -qm base
@@ -432,7 +440,13 @@ fi
 PROJECT_PINNED_WORKSPACE_SESSION_ID="${SESSION_ID}"
 PROJECT_PINNED_WORKSPACE_COMMIT="${RETAINED_COMMIT}"
 PROJECT_PINNED_SOURCE_TARGET_COMMIT="${CANONICAL_COMMIT}"
-PROJECT_PINNED_DIRTY_STATUS=" M tracked.txt"
+git -C "${WORKTREE}" checkout -q -- tracked.txt
+printf 'shell draft\n' >>"${WORKTREE}/${PINNED_DIRTY_RELATIVE_PATH}"
+PROJECT_PINNED_DIRTY_PATH="${PINNED_DIRTY_RELATIVE_PATH}"
+PROJECT_PINNED_DIRTY_STATUS=" M ${PROJECT_PINNED_DIRTY_PATH}"
+PROJECT_PINNED_DIRTY_CONTENT_SHA256="$(
+  sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1
+)"
 PINNED_UPSTREAM="${TEST_ROOT}/pinned-upstream.git"
 git init -q --bare "${PINNED_UPSTREAM}"
 git --git-dir="${PINNED_UPSTREAM}" fetch -q "${WORKTREE}" \
@@ -464,6 +478,7 @@ jq -n \
     expectedBaseCommit: $commit,
     headCommit: $commit
   }' >"${WORKSPACE_RECORD}"
+PROJECT_PINNED_WORKSPACE_RECORD_SHA256="$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)"
 jq -n \
   --arg session "${SESSION_ID}" \
   --arg mirror "${PROJECT_MIRROR}" \
@@ -515,7 +530,13 @@ PINNED_ENTRY_BEFORE="$(jq -c --arg identity "${WORKSPACE_IDENTITY}" \
 PINNED_RECORD_SHA_BEFORE="$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)"
 PINNED_ALLOCATION_SHA_BEFORE="$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)"
 PINNED_HEAD_BEFORE="$(git -C "${WORKTREE}" rev-parse HEAD)"
+PINNED_INDEX_BEFORE="$(git -C "${WORKTREE}" write-tree)"
 PINNED_DIRTY_BEFORE="$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)"
+PINNED_DIRTY_SHA_BEFORE="$(sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)"
+PINNED_STATE_SHA_BEFORE="$(sha256sum "${STATE_DIR}/executions.json" | cut -d' ' -f1)"
+PINNED_JOURNAL_SHA_BEFORE="$(
+  sha256sum "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json" | cut -d' ' -f1
+)"
 PINNED_PREFLIGHT="$(project_config_install_preflight)"
 [[ "${PINNED_PREFLIGHT}" == \
     "pinned-source-advance:$(sha256sum "${PINNED_REGISTRY_PREDECESSOR}" | cut -d' ' -f1):${RETAINED_COMMIT}:${CANONICAL_COMMIT}" ]] \
@@ -535,6 +556,10 @@ jq -e \
     && "$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)" == "${PINNED_RECORD_SHA_BEFORE}" \
     && "$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)" == "${PINNED_ALLOCATION_SHA_BEFORE}" \
     && "$(git -C "${WORKTREE}" rev-parse HEAD)" == "${PINNED_HEAD_BEFORE}" \
+    && "$(git -C "${WORKTREE}" write-tree)" == "${PINNED_INDEX_BEFORE}" \
+    && "$(sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)" == "${PINNED_DIRTY_SHA_BEFORE}" \
+    && "$(sha256sum "${STATE_DIR}/executions.json" | cut -d' ' -f1)" == "${PINNED_STATE_SHA_BEFORE}" \
+    && "$(sha256sum "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json" | cut -d' ' -f1)" == "${PINNED_JOURNAL_SHA_BEFORE}" \
     && "$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)" == "${PINNED_DIRTY_BEFORE}" ]] \
   || fail "pinned WS19 resources changed during source advance"
 sed -E 's/("commit"[[:space:]]*:[[:space:]]*")'"${CANONICAL_COMMIT}"'(\")/\1'"${RETAINED_COMMIT}"'\2/' \
@@ -571,6 +596,8 @@ cmp -s "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}" \
       == "${RETAINED_COMMIT}" \
     && "$(git --git-dir="${PROJECT_MIRROR}" cat-file -t "${CANONICAL_COMMIT}")" == commit \
     && "$(git -C "${WORKTREE}" rev-parse HEAD)" == "${PINNED_HEAD_BEFORE}" \
+    && "$(git -C "${WORKTREE}" write-tree)" == "${PINNED_INDEX_BEFORE}" \
+    && "$(sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)" == "${PINNED_DIRTY_SHA_BEFORE}" \
     && "$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)" == "${PINNED_DIRTY_BEFORE}" ]] \
   || fail "rollback changed the worktree or removed the fetched source object"
 
@@ -589,12 +616,30 @@ jq '.workspaces = {"foreign": (.workspaces | to_entries[0].value)}' \
   "${PINNED_REGISTRY_PREDECESSOR}" >"${PROJECT_CONFIG}"
 assert_pinned_preflight_rejected "foreign workspace"
 cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
-git -C "${WORKTREE}" checkout -q -- tracked.txt
+git -C "${WORKTREE}" checkout -q -- "${PROJECT_PINNED_DIRTY_PATH}"
 assert_pinned_preflight_rejected "clean retained workspace"
-printf 'draft\n' >>"${WORKTREE}/tracked.txt"
-printf 'unexpected\n' >"${WORKTREE}/unexpected.txt"
+printf 'shell draft\n' >>"${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+cp "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" "${TEST_ROOT}/pinned-dirty.valid"
+printf 'different byte\n' >>"${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+assert_pinned_preflight_rejected "same dirty path with different content"
+mv "${TEST_ROOT}/pinned-dirty.valid" "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+REVIEWED_DIRTY_CONTENT_SHA256="${PROJECT_PINNED_DIRTY_CONTENT_SHA256}"
+PROJECT_PINNED_DIRTY_CONTENT_SHA256="$(printf '0%.0s' {1..64})"
+assert_pinned_preflight_rejected "same dirty status and path with a different content fingerprint"
+PROJECT_PINNED_DIRTY_CONTENT_SHA256="${REVIEWED_DIRTY_CONTENT_SHA256}"
+
+git -C "${WORKTREE}" checkout -q -- "${PROJECT_PINNED_DIRTY_PATH}"
+printf 'screen draft\n' >>"${WORKTREE}/${PINNED_OLD_DIRTY_RELATIVE_PATH}"
+assert_pinned_preflight_rejected "old incorrect dirty path"
+git -C "${WORKTREE}" checkout -q -- "${PINNED_OLD_DIRTY_RELATIVE_PATH}"
+printf 'other draft\n' >>"${WORKTREE}/tracked.txt"
+assert_pinned_preflight_rejected "other dirty path"
+git -C "${WORKTREE}" checkout -q -- tracked.txt
+
+printf 'shell draft\n' >>"${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+printf 'other draft\n' >>"${WORKTREE}/tracked.txt"
 assert_pinned_preflight_rejected "unexpected dirty count or pattern"
-rm -f "${WORKTREE}/unexpected.txt"
+git -C "${WORKTREE}" checkout -q -- tracked.txt
 
 ORPHAN_TREE="$(git -C "${WORKTREE}" write-tree)"
 ORPHAN_COMMIT="$(printf 'orphan target\n' | \
@@ -612,10 +657,15 @@ git --git-dir="${PINNED_UPSTREAM}" update-ref \
 git -C "${WORKTREE}" reset -q --hard "${CANONICAL_COMMIT}"
 assert_pinned_preflight_rejected "HEAD differs from canonicalCommit"
 git -C "${WORKTREE}" reset -q --hard "${RETAINED_COMMIT}"
-printf 'draft\n' >>"${WORKTREE}/tracked.txt"
+printf 'shell draft\n' >>"${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
 printf 'invalid manifest\n' >"${WORKTREE}/ops/atenea-runtime.json"
 assert_pinned_preflight_rejected "invalid manifest fingerprint"
 printf '{}\n' >"${WORKTREE}/ops/atenea-runtime.json"
+
+cp "${ALLOCATION}" "${ALLOCATION}.valid"
+printf '\n' >>"${ALLOCATION}"
+assert_pinned_preflight_rejected "changed allocation fingerprint"
+mv "${ALLOCATION}.valid" "${ALLOCATION}"
 
 cp "${ALLOCATION}" "${ALLOCATION}.valid"
 jq '.projectId = "foreign"' "${ALLOCATION}.valid" >"${ALLOCATION}"
@@ -629,6 +679,11 @@ mv "${ALLOCATION}.valid" "${ALLOCATION}"
 PROJECT_PINNED_ALLOCATION_SHA256="${PINNED_ALLOCATION_SHA_BEFORE}"
 
 cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
+cp "${WORKSPACE_RECORD}" "${WORKSPACE_RECORD}.valid"
+printf '\n' >>"${WORKSPACE_RECORD}"
+assert_pinned_preflight_rejected "changed workspace record fingerprint"
+mv "${WORKSPACE_RECORD}.valid" "${WORKSPACE_RECORD}"
+
 cp "${WORKSPACE_RECORD}" "${WORKSPACE_RECORD}.valid"
 jq '.headCommit = null' "${WORKSPACE_RECORD}.valid" >"${WORKSPACE_RECORD}"
 assert_pinned_preflight_rejected "invalid workspace record"
