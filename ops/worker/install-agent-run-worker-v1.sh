@@ -45,6 +45,11 @@ PROJECT_TRANSITION_PREDECESSOR_BRANCH="feature/actualizar-conversacion-en-web"
 PROJECT_TRANSITION_PREDECESSOR_COMMIT="8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d"
 PROJECT_TRANSITION_PREDECESSOR_MANIFEST_SHA256="3b26e1899a06993bee69ac596e7cb69b6200a37d063d98203ad308058c91bfa3"
 PROJECT_TRANSITION_TARGET_COMMIT="615e539d1f2622a4ac2568ba7697b876d49ae33e"
+PROJECT_PINNED_WORKSPACE_SESSION_ID="6547081d-895e-4be1-a8fd-d115b7743cdf"
+PROJECT_PINNED_WORKSPACE_COMMIT="e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5"
+PROJECT_PINNED_SOURCE_TARGET_COMMIT="96220cd4eb0cf2f6ec985588d086f159eb2baebc"
+PROJECT_PINNED_ALLOCATION_SHA256="08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87"
+PROJECT_PINNED_DIRTY_STATUS=" M android/core-console/src/main/java/com/atenea/android/coreconsole/WorkSessionConversationScreen.kt"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
@@ -469,6 +474,166 @@ verify_project_config_source_advance_content() {
   printf '%s:%s\n' "$retained_commit" "$canonical_commit"
 }
 
+verify_no_non_terminal_project_operations() {
+  local state_file="${STATE_DIR}/executions.json"
+  [[ -f "$state_file" && ! -L "$state_file" ]] \
+    || fail "durable AgentRun state is unavailable"
+  jq -e '
+    .protocol == "agent-run-worker/v1" and
+    (.executions | type == "object") and
+    ([.executions[] | .status as $state |
+      $state == "SUCCEEDED" or $state == "FAILED" or $state == "CANCELLED"] | all) and
+    ((.validations // {}) | type == "object") and
+    ([(.validations // {})[] | .state as $state |
+      $state == "SUCCEEDED" or $state == "CANDIDATE_FAILED" or
+      $state == "INFRASTRUCTURE_FAILED" or $state == "POLICY_FAILED" or
+      $state == "VALIDATION_FAILED" or $state == "OWNERSHIP_FAILED" or
+      $state == "CANCELLED"] | all)
+  ' "$state_file" >/dev/null \
+    || fail "a durable AgentRun or validation is non-terminal or invalid"
+
+  [[ -d "$VALIDATION_JOURNAL_ROOT" && ! -L "$VALIDATION_JOURNAL_ROOT" ]] \
+    || fail "validation journal root is unavailable"
+  ! find -P "$VALIDATION_JOURNAL_ROOT" -type l -print -quit | grep -q . \
+    || fail "validation journal contains an ambiguous path"
+  local operation
+  while IFS= read -r -d '' operation; do
+    jq -e '
+      .state == "SUCCEEDED" or .state == "CANDIDATE_FAILED" or
+      .state == "INFRASTRUCTURE_FAILED" or .state == "POLICY_FAILED" or
+      .state == "VALIDATION_FAILED" or .state == "OWNERSHIP_FAILED" or
+      .state == "CANCELLED"
+    ' "$operation" >/dev/null \
+      || fail "validation journal contains a non-terminal or invalid operation"
+  done < <(find -P "$VALIDATION_JOURNAL_ROOT" -type f \
+    -name operation-v1.json -print0)
+}
+
+verify_project_config_pinned_workspace_content() {
+  local expected_registry_commit="$1"
+  local expected_identity="remote:ax42-01:work-session:${PROJECT_PINNED_WORKSPACE_SESSION_ID}"
+  local expected_worktree="${PROJECT_WORKSPACES_ROOT}/${PROJECT_PINNED_WORKSPACE_SESSION_ID}/atenea"
+  local workspace_record="${PROJECT_WORKSPACES_ROOT}/${PROJECT_PINNED_WORKSPACE_SESSION_ID}/workspace-v1.json"
+  local allocation="${PROJECT_WORKSPACES_ROOT}/${PROJECT_PINNED_WORKSPACE_SESSION_ID}/runtime-allocation-v1.json"
+
+  jq -e \
+    --arg repository "$PROJECT_REPOSITORY" \
+    --arg branch "$PROJECT_BRANCH" \
+    --arg commit "$expected_registry_commit" \
+    --arg manifest_sha256 "$PROJECT_MANIFEST_SHA256" \
+    --arg runner "$PROJECT_RUNNER" \
+    --arg attachment_root "$ATTACHMENT_ROOT" \
+    --arg identity "$expected_identity" \
+    --arg session "$PROJECT_PINNED_WORKSPACE_SESSION_ID" \
+    --arg worktree "$expected_worktree" \
+    --arg allocation_sha256 "$PROJECT_PINNED_ALLOCATION_SHA256" \
+    --arg retained_commit "$PROJECT_PINNED_WORKSPACE_COMMIT" '
+    (keys | sort) == ["attachmentRoot", "branch", "commit",
+      "executionEnabled", "manifestSha256", "projectId", "repository",
+      "runner", "schemaVersion", "selectionEnabled", "workspaces"] and
+    .schemaVersion == "project-codex-v1" and
+    .selectionEnabled == true and .executionEnabled == true and
+    .projectId == "atenea" and .repository == $repository and
+    .branch == $branch and .commit == $commit and
+    .manifestSha256 == $manifest_sha256 and .runner == $runner and
+    .attachmentRoot == $attachment_root and
+    (.workspaces | keys) == [$identity] and
+    .workspaces[$identity] == {
+      sessionId: $session,
+      worktree: $worktree,
+      allocationSha256: $allocation_sha256,
+      canonicalCommit: $retained_commit
+    }
+  ' "$PROJECT_CONFIG" >/dev/null \
+    || fail "pinned WS19 project configuration is not exact"
+
+  [[ -d "$expected_worktree" && ! -L "$expected_worktree" \
+      && -f "$workspace_record" && ! -L "$workspace_record" \
+      && -f "$allocation" && ! -L "$allocation" ]] \
+    || fail "pinned WS19 ownership files are unavailable"
+  jq -e \
+    --arg session "$PROJECT_PINNED_WORKSPACE_SESSION_ID" \
+    --arg remote "$PROJECT_REPOSITORY" \
+    --arg base "$PROJECT_BRANCH" \
+    --arg branch "atenea/session-${PROJECT_PINNED_WORKSPACE_SESSION_ID}" \
+    --arg mirror "$PROJECT_MIRROR" \
+    --arg worktree "$expected_worktree" \
+    --arg commit "$PROJECT_PINNED_WORKSPACE_COMMIT" '
+    (keys | sort) == ["baseBranch", "branch", "canonicalRemote",
+      "expectedBaseCommit", "headCommit", "mirrorPath", "projectId",
+      "schemaVersion", "sessionId", "state", "workerHost", "worktreePath"] and
+    .schemaVersion == 1 and .state == "ready" and
+    .sessionId == $session and .projectId == "atenea" and
+    .canonicalRemote == $remote and .baseBranch == $base and
+    .branch == $branch and .mirrorPath == $mirror and
+    .worktreePath == $worktree and
+    (.workerHost | type == "string" and length > 0) and
+    .expectedBaseCommit == $commit and .headCommit == $commit
+  ' "$workspace_record" >/dev/null \
+    || fail "pinned WS19 workspace record is invalid"
+  [[ "$(sha256sum "$allocation" | cut -d' ' -f1)" == "$PROJECT_PINNED_ALLOCATION_SHA256" ]] \
+    || fail "pinned WS19 allocation fingerprint changed"
+  jq -e \
+    --arg session "$PROJECT_PINNED_WORKSPACE_SESSION_ID" \
+    --arg branch "atenea/session-${PROJECT_PINNED_WORKSPACE_SESSION_ID}" \
+    --arg mirror "$PROJECT_MIRROR" \
+    --arg worktree "$expected_worktree" '
+    .schemaVersion == 1 and .state == "allocated" and
+    .sessionId == $session and .projectId == "atenea" and
+    .branch == $branch and .mirrorPath == $mirror and
+    .worktreePath == $worktree and
+    .manifestRelativePath == "ops/atenea-runtime.json" and
+    (.slot | test("^slot[1-4]$")) and
+    (.workloadClass == "normal" or .workloadClass == "heavy")
+  ' "$allocation" >/dev/null \
+    || fail "pinned WS19 allocation is incompatible"
+  [[ "$(git -c safe.directory="$expected_worktree" -C "$expected_worktree" remote get-url origin)" \
+        == "$PROJECT_REPOSITORY" \
+      && "$(git -c safe.directory="$expected_worktree" -C "$expected_worktree" rev-parse --verify 'HEAD^{commit}')" \
+        == "$PROJECT_PINNED_WORKSPACE_COMMIT" \
+      && "$(sha256sum "$expected_worktree/ops/atenea-runtime.json" | cut -d' ' -f1)" \
+        == "$PROJECT_MANIFEST_SHA256" ]] \
+    || fail "pinned WS19 worktree fingerprint is invalid"
+  [[ "$(git -c safe.directory="$expected_worktree" -C "$expected_worktree" \
+      status --porcelain=v1 --untracked-files=all)" == "$PROJECT_PINNED_DIRTY_STATUS" ]] \
+    || fail "pinned WS19 retained draft is not exact"
+}
+
+fetch_project_pinned_source_target() {
+  [[ "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" \
+      == "$PROJECT_REPOSITORY" ]] \
+    || fail "canonical mirror remote is foreign"
+  timeout 120s git --git-dir="$PROJECT_MIRROR" fetch --no-tags --refmap= origin \
+    "refs/heads/${PROJECT_BRANCH}" >/dev/null \
+    || fail "reviewed canonical source target could not be fetched"
+  [[ "$(git --git-dir="$PROJECT_MIRROR" rev-parse --verify 'FETCH_HEAD^{commit}')" \
+      == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
+      && "$(git --git-dir="$PROJECT_MIRROR" rev-parse --verify \
+      "${PROJECT_PINNED_SOURCE_TARGET_COMMIT}^{commit}")" \
+      == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
+    || fail "reviewed canonical source target is unavailable"
+  git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor \
+    "$PROJECT_PINNED_WORKSPACE_COMMIT" "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
+    || fail "reviewed canonical source target is not forward-only"
+}
+
+write_project_config_commit_only() {
+  local predecessor="$1" successor="$2" destination="$3"
+  local expression='("commit"[[:space:]]*:[[:space:]]*")'"${predecessor}"'(")'
+  [[ "$(grep -Eoc "$expression" "$PROJECT_CONFIG")" -eq 1 ]] \
+    || fail "registry commit field is not uniquely replaceable"
+  sed -E "s/${expression}/\\1${successor}\\2/" "$PROJECT_CONFIG" >"$destination"
+  jq -e --arg commit "$successor" '.commit == $commit' "$destination" >/dev/null \
+    || fail "successor registry commit replacement failed"
+  local restored
+  restored="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-restore-check.XXXXXX")"
+  sed -E 's/("commit"[[:space:]]*:[[:space:]]*")'"${successor}"'(\")/\1'"${predecessor}"'\2/' \
+    "$destination" >"$restored"
+  cmp -s "$PROJECT_CONFIG" "$restored" \
+    || { rm -f "$restored"; fail "successor registry changed fields other than commit"; }
+  rm -f "$restored"
+}
+
 verify_project_config_file_identity() {
   [[ -f "$PROJECT_CONFIG" && ! -L "$PROJECT_CONFIG" \
       && "$(stat -c '%a:%U:%G' "$PROJECT_CONFIG")" == "644:root:root" ]] \
@@ -508,6 +673,30 @@ project_config_install_preflight() {
   verify_project_config_file_identity
   local retained_sha256
   retained_sha256="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
+  if ( verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
+      && [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
+      && verify_no_non_terminal_project_operations ) >/dev/null 2>&1; then
+    printf 'retain:%s\n' "$retained_sha256"
+    return 0
+  fi
+  if ( verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_WORKSPACE_COMMIT" \
+      && [[ "$(observe_project_commit)" == "$PROJECT_PINNED_WORKSPACE_COMMIT" ]] \
+      && verify_no_non_terminal_project_operations ) >/dev/null 2>&1; then
+    fetch_project_pinned_source_target
+    printf 'pinned-source-advance:%s:%s:%s\n' \
+      "$retained_sha256" "$PROJECT_PINNED_WORKSPACE_COMMIT" \
+      "$PROJECT_PINNED_SOURCE_TARGET_COMMIT"
+    return 0
+  fi
+  if jq -e \
+      --arg commit "$PROJECT_PINNED_WORKSPACE_COMMIT" '
+      .commit == $commit and .selectionEnabled == true and
+      .executionEnabled == true and (.workspaces | length) > 0
+    ' "$PROJECT_CONFIG" >/dev/null 2>&1; then
+    fail "enabled predecessor registry is not the exact retained WS19 transition"
+  fi
   if ( verify_project_config_transition_predecessor_content ) >/dev/null 2>&1; then
     printf 'transition:%s\n' "$retained_sha256"
     return 0
@@ -531,13 +720,15 @@ project_config_install_finalize() {
   IFS=: read -r operation retained_sha256 retained_commit canonical_commit surplus \
     <<<"$retained_identity"
   [[ "$operation" == "retain" || "$operation" == "transition" \
-      || "$operation" == "source-advance" ]] \
+      || "$operation" == "source-advance" \
+      || "$operation" == "pinned-source-advance" ]] \
     || fail "existing project configuration transition identity is invalid"
   [[ "$retained_sha256" =~ ^[0-9a-f]{64}$ ]] \
     || fail "existing project configuration fingerprint is invalid"
   [[ -z "$surplus" ]] \
     || fail "existing project configuration transition identity is ambiguous"
-  if [[ "$operation" == "source-advance" ]]; then
+  if [[ "$operation" == "source-advance" \
+      || "$operation" == "pinned-source-advance" ]]; then
     [[ "$retained_commit" =~ ^[0-9a-f]{40}$ \
         && "$canonical_commit" =~ ^[0-9a-f]{40}$ ]] \
       || fail "source advance transition commits are invalid"
@@ -564,6 +755,51 @@ project_config_install_finalize() {
       || fail "canonical source advance changed during installation"
     write_project_config false false '{}' "$canonical_commit"
     verify_project_config_content
+    return 0
+  fi
+  if [[ "$operation" == "pinned-source-advance" ]]; then
+    [[ "$retained_commit" == "$PROJECT_PINNED_WORKSPACE_COMMIT" \
+        && "$canonical_commit" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
+      || fail "pinned source advance identity is not reviewed"
+    [[ "$(observe_project_commit)" == "$retained_commit" ]] \
+      || fail "canonical mirror ref changed during pinned source advance"
+    verify_project_config_pinned_workspace_content "$retained_commit"
+    verify_no_non_terminal_project_operations
+    fetch_project_pinned_source_target
+
+    local predecessor_copy successor_config
+    predecessor_copy="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-predecessor.XXXXXX")"
+    successor_config="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-successor.XXXXXX")"
+    cp --preserve=mode,ownership,timestamps "$PROJECT_CONFIG" "$predecessor_copy"
+    write_project_config_commit_only \
+      "$retained_commit" "$canonical_commit" "$successor_config"
+    chown root:root "$successor_config"
+    chmod 0644 "$successor_config"
+    [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" == "$retained_sha256" ]] \
+      || { rm -f "$predecessor_copy" "$successor_config"; \
+        fail "existing project configuration changed before pinned finalize"; }
+    git --git-dir="$PROJECT_MIRROR" update-ref \
+      "$PROJECT_REF" "$canonical_commit" "$retained_commit" \
+      || { rm -f "$predecessor_copy" "$successor_config"; \
+        fail "canonical mirror ref compare-and-swap failed"; }
+    if ! mv -f "$successor_config" "$PROJECT_CONFIG" \
+        || ! verify_project_config_pinned_workspace_content "$canonical_commit" \
+        || ! verify_no_non_terminal_project_operations; then
+      mv -f "$predecessor_copy" "$PROJECT_CONFIG" || true
+      git --git-dir="$PROJECT_MIRROR" update-ref \
+        "$PROJECT_REF" "$retained_commit" "$canonical_commit" || true
+      fail "pinned source advance postcondition failed and predecessor restoration was attempted"
+    fi
+    rm -f "$predecessor_copy"
+    return 0
+  fi
+  if [[ "$(jq -r '.commit' "$PROJECT_CONFIG")" \
+      == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
+      && "$(jq -r '.workspaces | length' "$PROJECT_CONFIG")" -eq 1 ]]; then
+    [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
+      || fail "pinned project canonical mirror ref moved"
+    verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_SOURCE_TARGET_COMMIT"
     return 0
   fi
   verify_project_config_content
@@ -793,7 +1029,16 @@ verify() {
     || fail "programme role identity is unavailable or interactive"
   [[ "$(getent passwd atenea-worker-role | cut -d: -f7)" == /usr/sbin/nologin ]] \
     || fail "worker source role identity is unavailable or interactive"
-  verify_project_config_content
+  if [[ "$(jq -r '.commit' "$PROJECT_CONFIG")" \
+      == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
+      && "$(jq -r '.workspaces | length' "$PROJECT_CONFIG")" -eq 1 ]]; then
+    [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
+      || fail "pinned project canonical mirror ref moved"
+    verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_SOURCE_TARGET_COMMIT"
+  else
+    verify_project_config_content
+  fi
   visudo -cf "$SUDOERS_FILE" >/dev/null
   verify_project_runner_sudoers
   verify_validation_sudoers
