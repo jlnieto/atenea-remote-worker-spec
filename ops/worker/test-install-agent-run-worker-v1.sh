@@ -58,6 +58,11 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-workspace-release-v1.py" | cut -d' ' -f1)" \
     == "${WORKSPACE_RELEASER_SHA256}" ]] \
   || fail "Atenea workspace releaser fingerprint is stale"
+[[ "${PROJECT_PINNED_WORKSPACE_SESSION_ID}" == "6547081d-895e-4be1-a8fd-d115b7743cdf" \
+    && "${PROJECT_PINNED_WORKSPACE_COMMIT}" == "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5" \
+    && "${PROJECT_PINNED_SOURCE_TARGET_COMMIT}" == "96220cd4eb0cf2f6ec985588d086f159eb2baebc" \
+    && "${PROJECT_PINNED_ALLOCATION_SHA256}" == "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87" ]] \
+  || fail "reviewed WS19 pinned source identity changed"
 [[ "$(workspace_activation_sudoers_content | wc -l)" -eq 5 ]] \
   || fail "workspace lifecycle sudo authority count is not exact"
 [[ "$(workspace_activation_sudoers_content | grep -Fxc \
@@ -420,6 +425,260 @@ if ( project_retained_draft_register \
     "${SESSION_ID}" "${WORKSPACE_IDENTITY}" "${CANONICAL_COMMIT}" ) >/dev/null 2>&1; then
   fail "current commit was accepted as retained"
 fi
+
+# Exercise the exact enabled WS19-pinned forward-only exception with isolated
+# Git, registry and durable-state fixtures. The production constants above are
+# asserted before overriding only their values for this synthetic graph.
+PROJECT_PINNED_WORKSPACE_SESSION_ID="${SESSION_ID}"
+PROJECT_PINNED_WORKSPACE_COMMIT="${RETAINED_COMMIT}"
+PROJECT_PINNED_SOURCE_TARGET_COMMIT="${CANONICAL_COMMIT}"
+PROJECT_PINNED_DIRTY_STATUS=" M tracked.txt"
+PINNED_UPSTREAM="${TEST_ROOT}/pinned-upstream.git"
+git init -q --bare "${PINNED_UPSTREAM}"
+git --git-dir="${PINNED_UPSTREAM}" fetch -q "${WORKTREE}" \
+  "${CANONICAL_COMMIT}:refs/heads/${PROJECT_BRANCH}"
+PROJECT_REPOSITORY="file://${PINNED_UPSTREAM}"
+git -C "${WORKTREE}" remote set-url origin "${PROJECT_REPOSITORY}"
+git --git-dir="${PROJECT_MIRROR}" remote add origin "${PROJECT_REPOSITORY}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${RETAINED_COMMIT}" "${CANONICAL_COMMIT}"
+
+WORKSPACE_RECORD="$(dirname -- "${WORKTREE}")/workspace-v1.json"
+ALLOCATION="$(dirname -- "${WORKTREE}")/runtime-allocation-v1.json"
+jq -n \
+  --arg session "${SESSION_ID}" \
+  --arg remote "${PROJECT_REPOSITORY}" \
+  --arg mirror "${PROJECT_MIRROR}" \
+  --arg worktree "${WORKTREE}" \
+  --arg commit "${RETAINED_COMMIT}" '{
+    schemaVersion: 1,
+    sessionId: $session,
+    projectId: "atenea",
+    canonicalRemote: $remote,
+    baseBranch: "main",
+    branch: ("atenea/session-" + $session),
+    mirrorPath: $mirror,
+    worktreePath: $worktree,
+    workerHost: "synthetic-worker",
+    state: "ready",
+    expectedBaseCommit: $commit,
+    headCommit: $commit
+  }' >"${WORKSPACE_RECORD}"
+jq -n \
+  --arg session "${SESSION_ID}" \
+  --arg mirror "${PROJECT_MIRROR}" \
+  --arg worktree "${WORKTREE}" '{
+    schemaVersion: 1,
+    sessionId: $session,
+    projectId: "atenea",
+    branch: ("atenea/session-" + $session),
+    mirrorPath: $mirror,
+    worktreePath: $worktree,
+    runtimeId: ("ws-" + ($session | gsub("-"; ""))),
+    manifestRelativePath: "ops/atenea-runtime.json",
+    slot: "slot2",
+    workloadClass: "heavy",
+    state: "allocated"
+  }' >"${ALLOCATION}"
+PROJECT_PINNED_ALLOCATION_SHA256="$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)"
+PINNED_WORKSPACES="$(jq -cn \
+  --arg identity "${WORKSPACE_IDENTITY}" \
+  --arg session "${SESSION_ID}" \
+  --arg worktree "${WORKTREE}" \
+  --arg allocation "${PROJECT_PINNED_ALLOCATION_SHA256}" \
+  --arg commit "${RETAINED_COMMIT}" '{
+    ($identity): {
+      sessionId: $session,
+      worktree: $worktree,
+      allocationSha256: $allocation,
+      canonicalCommit: $commit
+    }
+  }')"
+write_project_config true true "${PINNED_WORKSPACES}" "${RETAINED_COMMIT}"
+
+STATE_DIR="${TEST_ROOT}/srv/atenea/worker/agent-runs-v1"
+VALIDATION_JOURNAL_ROOT="${TEST_ROOT}/srv/atenea/worker/validation-broker-v1"
+mkdir -p "${STATE_DIR}" "${VALIDATION_JOURNAL_ROOT}"
+jq -n '{
+  protocol: "agent-run-worker/v1",
+  executions: {terminal: {status: "SUCCEEDED"}},
+  validations: {terminal: {state: "SUCCEEDED"}}
+}' >"${STATE_DIR}/executions.json"
+mkdir -p "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal"
+jq -n '{state: "SUCCEEDED"}' \
+  >"${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json"
+
+PINNED_REGISTRY_PREDECESSOR="${TEST_ROOT}/pinned-registry-predecessor.json"
+cp "${PROJECT_CONFIG}" "${PINNED_REGISTRY_PREDECESSOR}"
+PINNED_ENTRY_BEFORE="$(jq -c --arg identity "${WORKSPACE_IDENTITY}" \
+  '.workspaces[$identity]' "${PROJECT_CONFIG}")"
+PINNED_RECORD_SHA_BEFORE="$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)"
+PINNED_ALLOCATION_SHA_BEFORE="$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)"
+PINNED_HEAD_BEFORE="$(git -C "${WORKTREE}" rev-parse HEAD)"
+PINNED_DIRTY_BEFORE="$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)"
+PINNED_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${PINNED_PREFLIGHT}" == \
+    "pinned-source-advance:$(sha256sum "${PINNED_REGISTRY_PREDECESSOR}" | cut -d' ' -f1):${RETAINED_COMMIT}:${CANONICAL_COMMIT}" ]] \
+  || fail "installer did not recognize the exact WS19 pinned source advance"
+project_config_install_finalize "${PINNED_PREFLIGHT}"
+
+PINNED_REGISTRY_SUCCESSOR="${TEST_ROOT}/pinned-registry-successor.json"
+cp "${PROJECT_CONFIG}" "${PINNED_REGISTRY_SUCCESSOR}"
+jq -e \
+  --arg target "${CANONICAL_COMMIT}" '
+    .commit == $target and .selectionEnabled == true and
+    .executionEnabled == true and (.workspaces | length) == 1
+  ' "${PROJECT_CONFIG}" >/dev/null \
+  || fail "pinned source advance did not preserve enabled registry state"
+[[ "$(jq -c --arg identity "${WORKSPACE_IDENTITY}" '.workspaces[$identity]' \
+      "${PROJECT_CONFIG}")" == "${PINNED_ENTRY_BEFORE}" \
+    && "$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)" == "${PINNED_RECORD_SHA_BEFORE}" \
+    && "$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)" == "${PINNED_ALLOCATION_SHA_BEFORE}" \
+    && "$(git -C "${WORKTREE}" rev-parse HEAD)" == "${PINNED_HEAD_BEFORE}" \
+    && "$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)" == "${PINNED_DIRTY_BEFORE}" ]] \
+  || fail "pinned WS19 resources changed during source advance"
+sed -E 's/("commit"[[:space:]]*:[[:space:]]*")'"${CANONICAL_COMMIT}"'(\")/\1'"${RETAINED_COMMIT}"'\2/' \
+  "${PINNED_REGISTRY_SUCCESSOR}" >"${PROJECT_CONFIG}.restored-comparison"
+cmp -s "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}.restored-comparison" \
+  || fail "pinned source advance changed registry bytes outside commit"
+rm -f "${PROJECT_CONFIG}.restored-comparison"
+
+# New v4 requests select the advanced global commit, while an old legacy
+# request carrying the retained workspace commit fails the existing exact
+# canonical-equality gate before creating any role worktree.
+jq -e --arg target "${CANONICAL_COMMIT}" \
+  '.selectionEnabled == true and .executionEnabled == true and .commit == $target' \
+  "${PROJECT_CONFIG}" >/dev/null || fail "new v4 source is not selectable"
+LEGACY_ROOT="${TEST_ROOT}/legacy-canonical-mismatch"
+mkdir -p "${LEGACY_ROOT}/atenea.git" \
+  "${LEGACY_ROOT}/sessions/${SESSION_ID}/atenea"
+cp "${PROJECT_CONFIG}" "${LEGACY_ROOT}/project.json"
+if ATENEA_MULTI_REPO_TEST_MODE=1 ATENEA_MULTI_REPO_TEST_ROOT="${LEGACY_ROOT}" \
+    "${SCRIPT_DIR}/atenea-multi-repository-v1.sh" ensure \
+    "${SESSION_ID}" "22222222-2222-4222-8222-222222222222" \
+    "${RETAINED_COMMIT}" >/dev/null 2>&1; then
+  fail "legacy flow accepted a pinned workspace canonical mismatch"
+fi
+
+# The existing rollback primitives can restore exact predecessor bytes and the
+# canonical ref without touching the worktree or deleting the fetched object.
+cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${RETAINED_COMMIT}" "${CANONICAL_COMMIT}"
+cmp -s "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}" \
+  || fail "rollback did not restore exact registry predecessor bytes"
+[[ "$(git --git-dir="${PROJECT_MIRROR}" rev-parse "${PROJECT_REF}^{commit}")" \
+      == "${RETAINED_COMMIT}" \
+    && "$(git --git-dir="${PROJECT_MIRROR}" cat-file -t "${CANONICAL_COMMIT}")" == commit \
+    && "$(git -C "${WORKTREE}" rev-parse HEAD)" == "${PINNED_HEAD_BEFORE}" \
+    && "$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)" == "${PINNED_DIRTY_BEFORE}" ]] \
+  || fail "rollback changed the worktree or removed the fetched source object"
+
+assert_pinned_preflight_rejected() {
+  local description="$1"
+  if ( project_config_install_preflight ) >/dev/null 2>&1; then
+    fail "unsafe pinned source advance was accepted: ${description}"
+  fi
+}
+
+jq --arg identity "remote:ax42-01:work-session:33333333-3333-4333-8333-333333333333" \
+  '.workspaces[$identity] = (.workspaces | to_entries[0].value)' \
+  "${PINNED_REGISTRY_PREDECESSOR}" >"${PROJECT_CONFIG}"
+assert_pinned_preflight_rejected "more than one legacy workspace"
+jq '.workspaces = {"foreign": (.workspaces | to_entries[0].value)}' \
+  "${PINNED_REGISTRY_PREDECESSOR}" >"${PROJECT_CONFIG}"
+assert_pinned_preflight_rejected "foreign workspace"
+cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
+git -C "${WORKTREE}" checkout -q -- tracked.txt
+assert_pinned_preflight_rejected "clean retained workspace"
+printf 'draft\n' >>"${WORKTREE}/tracked.txt"
+printf 'unexpected\n' >"${WORKTREE}/unexpected.txt"
+assert_pinned_preflight_rejected "unexpected dirty count or pattern"
+rm -f "${WORKTREE}/unexpected.txt"
+
+ORPHAN_TREE="$(git -C "${WORKTREE}" write-tree)"
+ORPHAN_COMMIT="$(printf 'orphan target\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${ORPHAN_TREE}")"
+REVIEWED_TARGET="${PROJECT_PINNED_SOURCE_TARGET_COMMIT}"
+PROJECT_PINNED_SOURCE_TARGET_COMMIT="${ORPHAN_COMMIT}"
+git --git-dir="${PINNED_UPSTREAM}" fetch -q "${WORKTREE}" \
+  "+${ORPHAN_COMMIT}:refs/heads/${PROJECT_BRANCH}"
+assert_pinned_preflight_rejected "non-descendant target"
+PROJECT_PINNED_SOURCE_TARGET_COMMIT="${REVIEWED_TARGET}"
+git --git-dir="${PINNED_UPSTREAM}" update-ref \
+  "refs/heads/${PROJECT_BRANCH}" "${CANONICAL_COMMIT}" "${ORPHAN_COMMIT}"
+
+git -C "${WORKTREE}" reset -q --hard "${CANONICAL_COMMIT}"
+assert_pinned_preflight_rejected "HEAD differs from canonicalCommit"
+git -C "${WORKTREE}" reset -q --hard "${RETAINED_COMMIT}"
+printf 'draft\n' >>"${WORKTREE}/tracked.txt"
+printf 'invalid manifest\n' >"${WORKTREE}/ops/atenea-runtime.json"
+assert_pinned_preflight_rejected "invalid manifest fingerprint"
+printf '{}\n' >"${WORKTREE}/ops/atenea-runtime.json"
+
+cp "${ALLOCATION}" "${ALLOCATION}.valid"
+jq '.projectId = "foreign"' "${ALLOCATION}.valid" >"${ALLOCATION}"
+MUTATED_ALLOCATION_SHA="$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)"
+PROJECT_PINNED_ALLOCATION_SHA256="${MUTATED_ALLOCATION_SHA}"
+jq --arg identity "${WORKSPACE_IDENTITY}" --arg sha "${MUTATED_ALLOCATION_SHA}" \
+  '.workspaces[$identity].allocationSha256 = $sha' \
+  "${PINNED_REGISTRY_PREDECESSOR}" >"${PROJECT_CONFIG}"
+assert_pinned_preflight_rejected "incompatible allocation"
+mv "${ALLOCATION}.valid" "${ALLOCATION}"
+PROJECT_PINNED_ALLOCATION_SHA256="${PINNED_ALLOCATION_SHA_BEFORE}"
+
+cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
+cp "${WORKSPACE_RECORD}" "${WORKSPACE_RECORD}.valid"
+jq '.headCommit = null' "${WORKSPACE_RECORD}.valid" >"${WORKSPACE_RECORD}"
+assert_pinned_preflight_rejected "invalid workspace record"
+mv "${WORKSPACE_RECORD}.valid" "${WORKSPACE_RECORD}"
+
+git -C "${WORKTREE}" remote set-url origin "file://${TEST_ROOT}/foreign"
+assert_pinned_preflight_rejected "unexpected workspace remote"
+git -C "${WORKTREE}" remote set-url origin "${PROJECT_REPOSITORY}"
+git --git-dir="${PROJECT_MIRROR}" remote set-url origin "file://${TEST_ROOT}/foreign"
+assert_pinned_preflight_rejected "unexpected mirror remote"
+git --git-dir="${PROJECT_MIRROR}" remote set-url origin "${PROJECT_REPOSITORY}"
+
+jq '.executions.active = {status: "RUNNING"}' \
+  "${STATE_DIR}/executions.json" >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+assert_pinned_preflight_rejected "non-terminal AgentRun"
+jq 'del(.executions.active) | .validations.active = {state: "QUEUED"}' \
+  "${STATE_DIR}/executions.json" >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+assert_pinned_preflight_rejected "non-terminal validation"
+jq 'del(.validations.active)' "${STATE_DIR}/executions.json" \
+  >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+jq -n '{state: "RUNNING"}' \
+  >"${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json"
+assert_pinned_preflight_rejected "non-terminal validation journal"
+jq -n '{state: "SUCCEEDED"}' \
+  >"${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json"
+
+cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
+PINNED_CAS_PREFLIGHT="$(project_config_install_preflight)"
+printf '\n' >>"${PROJECT_CONFIG}"
+if ( project_config_install_finalize "${PINNED_CAS_PREFLIGHT}" ) >/dev/null 2>&1; then
+  fail "pinned source advance ignored registry compare-and-swap"
+fi
+[[ "$(git --git-dir="${PROJECT_MIRROR}" rev-parse "${PROJECT_REF}^{commit}")" \
+    == "${RETAINED_COMMIT}" ]] || fail "failed registry CAS changed canonical ref"
+
+cp "${PINNED_REGISTRY_PREDECESSOR}" "${PROJECT_CONFIG}"
+PINNED_FINAL_PREFLIGHT="$(project_config_install_preflight)"
+project_config_install_finalize "${PINNED_FINAL_PREFLIGHT}"
+cmp -s "${PINNED_REGISTRY_SUCCESSOR}" "${PROJECT_CONFIG}" \
+  || fail "repeated pinned transition did not reproduce exact successor bytes"
+PINNED_REPEAT_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${PINNED_REPEAT_PREFLIGHT}" == \
+    "retain:$(sha256sum "${PINNED_REGISTRY_SUCCESSOR}" | cut -d' ' -f1)" ]] \
+  || fail "advanced pinned registry was not recognized as exact retained state"
+project_config_install_finalize "${PINNED_REPEAT_PREFLIGHT}"
+cmp -s "${PINNED_REGISTRY_SUCCESSOR}" "${PROJECT_CONFIG}" \
+  || fail "advanced pinned registry was rewritten on repeated install"
 
 CONTROL_PLANE_IP=100.64.0.10
 ATTACHMENT_ROOT="${TEST_ROOT}/retained"
