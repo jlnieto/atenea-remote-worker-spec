@@ -32,6 +32,7 @@ PUBLICATION_CREDENTIAL_NAME = "atenea-publication-deploy-key"
 PUBLICATION_CREDENTIALS_DIRECTORY = Path(
     "/run/credentials/atenea-agent-run-worker-v1.service"
 )
+PUBLICATION_RUNTIME_DIRECTORY = Path("/run/atenea-publication")
 PUBLICATION_KNOWN_HOSTS = Path("/etc/atenea-worker/github-known-hosts")
 MIRROR = Path("/srv/atenea/repositories/atenea.git")
 WORKSPACE_PARENT = Path("/srv/atenea/workspaces/changes")
@@ -302,6 +303,7 @@ class WorkspaceMediator:
         publication_remote: str = REPOSITORY,
         publication_transport: str = PUBLICATION_REPOSITORY,
         publication_known_hosts: Path = PUBLICATION_KNOWN_HOSTS,
+        publication_runtime_directory: Path = PUBLICATION_RUNTIME_DIRECTORY,
     ) -> None:
         self.mirror = Path(mirror)
         self.workspace_parent = Path(workspace_parent)
@@ -309,6 +311,7 @@ class WorkspaceMediator:
         self.publication_remote = publication_remote
         self.publication_transport = publication_transport
         self.publication_known_hosts = Path(publication_known_hosts)
+        self.publication_runtime_directory = Path(publication_runtime_directory)
         if not test_mode and (
             self.mirror != MIRROR
             or self.workspace_parent != WORKSPACE_PARENT
@@ -316,6 +319,7 @@ class WorkspaceMediator:
             or self.publication_remote != REPOSITORY
             or self.publication_transport != PUBLICATION_REPOSITORY
             or self.publication_known_hosts != PUBLICATION_KNOWN_HOSTS
+            or self.publication_runtime_directory != PUBLICATION_RUNTIME_DIRECTORY
         ):
             raise ContractError("production roots are fixed")
         self.test_mode = test_mode
@@ -1003,7 +1007,7 @@ class WorkspaceMediator:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def _publication_credential(self) -> Path:
+    def _publication_credential(self) -> tuple[Path, os.stat_result]:
         raw_directory = os.environ.get("CREDENTIALS_DIRECTORY")
         if not raw_directory:
             raise ContractError("publication authentication is unavailable")
@@ -1023,20 +1027,143 @@ class WorkspaceMediator:
         credential = directory / PUBLICATION_CREDENTIAL_NAME
         if credential.parent != directory:
             raise ContractError("publication authentication is unavailable")
+        flags = os.O_RDONLY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
         try:
-            credential_state = credential.lstat()
+            descriptor = os.open(credential, flags)
         except OSError as error:
             raise ContractError("publication authentication is unavailable") from error
+        try:
+            credential_state = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        expected_uid = os.geteuid() if self.test_mode else 0
         if (
             not stat.S_ISREG(credential_state.st_mode)
-            or credential.is_symlink()
+            or credential_state.st_uid != expected_uid
             or credential_state.st_nlink != 1
             or credential_state.st_size < 1
             or credential_state.st_size > 1024 * 1024
-            or stat.S_IMODE(credential_state.st_mode) & 0o077
+            or stat.S_IMODE(credential_state.st_mode) not in {0o400, 0o440}
         ):
             raise ContractError("publication authentication is unavailable")
-        return credential
+        return credential, credential_state
+
+    def _require_publication_runtime_directory(self) -> None:
+        path = self.publication_runtime_directory
+        try:
+            observed = path.lstat()
+        except OSError as error:
+            raise ContractError("publication authentication is unavailable") from error
+        if (
+            not path.is_absolute()
+            or not stat.S_ISDIR(observed.st_mode)
+            or path.is_symlink()
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) != 0o700
+        ):
+            raise ContractError("publication authentication is unavailable")
+
+    @contextmanager
+    def _runtime_publication_credential(self) -> Iterator[Path]:
+        self._require_publication_runtime_directory()
+        credential, expected_source = self._publication_credential()
+        source_descriptor = -1
+        runtime_descriptor = -1
+        runtime_credential: Path | None = None
+        runtime_identity: tuple[int, int] | None = None
+        cleanup_failed = False
+        try:
+            source_flags = os.O_RDONLY | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                source_flags |= os.O_NOFOLLOW
+            source_descriptor = os.open(credential, source_flags)
+            source_state = os.fstat(source_descriptor)
+            if (
+                source_state.st_dev != expected_source.st_dev
+                or source_state.st_ino != expected_source.st_ino
+                or source_state.st_mode != expected_source.st_mode
+                or source_state.st_uid != expected_source.st_uid
+                or source_state.st_nlink != expected_source.st_nlink
+                or source_state.st_size != expected_source.st_size
+            ):
+                raise ContractError("publication authentication is unavailable")
+
+            runtime_descriptor, runtime_name = tempfile.mkstemp(
+                prefix="identity-", dir=self.publication_runtime_directory
+            )
+            runtime_credential = Path(runtime_name)
+            os.fchmod(runtime_descriptor, 0o600)
+            copied = 0
+            while True:
+                chunk = os.read(source_descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > expected_source.st_size:
+                    raise ContractError("publication authentication is unavailable")
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(runtime_descriptor, view)
+                    if written < 1:
+                        raise OSError("short publication credential write")
+                    view = view[written:]
+            if copied != expected_source.st_size:
+                raise ContractError("publication authentication is unavailable")
+            os.fsync(runtime_descriptor)
+            runtime_state = os.fstat(runtime_descriptor)
+            runtime_identity = (runtime_state.st_dev, runtime_state.st_ino)
+            if (
+                not stat.S_ISREG(runtime_state.st_mode)
+                or runtime_state.st_uid != os.geteuid()
+                or runtime_state.st_nlink != 1
+                or runtime_state.st_size != expected_source.st_size
+                or stat.S_IMODE(runtime_state.st_mode) != 0o600
+            ):
+                raise ContractError("publication authentication is unavailable")
+            os.close(source_descriptor)
+            source_descriptor = -1
+            os.close(runtime_descriptor)
+            runtime_descriptor = -1
+
+            self._require_publication_runtime_directory()
+            final_state = runtime_credential.lstat()
+            if (
+                runtime_credential.is_symlink()
+                or not stat.S_ISREG(final_state.st_mode)
+                or (final_state.st_dev, final_state.st_ino) != runtime_identity
+                or final_state.st_uid != os.geteuid()
+                or final_state.st_nlink != 1
+                or final_state.st_size != expected_source.st_size
+                or stat.S_IMODE(final_state.st_mode) != 0o600
+            ):
+                raise ContractError("publication authentication is unavailable")
+            yield runtime_credential
+        except OSError as error:
+            raise ContractError("publication authentication is unavailable") from error
+        finally:
+            if source_descriptor >= 0:
+                os.close(source_descriptor)
+            if runtime_descriptor >= 0:
+                os.close(runtime_descriptor)
+            if runtime_credential is not None:
+                try:
+                    current = runtime_credential.lstat()
+                    if (
+                        runtime_identity is None
+                        or runtime_credential.is_symlink()
+                        or not stat.S_ISREG(current.st_mode)
+                        or (current.st_dev, current.st_ino) != runtime_identity
+                    ):
+                        cleanup_failed = True
+                    os.unlink(runtime_credential)
+                    if runtime_credential.exists() or runtime_credential.is_symlink():
+                        cleanup_failed = True
+                except OSError:
+                    cleanup_failed = True
+            if cleanup_failed:
+                raise ContractError("publication authentication cleanup failed")
 
     def _require_publication_known_hosts(self) -> None:
         path = self.publication_known_hosts
@@ -1071,9 +1198,7 @@ class WorkspaceMediator:
         if not compatible:
             raise ContractError("publication trust is unavailable")
 
-    def _publication_git_environment(self) -> dict[str, str]:
-        credential = self._publication_credential()
-        self._require_publication_known_hosts()
+    def _publication_git_environment(self, credential: Path) -> dict[str, str]:
         ssh_command = " ".join(
             shlex.quote(value)
             for value in (
@@ -1115,23 +1240,30 @@ class WorkspaceMediator:
             command.append(f"--git-dir={self.mirror}")
         command.extend(arguments)
         environment = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
-        if publication:
-            environment.update(self._publication_git_environment())
         if env_extra:
             environment.update(env_extra)
-        try:
-            return subprocess.run(
-                command,
-                cwd=cwd,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=GIT_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            raise ContractError("Git operation is unavailable") from error
+
+        def run() -> subprocess.CompletedProcess[bytes]:
+            try:
+                return subprocess.run(
+                    command,
+                    cwd=cwd,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=GIT_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise ContractError("Git operation is unavailable") from error
+
+        if not publication:
+            return run()
+        self._require_publication_known_hosts()
+        with self._runtime_publication_credential() as credential:
+            environment.update(self._publication_git_environment(credential))
+            return run()
 
     def _git(
         self,
