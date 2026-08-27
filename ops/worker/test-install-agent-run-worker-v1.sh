@@ -120,6 +120,12 @@ grep -Fqx 'RemainAfterExit=yes' "${SCRIPT_DIR}/templates/${MATERIALIZATION_SERVI
   || fail "materialization preparation is not retained for the worker lifetime"
 
 SERVICE_TEMPLATE="${SCRIPT_DIR}/templates/atenea-agent-run-worker-v1.service"
+[[ "$(grep -c '^CapabilityBoundingSet=' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
+  || fail "worker capability bounding set is not singular"
+grep -Fqx \
+  'CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER' \
+  "${SERVICE_TEMPLATE}" \
+  || fail "worker capability bounding set is not exact"
 [[ "$(grep -Fxc \
   'LoadCredential=atenea-publication-deploy-key:/etc/atenea-worker/atenea-publication-deploy-key' \
   "${SERVICE_TEMPLATE}")" -eq 1 ]] \
