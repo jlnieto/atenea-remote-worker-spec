@@ -83,10 +83,8 @@ class ProjectCodexContractTest(unittest.TestCase):
                 "workspaceIdentity": workspace_identity,
                 "databaseProjectId": 7,
                 "baseCommit": TEST_COMMIT,
-                "expectedCanonicalCommit": TEST_COMMIT,
                 "sourceRevision": 0,
-                "sourceFingerprintSha256": "a" * 64,
-                "workspaceOwnershipFingerprintSha256": "b" * 64,
+                "sourceFingerprintSha256": None,
             },
             "workload": workload,
         }
@@ -219,8 +217,8 @@ class ProjectCodexContractTest(unittest.TestCase):
                     "workspaceIdentity"
                 ],
                 "executionId": "44444444-4444-4444-8444-444444444444",
+                "sourceCommit": TEST_COMMIT,
                 "sourceFingerprintSha256": "c" * 64,
-                "workspaceOwnershipFingerprintSha256": "d" * 64,
                 "workspaceDirty": True,
             },
         }
@@ -970,7 +968,7 @@ class ProjectCodexContractTest(unittest.TestCase):
         self.assertIn(str(worktree), command)
         self.assertNotIn(request["workload"]["message"], serialized)
         self.assertNotIn("databaseWorkSessionId", serialized)
-        self.assertNotIn(request["changeOwnership"]["sourceFingerprintSha256"], serialized)
+        self.assertNotIn("sourceFingerprintSha256", serialized)
 
     def test_reviewed_instruction_projection_is_exact_clean_single_and_temporary(self):
         project_bytes = b"synthetic reviewed repository contract\n"
@@ -1403,9 +1401,8 @@ class ProjectCodexContractTest(unittest.TestCase):
             runner_request["workload"]["commit"] = commit
             ownership = runner_request["changeOwnership"]
             ownership["baseCommit"] = commit
-            ownership["expectedCanonicalCommit"] = commit
 
-            def mediator_request(operation="PROVISION", revision=0, source_sha="a" * 64):
+            def mediator_request(operation="PROVISION", revision=0, source_sha=None):
                 operation_id = str(uuid.uuid4())
                 body = {
                     "schemaVersion": 1,
@@ -1424,7 +1421,7 @@ class ProjectCodexContractTest(unittest.TestCase):
                     "repository": MODULE.REPOSITORY,
                     "repositoryBranch": MODULE.BRANCH,
                     "baseCommit": commit,
-                    "expectedCanonicalCommit": commit,
+                    "sourceCommit": commit,
                     "workspaceBranch": f"atenea/change-{ownership['changeKey']}",
                     "workspaceIdentity": ownership["workspaceIdentity"],
                     "workerId": "ax42-01",
@@ -1435,9 +1432,20 @@ class ProjectCodexContractTest(unittest.TestCase):
                 return body
 
             provisioned = mediator.execute(mediator_request(), "PROVISION")
-            ownership["workspaceOwnershipFingerprintSha256"] = provisioned[
-                "ownershipFingerprintSha256"
-            ]
+            self.assertIsNone(provisioned["sourceFingerprintSha256"])
+            record_path = changes / ownership["changeKey"] / "workspace-v1.json"
+            historical = json.loads(record_path.read_text(encoding="utf-8"))
+            historical.update({
+                "repository": MODULE.REPOSITORY,
+                "repositoryBranch": MODULE.BRANCH,
+                "initialSourceFingerprintSha256": "a" * 64,
+                "recordSha256": "0" * 64,
+            })
+            record_path.write_text(
+                json.dumps(historical, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            record_path.chmod(0o600)
             config = self.atenea_config()
             config["selectionEnabled"] = False
             config["commit"] = "2" * 40
@@ -1488,10 +1496,7 @@ class ProjectCodexContractTest(unittest.TestCase):
                         ownership["sourceFingerprintSha256"],
                         first_post_run["sourceFingerprintSha256"],
                     )
-                    self.assertEqual(
-                        ownership["workspaceOwnershipFingerprintSha256"],
-                        first_post_run["workspaceOwnershipFingerprintSha256"],
-                    )
+                    self.assertEqual(commit, first_post_run["sourceCommit"])
                     self.assertTrue(first_post_run["workspaceDirty"])
                     self.assertEqual(
                         runner_request["executionId"],
@@ -1504,9 +1509,6 @@ class ProjectCodexContractTest(unittest.TestCase):
                     ownership["sourceRevision"] = 1
                     ownership["sourceFingerprintSha256"] = observed[
                         "sourceFingerprintSha256"
-                    ]
-                    ownership["workspaceOwnershipFingerprintSha256"] = observed[
-                        "ownershipFingerprintSha256"
                     ]
                     self.assertEqual(
                         mirror, MODULE.validate_change_worktree(runner_request, worktree)
@@ -1525,9 +1527,6 @@ class ProjectCodexContractTest(unittest.TestCase):
                     ownership["sourceRevision"] += 1
                     ownership["sourceFingerprintSha256"] = second_post_run[
                         "sourceFingerprintSha256"
-                    ]
-                    ownership["workspaceOwnershipFingerprintSha256"] = second_post_run[
-                        "workspaceOwnershipFingerprintSha256"
                     ]
                     self.assertEqual(
                         mirror, MODULE.validate_change_worktree(runner_request, worktree)

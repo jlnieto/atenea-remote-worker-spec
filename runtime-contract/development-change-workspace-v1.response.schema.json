@@ -8,11 +8,10 @@
     "schemaVersion", "protocolVersion", "state", "effect", "operationId",
     "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
     "databaseProjectId", "projectId", "repository", "repositoryBranch",
-    "baseCommit", "expectedCanonicalCommit", "workspaceBranch",
+    "baseCommit", "workspaceBranch",
     "workspaceIdentity", "workerId", "sourceRevision",
-    "expectedSourceFingerprintSha256", "canonicalCommit",
-    "sourceFingerprintSha256", "workspaceDirty", "retainedDraft",
-    "requestFingerprintSha256", "ownershipFingerprintSha256", "valuesExposed"
+    "sourceCommit", "sourceFingerprintSha256", "workspaceDirty", "retainedDraft",
+    "requestFingerprintSha256", "valuesExposed"
   ],
   "properties": {
     "schemaVersion": {"const": 1},
@@ -29,18 +28,15 @@
     "repository": {"const": "https://github.com/jlnieto/atenea.git"},
     "repositoryBranch": {"const": "main"},
     "baseCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
-    "expectedCanonicalCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "workspaceBranch": {"type": "string", "pattern": "^atenea/change-[0-9a-f-]{36}$"},
     "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"},
     "workerId": {"const": "ax42-01"},
     "sourceRevision": {"type": "integer", "minimum": 0},
-    "expectedSourceFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "canonicalCommit": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "sourceCommit": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "sourceFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
     "workspaceDirty": {"type": ["boolean", "null"]},
     "retainedDraft": {"type": ["boolean", "null"]},
     "requestFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "ownershipFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "valuesExposed": {"const": false}
   },
   "allOf": [
@@ -48,15 +44,14 @@
       "if": {"properties": {"state": {"const": "OWNED"}}},
       "then": {
         "properties": {
-          "canonicalCommit": {"type": "string"},
-          "sourceFingerprintSha256": {"type": "string"},
+          "sourceCommit": {"type": "string"},
           "workspaceDirty": {"type": "boolean"},
           "retainedDraft": {"type": "boolean"}
         }
       },
       "else": {
         "properties": {
-          "canonicalCommit": {"type": "null"},
+          "sourceCommit": {"type": "null"},
           "sourceFingerprintSha256": {"type": "null"},
           "workspaceDirty": {"type": "null"},
           "retainedDraft": {"type": "null"}

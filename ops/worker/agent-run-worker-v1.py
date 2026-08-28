@@ -130,13 +130,12 @@ PROJECT_V3_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 CHANGE_OWNERSHIP_KEYS = {
     "changeKey", "databaseWorkSessionId", "remoteSessionId",
     "workspaceIdentity", "databaseProjectId", "baseCommit",
-    "expectedCanonicalCommit", "sourceRevision",
-    "sourceFingerprintSha256", "workspaceOwnershipFingerprintSha256",
+    "sourceRevision", "sourceFingerprintSha256",
 }
 CHANGE_SOURCE_IDENTITY_KEYS = {
     "changeKey", "databaseWorkSessionId", "remoteSessionId",
-    "workspaceIdentity", "executionId", "sourceFingerprintSha256",
-    "workspaceOwnershipFingerprintSha256", "workspaceDirty",
+    "workspaceIdentity", "executionId", "sourceCommit",
+    "sourceFingerprintSha256", "workspaceDirty",
 }
 WORKSPACE_ENSURE_KEYS = {
     "sessionId", "workspaceIdentity", "projectId", "repository", "branch",
@@ -276,7 +275,7 @@ DEVELOPMENT_CHANGE_WORKSPACE_REQUEST_KEYS = {
     "schemaVersion", "protocolVersion", "effect", "operationId",
     "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
     "databaseProjectId", "projectId", "repository", "repositoryBranch",
-    "baseCommit", "expectedCanonicalCommit", "workspaceBranch",
+    "baseCommit", "sourceCommit", "workspaceBranch",
     "workspaceIdentity", "workerId", "sourceRevision",
     "sourceFingerprintSha256", "requestFingerprintSha256",
 }
@@ -284,27 +283,24 @@ DEVELOPMENT_CHANGE_WORKSPACE_RESPONSE_KEYS = {
     "schemaVersion", "protocolVersion", "state", "effect", "operationId",
     "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
     "databaseProjectId", "projectId", "repository", "repositoryBranch",
-    "baseCommit", "expectedCanonicalCommit", "workspaceBranch",
+    "baseCommit", "workspaceBranch",
     "workspaceIdentity", "workerId", "sourceRevision",
-    "expectedSourceFingerprintSha256", "canonicalCommit",
-    "sourceFingerprintSha256", "workspaceDirty", "retainedDraft",
-    "requestFingerprintSha256", "ownershipFingerprintSha256", "valuesExposed",
+    "sourceCommit", "sourceFingerprintSha256", "workspaceDirty", "retainedDraft",
+    "requestFingerprintSha256", "valuesExposed",
 }
 DEVELOPMENT_CHANGE_PUBLICATION_REQUEST_KEYS = {
     "schemaVersion", "protocolVersion", "effect", "operationId",
     "idempotencyKey", "operation", "changeKey", "databaseProjectId",
-    "projectId", "repository", "repositoryBranch", "baseCommit",
-    "expectedCanonicalCommit", "workspaceBranch", "workspaceIdentity",
-    "workerId", "sourceRevision", "sourceFingerprintSha256",
-    "workspaceOwnershipFingerprintSha256", "requestFingerprintSha256",
+    "projectId", "repository", "repositoryBranch", "baseCommit", "sourceCommit",
+    "workspaceBranch", "workspaceIdentity", "workerId", "sourceRevision",
+    "sourceFingerprintSha256", "requestFingerprintSha256",
 }
 DEVELOPMENT_CHANGE_PUBLICATION_RESPONSE_KEYS = {
     "schemaVersion", "protocolVersion", "state", "effect", "operationId",
     "idempotencyKey", "operation", "changeKey", "databaseProjectId",
-    "projectId", "repositoryBranch", "baseCommit", "expectedCanonicalCommit",
+    "projectId", "repositoryBranch", "baseCommit", "sourceCommit",
     "workspaceBranch", "workspaceIdentity", "workerId", "sourceRevision",
-    "expectedSourceFingerprintSha256",
-    "expectedWorkspaceOwnershipFingerprintSha256", "publishedHeadSha",
+    "sourceFingerprintSha256", "publishedHeadSha",
     "remoteDisposition", "requestFingerprintSha256",
     "publicationReceiptSha256", "valuesExposed",
 }
@@ -1331,19 +1327,12 @@ class WorkerState:
             or response.get("repository") != request["repository"]
             or response.get("repositoryBranch") != request["repositoryBranch"]
             or response.get("baseCommit") != request["baseCommit"]
-            or response.get("expectedCanonicalCommit")
-                != request["expectedCanonicalCommit"]
             or response.get("workspaceBranch") != request["workspaceBranch"]
             or response.get("workspaceIdentity") != request["workspaceIdentity"]
             or response.get("workerId") != request["workerId"]
             or response.get("sourceRevision") != request["sourceRevision"]
-            or response.get("expectedSourceFingerprintSha256")
-                != request["sourceFingerprintSha256"]
             or response.get("requestFingerprintSha256")
                 != request["requestFingerprintSha256"]
-            or not isinstance(response.get("ownershipFingerprintSha256"), str)
-            or re.fullmatch(r"[0-9a-f]{64}", response["ownershipFingerprintSha256"])
-                is None
             or response.get("valuesExposed") is not False
         ):
             raise ProtocolError(
@@ -1353,14 +1342,15 @@ class WorkerState:
             )
         owned = response["state"] == "OWNED"
         if owned:
+            dirty = response.get("workspaceDirty")
+            source_fingerprint = response.get("sourceFingerprintSha256")
             if (
-                not isinstance(response.get("canonicalCommit"), str)
-                or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", response["canonicalCommit"])
+                not isinstance(response.get("sourceCommit"), str)
+                or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", response["sourceCommit"])
                     is None
-                or not isinstance(response.get("sourceFingerprintSha256"), str)
-                or re.fullmatch(r"[0-9a-f]{64}", response["sourceFingerprintSha256"])
-                    is None
-                or not isinstance(response.get("workspaceDirty"), bool)
+                or not isinstance(dirty, bool)
+                or (dirty and re.fullmatch(r"[0-9a-f]{64}", str(source_fingerprint)) is None)
+                or (not dirty and source_fingerprint is not None)
                 or not isinstance(response.get("retainedDraft"), bool)
             ):
                 raise ProtocolError(
@@ -1371,7 +1361,7 @@ class WorkerState:
         elif any(
             response.get(field) is not None
             for field in (
-                "canonicalCommit", "sourceFingerprintSha256",
+                "sourceCommit", "sourceFingerprintSha256",
                 "workspaceDirty", "retainedDraft",
             )
         ):
@@ -1470,14 +1460,12 @@ class WorkerState:
             "projectId": "projectId",
             "repositoryBranch": "repositoryBranch",
             "baseCommit": "baseCommit",
-            "expectedCanonicalCommit": "expectedCanonicalCommit",
+            "sourceCommit": "sourceCommit",
             "workspaceBranch": "workspaceBranch",
             "workspaceIdentity": "workspaceIdentity",
             "workerId": "workerId",
             "sourceRevision": "sourceRevision",
-            "expectedSourceFingerprintSha256": "sourceFingerprintSha256",
-            "expectedWorkspaceOwnershipFingerprintSha256":
-                "workspaceOwnershipFingerprintSha256",
+            "sourceFingerprintSha256": "sourceFingerprintSha256",
             "requestFingerprintSha256": "requestFingerprintSha256",
         }
         if (
@@ -3559,7 +3547,6 @@ class WorkerState:
             request.get("sessionId") != ownership["remoteSessionId"]
             or request.get("workspaceIdentity") != ownership["workspaceIdentity"]
             or ownership["workspaceIdentity"] != exact_workspace
-            or workload["commit"] != ownership.get("expectedCanonicalCommit")
         ):
             raise ProtocolError(
                 HTTPStatus.FORBIDDEN,
@@ -3580,15 +3567,11 @@ class WorkerState:
             or isinstance(source_revision, bool)
             or source_revision < 0
             or COMMIT_PATTERN.fullmatch(str(ownership.get("baseCommit", ""))) is None
-            or COMMIT_PATTERN.fullmatch(
-                str(ownership.get("expectedCanonicalCommit", ""))
-            ) is None
-            or any(
-                re.fullmatch(r"[0-9a-f]{64}", str(ownership.get(key, ""))) is None
-                for key in (
-                    "sourceFingerprintSha256",
-                    "workspaceOwnershipFingerprintSha256",
-                )
+            or (
+                ownership.get("sourceFingerprintSha256") is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}", str(ownership.get("sourceFingerprintSha256"))
+                ) is None
             )
         ):
             raise ProtocolError(
@@ -3626,13 +3609,6 @@ class WorkerState:
                 "project_disabled",
                 "image-bearing project configuration is not activated",
             )
-        observed_commit = self._observe_project_commit(route)
-        if workload["commit"] != observed_commit:
-            raise ProtocolError(
-                HTTPStatus.CONFLICT,
-                "canonical_source_moved",
-                "worker mirror canonical source moved before admission",
-            )
         ownership = request["changeOwnership"]
         operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request["dispatchId"] + ":inspect"))
         inspect_request = {
@@ -3649,7 +3625,7 @@ class WorkerState:
             "repository": workload["repository"],
             "repositoryBranch": workload["branch"],
             "baseCommit": ownership["baseCommit"],
-            "expectedCanonicalCommit": ownership["expectedCanonicalCommit"],
+            "sourceCommit": workload["commit"],
             "workspaceBranch": f"atenea/change-{ownership['changeKey']}",
             "workspaceIdentity": ownership["workspaceIdentity"],
             "workerId": self.worker_id,
@@ -3660,11 +3636,9 @@ class WorkerState:
         response = self.execute_development_change_workspace(inspect_request, "INSPECT")
         if (
             response.get("state") != "OWNED"
-            or response.get("canonicalCommit") != ownership["expectedCanonicalCommit"]
+            or response.get("sourceCommit") != workload["commit"]
             or response.get("sourceFingerprintSha256")
                 != ownership["sourceFingerprintSha256"]
-            or response.get("ownershipFingerprintSha256")
-                != ownership["workspaceOwnershipFingerprintSha256"]
         ):
             raise ProtocolError(
                 HTTPStatus.CONFLICT,
@@ -4577,26 +4551,18 @@ class WorkerState:
         }
         if any(source_identity.get(key) != value for key, value in exact.items()):
             return False
+        dirty = source_identity.get("workspaceDirty")
+        source_fingerprint = source_identity.get("sourceFingerprintSha256")
         if (
             re.fullmatch(
-                r"[0-9a-f]{64}",
-                str(source_identity.get("sourceFingerprintSha256", "")),
+                r"[0-9a-f]{40}", str(source_identity.get("sourceCommit", ""))
             ) is None
-            or re.fullmatch(
-                r"[0-9a-f]{64}",
-                str(source_identity.get(
-                    "workspaceOwnershipFingerprintSha256", ""
-                )),
-            ) is None
-            or not isinstance(source_identity.get("workspaceDirty"), bool)
+            or not isinstance(dirty, bool)
+            or (dirty and re.fullmatch(r"[0-9a-f]{64}", str(source_fingerprint)) is None)
+            or (not dirty and source_fingerprint is not None)
         ):
             return False
-        return not (
-            source_identity["sourceFingerprintSha256"]
-                == ownership["sourceFingerprintSha256"]
-            and source_identity["workspaceOwnershipFingerprintSha256"]
-                != ownership["workspaceOwnershipFingerprintSha256"]
-        )
+        return True
 
     def _finish_cancelled(self, execution: dict[str, Any]) -> None:
         execution["status"] = "CANCELLED"

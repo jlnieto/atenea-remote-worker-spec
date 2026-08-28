@@ -1748,8 +1748,8 @@ print(json.dumps({
         "remoteSessionId": request["changeOwnership"]["remoteSessionId"],
         "workspaceIdentity": request["changeOwnership"]["workspaceIdentity"],
         "executionId": request["executionId"],
+        "sourceCommit": request["workload"]["commit"],
         "sourceFingerprintSha256": request["changeOwnership"]["sourceFingerprintSha256"],
-        "workspaceOwnershipFingerprintSha256": request["changeOwnership"]["workspaceOwnershipFingerprintSha256"],
         "workspaceDirty": True,
     }} if request["workload"]["kind"] == "project-codex-v4" else {})
 }))
@@ -1783,18 +1783,15 @@ print(json.dumps({
     "repository": r["repository"],
     "repositoryBranch": r["repositoryBranch"],
     "baseCommit": r["baseCommit"],
-    "expectedCanonicalCommit": r["expectedCanonicalCommit"],
     "workspaceBranch": r["workspaceBranch"],
     "workspaceIdentity": r["workspaceIdentity"],
     "workerId": r["workerId"],
     "sourceRevision": r["sourceRevision"],
-    "expectedSourceFingerprintSha256": r["sourceFingerprintSha256"],
-    "canonicalCommit": r["expectedCanonicalCommit"] if owned else None,
+    "sourceCommit": r["sourceCommit"] if owned else None,
     "sourceFingerprintSha256": r["sourceFingerprintSha256"] if owned else None,
     "workspaceDirty": True if owned else None,
     "retainedDraft": True if owned else None,
     "requestFingerprintSha256": r["requestFingerprintSha256"],
-    "ownershipFingerprintSha256": "b" * 64,
     "valuesExposed": False,
 }, sort_keys=True, separators=(",", ":")))
 """,
@@ -1914,10 +1911,8 @@ print(json.dumps({
                 "workspaceIdentity": workspace_identity,
                 "databaseProjectId": 7,
                 "baseCommit": TEST_COMMIT,
-                "expectedCanonicalCommit": TEST_COMMIT,
                 "sourceRevision": 3,
                 "sourceFingerprintSha256": "c" * 64,
-                "workspaceOwnershipFingerprintSha256": "b" * 64,
             },
         })
         request["workload"].update({
@@ -2004,8 +1999,8 @@ print(json.dumps({
             "remoteSessionId": ownership["remoteSessionId"],
             "workspaceIdentity": ownership["workspaceIdentity"],
             "executionId": request["executionId"],
+            "sourceCommit": TEST_COMMIT,
             "sourceFingerprintSha256": "d" * 64,
-            "workspaceOwnershipFingerprintSha256": "e" * 64,
             "workspaceDirty": True,
         }
         self.assertTrue(self.state._valid_change_source_identity(request, identity))
@@ -2015,9 +2010,7 @@ print(json.dumps({
         self.assertFalse(self.state._valid_change_source_identity(request, foreign))
 
         ambiguous = json.loads(json.dumps(identity))
-        ambiguous["sourceFingerprintSha256"] = ownership[
-            "sourceFingerprintSha256"
-        ]
+        ambiguous["sourceFingerprintSha256"] = None
         self.assertFalse(self.state._valid_change_source_identity(request, ambiguous))
 
     def test_change_owned_dispatch_rejects_crossed_or_incompatible_ownership(self):
@@ -2036,11 +2029,6 @@ print(json.dumps({
         incompatible_source = self.change_request()
         incompatible_source["changeOwnership"]["sourceFingerprintSha256"] = "d" * 64
         cases.append(incompatible_source)
-        foreign_fingerprint = self.change_request()
-        foreign_fingerprint["changeOwnership"][
-            "workspaceOwnershipFingerprintSha256"
-        ] = "e" * 64
-        cases.append(foreign_fingerprint)
 
         for request in cases:
             with self.subTest(change=request["changeOwnership"]), self.assertRaises(

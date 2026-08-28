@@ -74,14 +74,15 @@ CHANGE_WORKLOAD_KEYS = {
 CHANGE_OWNERSHIP_KEYS = {
     "changeKey", "databaseWorkSessionId", "remoteSessionId",
     "workspaceIdentity", "databaseProjectId", "baseCommit",
-    "expectedCanonicalCommit", "sourceRevision",
-    "sourceFingerprintSha256", "workspaceOwnershipFingerprintSha256",
+    "sourceRevision", "sourceFingerprintSha256",
 }
 CHANGE_WORKSPACE_RECORD_KEYS = {
     "schemaVersion", "protocolVersion", "changeKey", "databaseProjectId",
-    "projectId", "repository", "repositoryBranch", "baseCommit",
-    "workspaceBranch", "workspaceIdentity", "workerId",
-    "initialSourceFingerprintSha256", "recordSha256",
+    "projectId", "baseCommit", "workspaceBranch", "workspaceIdentity", "workerId",
+}
+LEGACY_CHANGE_WORKSPACE_RECORD_KEYS = CHANGE_WORKSPACE_RECORD_KEYS | {
+    "repository", "repositoryBranch", "initialSourceFingerprintSha256",
+    "recordSha256",
 }
 ATTACHMENT_REFERENCE_KEYS = {"attachmentId", "contentType", "sizeBytes", "sha256"}
 ATTACHMENT_METADATA_KEYS = {
@@ -151,8 +152,8 @@ class InstructionProjection(NamedTuple):
 
 class ChangeSourceObservation(NamedTuple):
     common_dir: Path
-    source_fingerprint_sha256: str
-    workspace_ownership_fingerprint_sha256: str
+    source_commit: str
+    source_fingerprint_sha256: str | None
     workspace_dirty: bool
 
 
@@ -424,7 +425,6 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
             ownership.get("remoteSessionId") != request["sessionId"]
             or ownership.get("workspaceIdentity") != request["workspaceIdentity"]
             or request["workspaceIdentity"] != expected_identity
-            or ownership.get("expectedCanonicalCommit") != workload["commit"]
             or not isinstance(ownership.get("databaseProjectId"), int)
             or isinstance(ownership.get("databaseProjectId"), bool)
             or ownership["databaseProjectId"] < 1
@@ -435,15 +435,11 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
             or isinstance(ownership.get("sourceRevision"), bool)
             or ownership["sourceRevision"] < 0
             or COMMIT_PATTERN.fullmatch(str(ownership.get("baseCommit", ""))) is None
-            or COMMIT_PATTERN.fullmatch(
-                str(ownership.get("expectedCanonicalCommit", ""))
-            ) is None
-            or any(
-                SHA256_PATTERN.fullmatch(str(ownership.get(key, ""))) is None
-                for key in (
-                    "sourceFingerprintSha256",
-                    "workspaceOwnershipFingerprintSha256",
-                )
+            or (
+                ownership.get("sourceFingerprintSha256") is not None
+                and SHA256_PATTERN.fullmatch(
+                    str(ownership.get("sourceFingerprintSha256"))
+                ) is None
             )
         ):
             reject("workspace ownership rejected")
@@ -1080,16 +1076,11 @@ def read_change_workspace_record(
         or record_stat.st_uid != service_uid
         or record_stat.st_gid != owner_gid
         or not isinstance(record, dict)
-        or set(record) != CHANGE_WORKSPACE_RECORD_KEYS
-        or SHA256_PATTERN.fullmatch(
-            str(record.get("initialSourceFingerprintSha256", ""))
-        ) is None
-        or SHA256_PATTERN.fullmatch(str(record.get("recordSha256", ""))) is None
+        or (
+            set(record) != CHANGE_WORKSPACE_RECORD_KEYS
+            and set(record) != LEGACY_CHANGE_WORKSPACE_RECORD_KEYS
+        )
     ):
-        reject("workspace ownership rejected")
-    sealed = dict(record)
-    seal = sealed.pop("recordSha256", None)
-    if not isinstance(seal, str) or canonical_sha256(sealed) != seal:
         reject("workspace ownership rejected")
     expected = {
         "schemaVersion": 1,
@@ -1097,8 +1088,6 @@ def read_change_workspace_record(
         "changeKey": ownership["changeKey"],
         "databaseProjectId": ownership["databaseProjectId"],
         "projectId": PROJECT_ID,
-        "repository": REPOSITORY,
-        "repositoryBranch": BRANCH,
         "baseCommit": ownership["baseCommit"],
         "workspaceBranch": f"atenea/change-{ownership['changeKey']}",
         "workspaceIdentity": ownership["workspaceIdentity"],
@@ -1138,18 +1127,27 @@ def prepare_change_workspace_access(
         reject("workspace ownership rejected")
 
 
-def change_source_fingerprint(
-    worktree: Path, record: dict[str, Any], head: str
-) -> tuple[str, bool]:
+def change_source_fingerprint(worktree: Path, head: str) -> tuple[str | None, bool]:
     status = checked_bytes(
         ["git", "status", "--porcelain=v2", "-z", "--untracked-files=all"],
         worktree,
     )
-    if not status and head == record["baseCommit"]:
-        return record["initialSourceFingerprintSha256"], False
+    if not status:
+        return None, False
+    digest = hashlib.sha256()
+
+    def add(label: bytes, data: bytes) -> None:
+        digest.update(len(label).to_bytes(4, "big"))
+        digest.update(label)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+
+    add(b"head", head.encode("ascii"))
+    add(b"status", status)
     diff = checked_bytes(
         ["git", "diff", "--binary", "--no-ext-diff", "HEAD"], worktree
     )
+    add(b"diff", diff)
     raw_paths = checked_bytes(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], worktree
     )
@@ -1159,7 +1157,6 @@ def change_source_fingerprint(
         reject("worktree fingerprint rejected")
     if len(paths) > 4096:
         reject("worktree fingerprint rejected")
-    untracked = []
     total = 0
     for relative in sorted(paths):
         candidate = worktree / relative
@@ -1176,17 +1173,9 @@ def change_source_fingerprint(
                 reject("worktree fingerprint rejected")
         except OSError:
             reject("worktree fingerprint rejected")
-        untracked.append({
-            "pathSha256": hashlib.sha256(relative.encode()).hexdigest(),
-            "contentSha256": hashlib.sha256(data).hexdigest(),
-        })
-    return canonical_sha256({
-        "initialSourceFingerprintSha256": record["initialSourceFingerprintSha256"],
-        "headCommit": head,
-        "statusSha256": hashlib.sha256(status).hexdigest(),
-        "diffSha256": hashlib.sha256(diff).hexdigest(),
-        "untracked": untracked,
-    }), bool(status)
+        add(b"untracked-path", relative.encode("utf-8"))
+        add(b"untracked-content", data)
+    return digest.hexdigest(), True
 
 
 def observe_change_worktree(
@@ -1213,12 +1202,27 @@ def observe_change_worktree(
         ],
         worktree,
     )
-    canonical = checked(
+    base_exists = subprocess.run(
         [
-            "git", "--git-dir", str(common_dir), "rev-parse", "--verify",
-            f"refs/remotes/origin/{BRANCH}^{{commit}}",
+            "git", "--git-dir", str(common_dir), "cat-file", "-e",
+            f"{ownership['baseCommit']}^{{commit}}",
         ],
-        worktree,
+        cwd=worktree,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    base_ancestor = subprocess.run(
+        [
+            "git", "-c", f"safe.directory={worktree}",
+            "merge-base", "--is-ancestor", ownership["baseCommit"], head,
+        ],
+        cwd=worktree,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
     )
     if (
         Path(root) != worktree
@@ -1228,12 +1232,12 @@ def observe_change_worktree(
         or GIT_COMMON_DIR.is_symlink()
         or branch != f"refs/heads/atenea/change-{ownership['changeKey']}"
         or head != branch_head
-        or canonical != ownership["expectedCanonicalCommit"]
+        or head != request["workload"]["commit"]
+        or base_exists.returncode != 0
+        or base_ancestor.returncode != 0
     ):
         reject("worktree fingerprint rejected")
-    source_fingerprint, workspace_dirty = change_source_fingerprint(
-        worktree, record, head
-    )
+    source_fingerprint, workspace_dirty = change_source_fingerprint(worktree, head)
     head_after = checked(["git", "rev-parse", "--verify", "HEAD^{commit}"], worktree)
     branch_head_after = checked(
         [
@@ -1243,13 +1247,8 @@ def observe_change_worktree(
         worktree,
     )
     source_fingerprint_after, workspace_dirty_after = change_source_fingerprint(
-        worktree, record, head_after
+        worktree, head_after
     )
-    ownership_fingerprint = canonical_sha256({
-        "recordSha256": record["recordSha256"],
-        "branchHead": branch_head,
-        "workspaceIdentity": ownership["workspaceIdentity"],
-    })
     if (
         source_fingerprint_after != source_fingerprint
         or workspace_dirty_after != workspace_dirty
@@ -1259,8 +1258,8 @@ def observe_change_worktree(
         reject("worktree fingerprint rejected")
     return ChangeSourceObservation(
         common_dir,
+        head,
         source_fingerprint,
-        ownership_fingerprint,
         workspace_dirty,
     )
 
@@ -1273,8 +1272,6 @@ def validate_change_worktree(
     if (
         observation.source_fingerprint_sha256
             != ownership["sourceFingerprintSha256"]
-        or observation.workspace_ownership_fingerprint_sha256
-            != ownership["workspaceOwnershipFingerprintSha256"]
     ):
         reject("worktree fingerprint rejected")
     _service_uid, owner_uids, owner_gid = change_workspace_owner_ids()
@@ -1293,10 +1290,8 @@ def post_run_source_identity(
         "remoteSessionId": ownership["remoteSessionId"],
         "workspaceIdentity": ownership["workspaceIdentity"],
         "executionId": request["executionId"],
+        "sourceCommit": observation.source_commit,
         "sourceFingerprintSha256": observation.source_fingerprint_sha256,
-        "workspaceOwnershipFingerprintSha256": (
-            observation.workspace_ownership_fingerprint_sha256
-        ),
         "workspaceDirty": observation.workspace_dirty,
     }
 

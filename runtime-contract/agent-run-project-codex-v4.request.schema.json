@@ -23,8 +23,7 @@
       "required": [
         "changeKey", "databaseWorkSessionId", "remoteSessionId",
         "workspaceIdentity", "databaseProjectId", "baseCommit",
-        "expectedCanonicalCommit", "sourceRevision",
-        "sourceFingerprintSha256", "workspaceOwnershipFingerprintSha256"
+        "sourceRevision", "sourceFingerprintSha256"
       ],
       "properties": {
         "changeKey": {"type": "string", "format": "uuid"},
@@ -36,10 +35,8 @@
         },
         "databaseProjectId": {"type": "integer", "minimum": 1},
         "baseCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "expectedCanonicalCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "sourceRevision": {"type": "integer", "minimum": 0},
-        "sourceFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "workspaceOwnershipFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "sourceFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "workload": {
