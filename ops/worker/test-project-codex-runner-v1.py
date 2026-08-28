@@ -272,6 +272,12 @@ class ProjectCodexContractTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 MODULE.validate_config(candidate, runner)
 
+        for legacy_authority in ("commit", "workspaces"):
+            candidate = json.loads(json.dumps(config))
+            candidate.pop(legacy_authority)
+            with self.assertRaises(SystemExit):
+                MODULE.validate_config(candidate, runner)
+
     def test_exact_real_attachment_is_verified_without_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "attachments-v1"
@@ -1433,8 +1439,10 @@ class ProjectCodexContractTest(unittest.TestCase):
                 "ownershipFingerprintSha256"
             ]
             config = self.atenea_config()
-            config["commit"] = commit
-            config.pop("manifestSha256")
+            config["selectionEnabled"] = False
+            config["commit"] = "2" * 40
+            config["manifestSha256"] = "3" * 64
+            config.pop("workspaces")
             worktree = changes / ownership["changeKey"] / MODULE.PROJECT_ID
             os.chmod(worktree.parent, 0o700)
             os.chmod(worktree, 0o700)
@@ -1447,7 +1455,7 @@ class ProjectCodexContractTest(unittest.TestCase):
             MODULE.GIT_COMMON_DIR = mirror
             try:
                 MODULE.validate_config(
-                    config, Path(MODULE.__file__).resolve(), enforce_manifest=False
+                    config, Path(MODULE.__file__).resolve(), legacy_registry_required=False
                 )
                 with patch.object(
                     MODULE,

@@ -1956,10 +1956,16 @@ print(json.dumps({
 
     def test_change_owned_dispatch_reuses_exact_workspace_and_replay_is_stable(self):
         request = self.change_request()
-        self.assertIn(MODULE.PROJECT_V4_CAPABILITY, self.state.health()["capabilities"])
         config = json.loads(self.config.read_text(encoding="utf-8"))
-        config.pop("manifestSha256")
+        config["selectionEnabled"] = False
+        config["commit"] = "2" * 40
+        config["manifestSha256"] = "3" * 64
+        config.pop("workspaces")
         self.config.write_text(json.dumps(config), encoding="utf-8")
+        health = self.state.health()["capabilities"]
+        self.assertIn(MODULE.PROJECT_V4_CAPABILITY, health)
+        self.assertNotIn(MODULE.PROJECT_CAPABILITY, health)
+        self.assertNotIn(MODULE.PROJECT_V2_CAPABILITY, health)
         created, was_created = self.state.create(request)
         terminal = self.wait_terminal(request["dispatchId"])
         calls_before_replay = self.change_mediator_calls.read_text().splitlines()
