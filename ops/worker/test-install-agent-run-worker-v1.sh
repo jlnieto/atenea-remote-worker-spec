@@ -61,6 +61,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "${PROJECT_PINNED_WORKSPACE_SESSION_ID}" == "6547081d-895e-4be1-a8fd-d115b7743cdf" \
     && "${PROJECT_PINNED_WORKSPACE_COMMIT}" == "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5" \
     && "${PROJECT_PINNED_SOURCE_TARGET_COMMIT}" == "96220cd4eb0cf2f6ec985588d086f159eb2baebc" \
+    && "${PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT}" == "a8612dbf501089daf7043905c0fb67b4c59a3abf" \
     && "${PROJECT_PINNED_WORKSPACE_RECORD_SHA256}" == "3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7" \
     && "${PROJECT_PINNED_ALLOCATION_SHA256}" == "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87" \
     && "${PROJECT_PINNED_DIRTY_PATH}" == "android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt" \
@@ -740,6 +741,68 @@ PINNED_REPEAT_PREFLIGHT="$(project_config_install_preflight)"
 project_config_install_finalize "${PINNED_REPEAT_PREFLIGHT}"
 cmp -s "${PINNED_REGISTRY_SUCCESSOR}" "${PROJECT_CONFIG}" \
   || fail "advanced pinned registry was rewritten on repeated install"
+
+# Retain the one reviewed enabled predecessor without changing its registry or
+# pinned WS19 state. Other commits, workspace identities and dirty drafts remain
+# subject to the general fail-closed rule.
+HISTORICAL_TREE="$(git -C "${WORKTREE}" rev-parse "${CANONICAL_COMMIT}^{tree}")"
+HISTORICAL_PREDECESSOR_COMMIT="$(printf 'historical predecessor\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${HISTORICAL_TREE}" -p "${CANONICAL_COMMIT}")"
+git --git-dir="${PROJECT_MIRROR}" fetch -q "${WORKTREE}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_PREDECESSOR_COMMIT}" "${CANONICAL_COMMIT}"
+PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT="${HISTORICAL_PREDECESSOR_COMMIT}"
+write_project_config true true "${PINNED_WORKSPACES}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
+HISTORICAL_CONFIG_SHA_BEFORE="$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)"
+HISTORICAL_WORKSPACE_STATUS_BEFORE="$(git -C "${WORKTREE}" status \
+  --porcelain=v1 --untracked-files=all)"
+HISTORICAL_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${HISTORICAL_PREFLIGHT}" == "retain:${HISTORICAL_CONFIG_SHA_BEFORE}" ]] \
+  || fail "installer did not recognize the exact enabled retained predecessor"
+project_config_install_finalize "${HISTORICAL_PREFLIGHT}"
+[[ "$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)" \
+      == "${HISTORICAL_CONFIG_SHA_BEFORE}" \
+    && "$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)" \
+      == "${HISTORICAL_WORKSPACE_STATUS_BEFORE}" \
+    && "$(git -C "${WORKTREE}" rev-parse HEAD)" == "${PINNED_HEAD_BEFORE}" \
+    && "$(git -C "${WORKTREE}" write-tree)" == "${PINNED_INDEX_BEFORE}" \
+    && "$(sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)" \
+      == "${PINNED_DIRTY_SHA_BEFORE}" \
+    && "$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)" \
+      == "${PINNED_RECORD_SHA_BEFORE}" \
+    && "$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)" \
+      == "${PINNED_ALLOCATION_SHA_BEFORE}" ]] \
+  || fail "exact enabled retained predecessor state changed"
+
+OTHER_PREDECESSOR_COMMIT="$(printf 'other predecessor\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${HISTORICAL_TREE}" -p "${HISTORICAL_PREDECESSOR_COMMIT}")"
+git --git-dir="${PROJECT_MIRROR}" fetch -q "${WORKTREE}" \
+  "${OTHER_PREDECESSOR_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${OTHER_PREDECESSOR_COMMIT}" "${HISTORICAL_PREDECESSOR_COMMIT}"
+jq --arg commit "${OTHER_PREDECESSOR_COMMIT}" '.commit = $commit' \
+  "${PROJECT_CONFIG}" >"${PROJECT_CONFIG}.rejected"
+mv "${PROJECT_CONFIG}.rejected" "${PROJECT_CONFIG}"
+assert_pinned_preflight_rejected "different enabled retained predecessor commit"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_PREDECESSOR_COMMIT}" "${OTHER_PREDECESSOR_COMMIT}"
+
+write_project_config true true "${PINNED_WORKSPACES}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
+jq '.workspaces = {"foreign": (.workspaces | to_entries[0].value)}' \
+  "${PROJECT_CONFIG}" >"${PROJECT_CONFIG}.rejected"
+mv "${PROJECT_CONFIG}.rejected" "${PROJECT_CONFIG}"
+assert_pinned_preflight_rejected "different enabled retained predecessor workspace identity"
+
+write_project_config true true "${PINNED_WORKSPACES}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
+printf 'arbitrary draft\n' >>"${WORKTREE}/tracked.txt"
+assert_pinned_preflight_rejected "arbitrary enabled retained draft"
+git -C "${WORKTREE}" checkout -q -- tracked.txt
 
 CONTROL_PLANE_IP=100.64.0.10
 ATTACHMENT_ROOT="${TEST_ROOT}/retained"
