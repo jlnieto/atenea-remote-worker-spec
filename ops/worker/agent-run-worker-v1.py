@@ -1207,7 +1207,8 @@ class WorkerState:
             if change_workspace_available:
                 capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY)
-                if project_selection_enabled:
+                route = self._project_route(PROJECT_ID)
+                if route is not None and self._project_execution_enabled(route, False):
                     capabilities.append(PROJECT_V4_CAPABILITY)
             if (
                 self.codex_update_mediator is not None
@@ -3626,7 +3627,7 @@ class WorkerState:
                 "image-bearing project configuration is not activated",
             )
         observed_commit = self._observe_project_commit(route)
-        if config["commit"] != observed_commit or workload["commit"] != observed_commit:
+        if workload["commit"] != observed_commit:
             raise ProtocolError(
                 HTTPStatus.CONFLICT,
                 "canonical_source_moved",
@@ -3910,7 +3911,8 @@ class WorkerState:
         return None
 
     def _read_project_config(
-        self, route: dict[str, Any], require_execution: bool = False, enforce_manifest: bool = True,
+        self, route: dict[str, Any], require_execution: bool = False,
+        legacy_registry_required: bool = True,
     ) -> dict[str, Any]:
         project_config = route["config"]
         project_runner = route["runner"]
@@ -3923,32 +3925,41 @@ class WorkerState:
             raise ProtocolError(HTTPStatus.FORBIDDEN, "project_disabled", "project configuration is unavailable")
         if stat.st_uid != self.project_config_uid or stat.st_mode & 0o022:
             raise ProtocolError(HTTPStatus.FORBIDDEN, "project_disabled", "project configuration ownership is unsafe")
-        required = {
+        legacy_fields = {
             "schemaVersion", "selectionEnabled", "executionEnabled",
             "projectId", "repository", "branch",
             "commit", "manifestSha256", "runner", "workspaces",
         }
+        shared_fields = {
+            "schemaVersion", "executionEnabled", "projectId", "repository", "branch", "runner",
+        }
+        allowed_fields = legacy_fields | {"attachmentRoot"}
+        required_fields = legacy_fields if legacy_registry_required else shared_fields
         exact = {"schemaVersion": PROJECT_CAPABILITY, **route["identity"]}
-        accepted_key_sets = {frozenset(required), frozenset(required - {"manifestSha256"})}
-        if not enforce_manifest:
-            exact.pop("manifestSha256")
-        if route["identity"]["projectId"] == PROJECT_ID:
-            accepted_key_sets |= {keys | {"attachmentRoot"} for keys in accepted_key_sets}
+        if not legacy_registry_required:
+            exact.pop("commit", None)
+            exact.pop("manifestSha256", None)
         if (
             not isinstance(parsed, dict)
-            or frozenset(parsed) not in accepted_key_sets
+            or not required_fields.issubset(parsed)
+            or not set(parsed).issubset(allowed_fields)
             or any(parsed.get(key) != value for key, value in exact.items())
             or (
                 "attachmentRoot" in parsed
                 and parsed.get("attachmentRoot") != PROJECT_ATTACHMENT_ROOT
             )
-            or not isinstance(parsed.get("commit"), str)
-            or COMMIT_PATTERN.fullmatch(parsed["commit"]) is None
-            or parsed.get("selectionEnabled") is not True
+            or (
+                legacy_registry_required
+                and (
+                    not isinstance(parsed.get("commit"), str)
+                    or COMMIT_PATTERN.fullmatch(parsed["commit"]) is None
+                    or parsed.get("selectionEnabled") is not True
+                    or not isinstance(parsed.get("workspaces"), dict)
+                )
+            )
             or not isinstance(parsed.get("executionEnabled"), bool)
             or (require_execution and parsed.get("executionEnabled") is not True)
             or parsed.get("runner") != str(project_runner)
-            or not isinstance(parsed.get("workspaces"), dict)
         ):
             raise ProtocolError(HTTPStatus.FORBIDDEN, "project_disabled", "project configuration is not exact")
         return parsed
@@ -4084,10 +4095,10 @@ class WorkerState:
         return False
 
     def _project_execution_enabled(
-        self, route: dict[str, Any], enforce_manifest: bool = True
+        self, route: dict[str, Any], legacy_registry_required: bool = True
     ) -> bool:
         try:
-            self._read_project_config(route, True, enforce_manifest)
+            self._read_project_config(route, True, legacy_registry_required)
             return route["runner"] is not None and route["runner"].is_file()
         except ProtocolError:
             return False

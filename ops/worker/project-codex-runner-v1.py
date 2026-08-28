@@ -296,16 +296,18 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def validate_config(
     config: dict[str, Any], runner: Path, require_execution: bool = True,
-    enforce_manifest: bool = True,
+    legacy_registry_required: bool = True,
 ) -> None:
-    required = {
+    legacy_fields = {
         "schemaVersion", "selectionEnabled", "executionEnabled",
         "projectId", "repository", "branch",
         "commit", "manifestSha256", "runner", "workspaces",
     }
-    accepted_key_sets = {frozenset(required), frozenset(required - {"manifestSha256"})}
-    if PROJECT_ID == "atenea":
-        accepted_key_sets |= {keys | {"attachmentRoot"} for keys in accepted_key_sets}
+    shared_fields = {
+        "schemaVersion", "executionEnabled", "projectId", "repository", "branch", "runner",
+    }
+    allowed_fields = legacy_fields | ({"attachmentRoot"} if PROJECT_ID == "atenea" else set())
+    required_fields = legacy_fields if legacy_registry_required else shared_fields
     exact = {
         "schemaVersion": CAPABILITY,
         "projectId": PROJECT_ID,
@@ -313,25 +315,31 @@ def validate_config(
         "branch": BRANCH,
         "runner": str(runner),
     }
-    if enforce_manifest:
+    if legacy_registry_required:
         exact["manifestSha256"] = MANIFEST_SHA256
     if (
-        frozenset(config) not in accepted_key_sets
+        not required_fields.issubset(config)
+        or not set(config).issubset(allowed_fields)
         or any(config.get(key) != value for key, value in exact.items())
         or (
             "attachmentRoot" in config
             and config.get("attachmentRoot") != str(ATTACHMENT_ROOT)
         )
-        or not isinstance(config.get("commit"), str)
-        or COMMIT_PATTERN.fullmatch(config["commit"]) is None
-        or (BASE_COMMIT is not None and config["commit"] != BASE_COMMIT)
-        or not isinstance(config.get("selectionEnabled"), bool)
+        or (
+            legacy_registry_required
+            and (
+                not isinstance(config.get("commit"), str)
+                or COMMIT_PATTERN.fullmatch(config["commit"]) is None
+                or (BASE_COMMIT is not None and config["commit"] != BASE_COMMIT)
+                or config.get("selectionEnabled") is not True
+                or not isinstance(config.get("workspaces"), dict)
+            )
+        )
         or not isinstance(config.get("executionEnabled"), bool)
         or (
             require_execution
-            and (config["selectionEnabled"] is not True or config["executionEnabled"] is not True)
+            and config["executionEnabled"] is not True
         )
-        or not isinstance(config.get("workspaces"), dict)
     ):
         reject("project configuration rejected")
 
@@ -378,7 +386,10 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
         or capability not in allowed_capabilities
         or set(workload) != workload_keys
         or any(workload.get(key) != value for key, value in exact.items())
-        or workload.get("commit") != config["commit"]
+        or (
+            capability != CHANGE_CAPABILITY
+            and workload.get("commit") != config["commit"]
+        )
         or not isinstance(workload.get("message"), str)
         or not (1 <= len(workload["message"]) <= 20_000)
     ):
@@ -1655,7 +1666,7 @@ def main() -> int:
         reject("workspace ownership rejected")
     workload_value = request.get("workload") if isinstance(request, dict) else None
     capability = workload_value.get("kind") if isinstance(workload_value, dict) else None
-    validate_config(config, runner, enforce_manifest=capability != CHANGE_CAPABILITY)
+    validate_config(config, runner, legacy_registry_required=capability != CHANGE_CAPABILITY)
     workload, worktree = validate_request(request, config)
     validate_codex_version(workload)
     if workload["kind"] == CHANGE_CAPABILITY:
