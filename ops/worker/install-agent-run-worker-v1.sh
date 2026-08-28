@@ -48,6 +48,7 @@ PROJECT_TRANSITION_TARGET_COMMIT="615e539d1f2622a4ac2568ba7697b876d49ae33e"
 PROJECT_PINNED_WORKSPACE_SESSION_ID="6547081d-895e-4be1-a8fd-d115b7743cdf"
 PROJECT_PINNED_WORKSPACE_COMMIT="e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5"
 PROJECT_PINNED_SOURCE_TARGET_COMMIT="96220cd4eb0cf2f6ec985588d086f159eb2baebc"
+PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT="a8612dbf501089daf7043905c0fb67b4c59a3abf"
 PROJECT_PINNED_WORKSPACE_RECORD_SHA256="3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7"
 PROJECT_PINNED_ALLOCATION_SHA256="08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87"
 PROJECT_PINNED_DIRTY_PATH="android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt"
@@ -434,9 +435,14 @@ verify_project_config_content() {
   if [[ "$retained_commit" == "$canonical_commit" ]]; then
     [[ -z "$status" ]] || fail "current project worktree is not clean"
   else
-    [[ "$(jq -r '.selectionEnabled' "$PROJECT_CONFIG")" == true \
+    if [[ "$(jq -r '.selectionEnabled' "$PROJECT_CONFIG")" == true \
         && "$(jq -r '.executionEnabled' "$PROJECT_CONFIG")" == false \
-        && -n "$status" ]] || fail "retained project draft is not safely disabled"
+        && -n "$status" ]]; then
+      :
+    elif ! ( verify_project_config_pinned_workspace_content \
+        "$PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT" ) >/dev/null 2>&1; then
+      fail "retained project draft is not safely disabled"
+    fi
     git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor "$retained_commit" "$canonical_commit" \
       || fail "retained project draft is not an ancestor of canonical source"
   fi
