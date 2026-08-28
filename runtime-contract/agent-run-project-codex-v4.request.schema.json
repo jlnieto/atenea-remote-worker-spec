@@ -47,10 +47,8 @@
       "additionalProperties": false,
       "required": [
         "kind", "projectId", "repository", "branch", "commit",
-        "manifestSha256", "instructionBundleRevision", "instructionBundleSha256",
-        "platformInstructionSha256", "projectInstructionPath",
-        "projectInstructionSha256", "modelId", "reasoningEffort",
-        "catalogRevision", "codexVersion", "message", "threadId", "attachments"
+        "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
+        "message", "threadId", "attachments"
       ],
       "properties": {
         "kind": {"const": "project-codex-v4"},
@@ -58,12 +56,6 @@
         "repository": {"const": "https://github.com/jlnieto/atenea.git"},
         "branch": {"const": "main"},
         "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "instructionBundleRevision": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"},
-        "instructionBundleSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "platformInstructionSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "projectInstructionPath": {"const": "AGENTS.md"},
-        "projectInstructionSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "modelId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"},
         "reasoningEffort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]},
         "catalogRevision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
