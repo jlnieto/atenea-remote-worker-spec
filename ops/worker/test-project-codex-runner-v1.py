@@ -65,6 +65,12 @@ class ProjectCodexContractTest(unittest.TestCase):
         workspace_identity = "remote:ax42-01:change:" + change_key
         workload = self.profiled_workload()
         workload.update({"kind": MODULE.CHANGE_CAPABILITY, "attachments": []})
+        for key in (
+            "manifestSha256", "instructionBundleRevision",
+            "instructionBundleSha256", "platformInstructionSha256",
+            "projectInstructionPath", "projectInstructionSha256",
+        ):
+            workload.pop(key)
         return {
             "dispatchId": "33333333-3333-4333-8333-333333333333",
             "executionId": "44444444-4444-4444-8444-444444444444",
@@ -1237,19 +1243,40 @@ class ProjectCodexContractTest(unittest.TestCase):
                 self.assertIn("repository contract", bundle.developer_instructions)
                 self.assertEqual(project_bytes, bundle.project_bytes)
 
+                MODULE.PROJECT_INSTRUCTION_SHA256 = "1" * 64
+                MODULE.INSTRUCTION_BUNDLE_SHA256 = "2" * 64
+                unpinned = MODULE.validate_instruction_bundle(
+                    worktree, enforce_legacy_bundle_pins=False
+                )
+                self.assertIn("platform contract", unpinned.developer_instructions)
+                self.assertEqual(project_bytes, unpinned.project_bytes)
+
+                MODULE.PLATFORM_INSTRUCTION_SHA256 = "3" * 64
+                with self.assertRaises(SystemExit):
+                    MODULE.validate_instruction_bundle(
+                        worktree, enforce_legacy_bundle_pins=False
+                    )
+                MODULE.PLATFORM_INSTRUCTION_SHA256 = hashlib.sha256(platform_bytes).hexdigest()
+
                 (worktree / "AGENTS.override.md").write_text("ambient\n", encoding="utf-8")
                 with self.assertRaises(SystemExit):
-                    MODULE.validate_instruction_bundle(worktree)
+                    MODULE.validate_instruction_bundle(
+                        worktree, enforce_legacy_bundle_pins=False
+                    )
                 (worktree / "AGENTS.override.md").unlink()
 
                 (worktree / ".codex").mkdir()
                 with self.assertRaises(SystemExit):
-                    MODULE.validate_instruction_bundle(worktree)
+                    MODULE.validate_instruction_bundle(
+                        worktree, enforce_legacy_bundle_pins=False
+                    )
                 (worktree / ".codex").rmdir()
 
                 agents.write_text("changed contract\n", encoding="utf-8")
                 with self.assertRaises(SystemExit):
-                    MODULE.validate_instruction_bundle(worktree)
+                    MODULE.validate_instruction_bundle(
+                        worktree, enforce_legacy_bundle_pins=False
+                    )
             finally:
                 (
                     MODULE.PLATFORM_INSTRUCTION_PATH,
@@ -1338,9 +1365,6 @@ class ProjectCodexContractTest(unittest.TestCase):
                 cwd=source,
                 check=True,
             )
-            (source / "ops").mkdir()
-            manifest = source / "ops" / "atenea-runtime.json"
-            manifest.write_text("{}\n", encoding="utf-8")
             (source / "AGENTS.md").write_text("reviewed\n", encoding="utf-8")
             (source / "tracked.txt").write_text("base\n", encoding="utf-8")
             subprocess.run(["git", "add", "."], cwd=source, check=True)
@@ -1371,9 +1395,6 @@ class ProjectCodexContractTest(unittest.TestCase):
             )
             runner_request = self.change_request()
             runner_request["workload"]["commit"] = commit
-            runner_request["workload"]["manifestSha256"] = hashlib.sha256(
-                manifest.read_bytes()
-            ).hexdigest()
             ownership = runner_request["changeOwnership"]
             ownership["baseCommit"] = commit
             ownership["expectedCanonicalCommit"] = commit
@@ -1413,6 +1434,7 @@ class ProjectCodexContractTest(unittest.TestCase):
             ]
             config = self.atenea_config()
             config["commit"] = commit
+            config.pop("manifestSha256")
             worktree = changes / ownership["changeKey"] / MODULE.PROJECT_ID
             os.chmod(worktree.parent, 0o700)
             os.chmod(worktree, 0o700)
@@ -1420,12 +1442,13 @@ class ProjectCodexContractTest(unittest.TestCase):
             old_values = (
                 MODULE.CHANGE_WORKSPACE_PARENT,
                 MODULE.GIT_COMMON_DIR,
-                MODULE.MANIFEST_SHA256,
             )
             MODULE.CHANGE_WORKSPACE_PARENT = changes
             MODULE.GIT_COMMON_DIR = mirror
-            MODULE.MANIFEST_SHA256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
             try:
+                MODULE.validate_config(
+                    config, Path(MODULE.__file__).resolve(), enforce_manifest=False
+                )
                 with patch.object(
                     MODULE,
                     "change_workspace_owner_ids",
@@ -1510,7 +1533,6 @@ class ProjectCodexContractTest(unittest.TestCase):
                 (
                     MODULE.CHANGE_WORKSPACE_PARENT,
                     MODULE.GIT_COMMON_DIR,
-                    MODULE.MANIFEST_SHA256,
                 ) = old_values
 
 

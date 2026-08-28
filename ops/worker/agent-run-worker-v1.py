@@ -118,7 +118,10 @@ PROJECT_V2_WORKLOAD_KEYS = PROJECT_WORKLOAD_KEYS | {
     "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
 }
 PROJECT_V3_WORKLOAD_KEYS = PROJECT_V2_WORKLOAD_KEYS | {"attachments"}
-PROJECT_V4_WORKLOAD_KEYS = PROJECT_V3_WORKLOAD_KEYS
+PROJECT_V4_WORKLOAD_KEYS = {
+    "kind", "projectId", "repository", "branch", "commit", "message", "threadId",
+    "modelId", "reasoningEffort", "catalogRevision", "codexVersion", "attachments",
+}
 PROJECT_V3_ATTACHMENT_KEYS = {"attachmentId", "contentType", "sizeBytes", "sha256"}
 PROJECT_V3_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
 PROJECT_V3_MAX_ATTACHMENTS = 4
@@ -3486,12 +3489,6 @@ class WorkerState:
             "projectId": PROJECT_ID,
             "repository": PROJECT_REPOSITORY,
             "branch": PROJECT_BRANCH,
-            "manifestSha256": PROJECT_MANIFEST_SHA256,
-            "instructionBundleRevision": INSTRUCTION_BUNDLE_REVISION,
-            "instructionBundleSha256": ATENEA_INSTRUCTION_BUNDLE_SHA256,
-            "platformInstructionSha256": PLATFORM_INSTRUCTION_SHA256,
-            "projectInstructionPath": PROJECT_INSTRUCTION_PATH,
-            "projectInstructionSha256": ATENEA_PROJECT_INSTRUCTION_SHA256,
         }
         if any(workload.get(key) != value for key, value in exact_project.items()):
             raise ProtocolError(
@@ -3614,11 +3611,11 @@ class WorkerState:
         workload: dict[str, Any],
     ) -> None:
         route = self._project_route(workload.get("projectId"))
-        if route is None or not self._project_execution_enabled(route):
+        if route is None or not self._project_execution_enabled(route, False):
             raise ProtocolError(
                 HTTPStatus.FORBIDDEN, "project_disabled", "project workload is disabled"
             )
-        config = self._read_project_config(route, require_execution=True)
+        config = self._read_project_config(route, True, False)
         if (
             workload.get("attachments")
             and config.get("attachmentRoot") != PROJECT_ATTACHMENT_ROOT
@@ -3913,7 +3910,7 @@ class WorkerState:
         return None
 
     def _read_project_config(
-        self, route: dict[str, Any], require_execution: bool = False
+        self, route: dict[str, Any], require_execution: bool = False, enforce_manifest: bool = True,
     ) -> dict[str, Any]:
         project_config = route["config"]
         project_runner = route["runner"]
@@ -3932,9 +3929,11 @@ class WorkerState:
             "commit", "manifestSha256", "runner", "workspaces",
         }
         exact = {"schemaVersion": PROJECT_CAPABILITY, **route["identity"]}
-        accepted_key_sets = {frozenset(required)}
+        accepted_key_sets = {frozenset(required), frozenset(required - {"manifestSha256"})}
+        if not enforce_manifest:
+            exact.pop("manifestSha256")
         if route["identity"]["projectId"] == PROJECT_ID:
-            accepted_key_sets.add(frozenset(required | {"attachmentRoot"}))
+            accepted_key_sets |= {keys | {"attachmentRoot"} for keys in accepted_key_sets}
         if (
             not isinstance(parsed, dict)
             or frozenset(parsed) not in accepted_key_sets
@@ -4084,9 +4083,11 @@ class WorkerState:
                 continue
         return False
 
-    def _project_execution_enabled(self, route: dict[str, Any]) -> bool:
+    def _project_execution_enabled(
+        self, route: dict[str, Any], enforce_manifest: bool = True
+    ) -> bool:
         try:
-            self._read_project_config(route, require_execution=True)
+            self._read_project_config(route, True, enforce_manifest)
             return route["runner"] is not None and route["runner"].is_file()
         except ProtocolError:
             return False

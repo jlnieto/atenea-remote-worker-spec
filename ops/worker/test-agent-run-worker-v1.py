@@ -1925,6 +1925,12 @@ print(json.dumps({
             "message": message,
             "attachments": [],
         })
+        for key in (
+            "manifestSha256", "instructionBundleRevision",
+            "instructionBundleSha256", "platformInstructionSha256",
+            "projectInstructionPath", "projectInstructionSha256",
+        ):
+            request["workload"].pop(key)
         return request
 
     def wait_terminal(self, dispatch_id, timeout=5):
@@ -1951,6 +1957,9 @@ print(json.dumps({
     def test_change_owned_dispatch_reuses_exact_workspace_and_replay_is_stable(self):
         request = self.change_request()
         self.assertIn(MODULE.PROJECT_V4_CAPABILITY, self.state.health()["capabilities"])
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config.pop("manifestSha256")
+        self.config.write_text(json.dumps(config), encoding="utf-8")
         created, was_created = self.state.create(request)
         terminal = self.wait_terminal(request["dispatchId"])
         calls_before_replay = self.change_mediator_calls.read_text().splitlines()

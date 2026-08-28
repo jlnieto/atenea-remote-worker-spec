@@ -67,7 +67,10 @@ PROFILED_WORKLOAD_KEYS = WORKLOAD_KEYS | {
     "modelId", "reasoningEffort", "catalogRevision", "codexVersion",
 }
 IMAGE_WORKLOAD_KEYS = PROFILED_WORKLOAD_KEYS | {"attachments"}
-CHANGE_WORKLOAD_KEYS = IMAGE_WORKLOAD_KEYS
+CHANGE_WORKLOAD_KEYS = {
+    "kind", "projectId", "repository", "branch", "commit", "message", "threadId",
+    "modelId", "reasoningEffort", "catalogRevision", "codexVersion", "attachments",
+}
 CHANGE_OWNERSHIP_KEYS = {
     "changeKey", "databaseWorkSessionId", "remoteSessionId",
     "workspaceIdentity", "databaseProjectId", "baseCommit",
@@ -292,24 +295,26 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def validate_config(
-    config: dict[str, Any], runner: Path, require_execution: bool = True
+    config: dict[str, Any], runner: Path, require_execution: bool = True,
+    enforce_manifest: bool = True,
 ) -> None:
     required = {
         "schemaVersion", "selectionEnabled", "executionEnabled",
         "projectId", "repository", "branch",
         "commit", "manifestSha256", "runner", "workspaces",
     }
-    accepted_key_sets = {frozenset(required)}
+    accepted_key_sets = {frozenset(required), frozenset(required - {"manifestSha256"})}
     if PROJECT_ID == "atenea":
-        accepted_key_sets.add(frozenset(required | {"attachmentRoot"}))
+        accepted_key_sets |= {keys | {"attachmentRoot"} for keys in accepted_key_sets}
     exact = {
         "schemaVersion": CAPABILITY,
         "projectId": PROJECT_ID,
         "repository": REPOSITORY,
         "branch": BRANCH,
-        "manifestSha256": MANIFEST_SHA256,
         "runner": str(runner),
     }
+    if enforce_manifest:
+        exact["manifestSha256"] = MANIFEST_SHA256
     if (
         frozenset(config) not in accepted_key_sets
         or any(config.get(key) != value for key, value in exact.items())
@@ -361,13 +366,13 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
         "projectId": PROJECT_ID,
         "repository": REPOSITORY,
         "branch": BRANCH,
-        "manifestSha256": MANIFEST_SHA256,
-        "instructionBundleRevision": INSTRUCTION_BUNDLE_REVISION,
-        "instructionBundleSha256": INSTRUCTION_BUNDLE_SHA256,
-        "platformInstructionSha256": PLATFORM_INSTRUCTION_SHA256,
-        "projectInstructionPath": PROJECT_INSTRUCTION_PATH,
-        "projectInstructionSha256": PROJECT_INSTRUCTION_SHA256,
     }
+    if capability != CHANGE_CAPABILITY:
+        exact.update({
+            "manifestSha256": MANIFEST_SHA256, "instructionBundleRevision": INSTRUCTION_BUNDLE_REVISION,
+            "instructionBundleSha256": INSTRUCTION_BUNDLE_SHA256, "platformInstructionSha256": PLATFORM_INSTRUCTION_SHA256,
+            "projectInstructionPath": PROJECT_INSTRUCTION_PATH, "projectInstructionSha256": PROJECT_INSTRUCTION_SHA256,
+        })
     if (
         not isinstance(workload, dict)
         or capability not in allowed_capabilities
@@ -1241,13 +1246,6 @@ def observe_change_worktree(
         or branch_head_after != branch_head
     ):
         reject("worktree fingerprint rejected")
-    manifest = worktree / "ops" / "atenea-runtime.json"
-    try:
-        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
-    except OSError:
-        reject("worktree fingerprint rejected")
-    if digest != MANIFEST_SHA256:
-        reject("worktree fingerprint rejected")
     return ChangeSourceObservation(
         common_dir,
         source_fingerprint,
@@ -1332,7 +1330,7 @@ def validate_worktree(worktree: Path, record: dict[str, Any]) -> Path:
     return common_dir
 
 
-def validate_instruction_bundle(worktree: Path) -> ReviewedInstructionBundle:
+def validate_instruction_bundle(worktree: Path, enforce_legacy_bundle_pins: bool = True) -> ReviewedInstructionBundle:
     project_path = worktree / PROJECT_INSTRUCTION_PATH
     forbidden = (
         worktree / "AGENTS.override.md",
@@ -1356,7 +1354,7 @@ def validate_instruction_bundle(worktree: Path) -> ReviewedInstructionBundle:
         or project_stat.st_size > 32_768
         or any(path.exists() or path.is_symlink() for path in forbidden)
         or hashlib.sha256(platform).hexdigest() != PLATFORM_INSTRUCTION_SHA256
-        or hashlib.sha256(project).hexdigest() != PROJECT_INSTRUCTION_SHA256
+        or (enforce_legacy_bundle_pins and hashlib.sha256(project).hexdigest() != PROJECT_INSTRUCTION_SHA256)
     ):
         reject("instruction bundle rejected")
     try:
@@ -1373,11 +1371,10 @@ def validate_instruction_bundle(worktree: Path) -> ReviewedInstructionBundle:
         reject("instruction bundle rejected")
     if tracked != project:
         reject("instruction bundle rejected")
-    fingerprint = hashlib.sha256(
-        INSTRUCTION_BUNDLE_REVISION.encode("ascii")
-        + b"\0" + platform + b"\0" + project
-    ).hexdigest()
-    if fingerprint != INSTRUCTION_BUNDLE_SHA256:
+    if enforce_legacy_bundle_pins and hashlib.sha256(
+            INSTRUCTION_BUNDLE_REVISION.encode("ascii")
+            + b"\0" + platform + b"\0" + project
+        ).hexdigest() != INSTRUCTION_BUNDLE_SHA256:
         reject("instruction bundle rejected")
     try:
         return ReviewedInstructionBundle(
@@ -1643,8 +1640,8 @@ def main() -> int:
         reject("project configuration rejected")
     runner = Path(__file__).resolve()
     config = load_json(args.config)
-    validate_config(config, runner, require_execution=not args.reconcile_materializations)
     if args.reconcile_materializations:
+        validate_config(config, runner, require_execution=False)
         try:
             reconciliation = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1656,6 +1653,9 @@ def main() -> int:
         request = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError):
         reject("workspace ownership rejected")
+    workload_value = request.get("workload") if isinstance(request, dict) else None
+    capability = workload_value.get("kind") if isinstance(workload_value, dict) else None
+    validate_config(config, runner, enforce_manifest=capability != CHANGE_CAPABILITY)
     workload, worktree = validate_request(request, config)
     validate_codex_version(workload)
     if workload["kind"] == CHANGE_CAPABILITY:
@@ -1663,7 +1663,7 @@ def main() -> int:
     else:
         record = config["workspaces"][request["workspaceIdentity"]]
         common_dir = validate_worktree(worktree, record)
-    instruction_bundle = validate_instruction_bundle(worktree)
+    instruction_bundle = validate_instruction_bundle(worktree, workload["kind"] != CHANGE_CAPABILITY)
     verified_attachments = validate_attachment_references(request, workload, config)
     try:
         with materialize_attachments(
