@@ -146,12 +146,12 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
             "repository": "https://github.com/jlnieto/atenea.git",
             "repositoryBranch": "main",
             "baseCommit": self.base_commit,
-            "expectedCanonicalCommit": self.base_commit,
+            "sourceCommit": self.base_commit,
             "workspaceBranch": f"atenea/change-{key}",
             "workspaceIdentity": f"remote:ax42-01:change:{key}",
             "workerId": "ax42-01",
             "sourceRevision": 0,
-            "sourceFingerprintSha256": "a" * 64,
+            "sourceFingerprintSha256": None,
         }
         body["requestFingerprintSha256"] = mediator_module.canonical_sha256(body)
         return body
@@ -170,13 +170,12 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
             "repository": "https://github.com/jlnieto/atenea.git",
             "repositoryBranch": "main",
             "baseCommit": self.base_commit,
-            "expectedCanonicalCommit": self.base_commit,
+            "sourceCommit": observation["sourceCommit"],
             "workspaceBranch": f"atenea/change-{self.change_key}",
             "workspaceIdentity": f"remote:ax42-01:change:{self.change_key}",
             "workerId": "ax42-01",
             "sourceRevision": 1,
             "sourceFingerprintSha256": observation["sourceFingerprintSha256"],
-            "workspaceOwnershipFingerprintSha256": observation["ownershipFingerprintSha256"],
         }
         body.update(overrides)
         body["requestFingerprintSha256"] = mediator_module.canonical_sha256(body)
@@ -193,8 +192,8 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         request = self.request()
         response = self.mediator.execute(request, "PROVISION")
         self.assertEqual("OWNED", response["state"])
-        self.assertEqual(self.base_commit, response["canonicalCommit"])
-        self.assertEqual("a" * 64, response["sourceFingerprintSha256"])
+        self.assertEqual(self.base_commit, response["sourceCommit"])
+        self.assertIsNone(response["sourceFingerprintSha256"])
         self.assertFalse(response["workspaceDirty"])
         self.assertEqual(
             0o770,
@@ -225,6 +224,49 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         self.assertTrue((self.workspaces / self.change_key / "atenea" / ".git").is_file())
         record = self.workspaces / self.change_key / "workspace-v1.json"
         self.assertEqual(0o600, record.stat().st_mode & 0o777)
+        stored = json.loads(record.read_text(encoding="utf-8"))
+        self.assertNotIn("recordSha256", stored)
+        self.assertNotIn("initialSourceFingerprintSha256", stored)
+        self.assertNotIn("repository", stored)
+
+    def test_remote_and_mirror_main_advance_does_not_rebase_existing_change(self) -> None:
+        self.mediator.execute(self.request(), "PROVISION")
+        (self.source / "later.txt").write_text("later main\n", encoding="utf-8")
+        self._git("-C", str(self.source), "add", "later.txt")
+        self._git("-C", str(self.source), "commit", "-m", "advance main")
+        self._git("-C", str(self.source), "push", str(self.remote), "main")
+        self._git(
+            f"--git-dir={self.mirror}", "fetch", "origin",
+            "refs/heads/main:refs/remotes/origin/main",
+        )
+
+        response = self.mediator.execute(self.request("INSPECT"), "INSPECT")
+
+        self.assertEqual("OWNED", response["state"])
+        self.assertEqual(self.base_commit, response["sourceCommit"])
+        self.assertIsNone(response["sourceFingerprintSha256"])
+
+    def test_historical_workspace_record_uses_only_its_minimal_ownership_fields(self) -> None:
+        self.mediator.execute(self.request(), "PROVISION")
+        record = self.workspaces / self.change_key / "workspace-v1.json"
+        historical = json.loads(record.read_text(encoding="utf-8"))
+        historical.update({
+            "repository": mediator_module.REPOSITORY,
+            "repositoryBranch": "main",
+            "initialSourceFingerprintSha256": "a" * 64,
+            "recordSha256": "0" * 64,
+        })
+        record.write_text(
+            json.dumps(historical, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        record.chmod(0o600)
+
+        response = self.mediator.execute(self.request("INSPECT"), "INSPECT")
+
+        self.assertEqual("OWNED", response["state"])
+        self.assertEqual(self.base_commit, response["sourceCommit"])
+        self.assertIsNone(response["sourceFingerprintSha256"])
 
     def test_repeated_provision_is_idempotent_and_does_not_add_a_worktree(self) -> None:
         request = self.request()
@@ -240,7 +282,7 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         key = "f1c6f155-6eb5-4e03-a7ec-08db0bc2961e"
         response = self.mediator.execute(self.request("INSPECT", change_key=key), "INSPECT")
         self.assertEqual("ABSENT", response["state"])
-        self.assertIsNone(response["canonicalCommit"])
+        self.assertIsNone(response["sourceCommit"])
         self.assertFalse((self.workspaces / key).exists())
 
     def test_reconcile_requires_an_exact_predecessor(self) -> None:
@@ -276,7 +318,7 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         self.assertTrue(first["workspaceDirty"])
         self.assertTrue(first["retainedDraft"])
         self.assertEqual(first["sourceFingerprintSha256"], second["sourceFingerprintSha256"])
-        self.assertNotEqual("a" * 64, first["sourceFingerprintSha256"])
+        self.assertRegex(first["sourceFingerprintSha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("private", json.dumps(first))
         advanced = self.request("INSPECT")
         advanced["sourceRevision"] = 1
@@ -617,9 +659,6 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         record = self.workspaces / self.change_key / "workspace-v1.json"
         stored = json.loads(record.read_text(encoding="utf-8"))
         stored["databaseProjectId"] = 99
-        body = dict(stored)
-        body.pop("recordSha256")
-        stored["recordSha256"] = mediator_module.canonical_sha256(body)
         record.write_text(json.dumps(stored, sort_keys=True, separators=(",", ":")), encoding="utf-8")
         record.chmod(0o600)
         with self.assertRaises(mediator_module.ContractError):
@@ -663,8 +702,8 @@ class WorkerIntegrationTest(unittest.TestCase):
                 """#!/usr/bin/env python3
 import hashlib, json, sys
 r=json.load(sys.stdin)
-out={k:r[k] for k in ('schemaVersion','protocolVersion','effect','operationId','idempotencyKey','operation','predecessorOperationId','changeKey','databaseProjectId','projectId','repository','repositoryBranch','baseCommit','expectedCanonicalCommit','workspaceBranch','workspaceIdentity','workerId','sourceRevision','requestFingerprintSha256')}
-out.update({'state':'ABSENT','expectedSourceFingerprintSha256':r['sourceFingerprintSha256'],'canonicalCommit':None,'sourceFingerprintSha256':None,'workspaceDirty':None,'retainedDraft':None,'ownershipFingerprintSha256':hashlib.sha256(b'absent').hexdigest(),'valuesExposed':False})
+out={k:r[k] for k in ('schemaVersion','protocolVersion','effect','operationId','idempotencyKey','operation','predecessorOperationId','changeKey','databaseProjectId','projectId','repository','repositoryBranch','baseCommit','workspaceBranch','workspaceIdentity','workerId','sourceRevision','requestFingerprintSha256')}
+out.update({'state':'ABSENT','sourceCommit':None,'sourceFingerprintSha256':None,'workspaceDirty':None,'retainedDraft':None,'valuesExposed':False})
 json.dump(out,sys.stdout,sort_keys=True,separators=(',',':'))
 """,
                 encoding="utf-8",
@@ -729,12 +768,12 @@ json.dump(out,sys.stdout,sort_keys=True,separators=(',',':'))
             "repository": "https://github.com/jlnieto/atenea.git",
             "repositoryBranch": "main",
             "baseCommit": "1" * 40,
-            "expectedCanonicalCommit": "1" * 40,
+            "sourceCommit": "1" * 40,
             "workspaceBranch": f"atenea/change-{key}",
             "workspaceIdentity": f"remote:ax42-01:change:{key}",
             "workerId": "ax42-01",
             "sourceRevision": 0,
-            "sourceFingerprintSha256": "a" * 64,
+            "sourceFingerprintSha256": None,
         }
         request["requestFingerprintSha256"] = mediator_module.canonical_sha256(request)
         return request

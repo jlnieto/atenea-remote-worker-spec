@@ -8,7 +8,7 @@
     "schemaVersion", "protocolVersion", "effect", "operationId",
     "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
     "databaseProjectId", "projectId", "repository", "repositoryBranch",
-    "baseCommit", "expectedCanonicalCommit", "workspaceBranch",
+    "baseCommit", "sourceCommit", "workspaceBranch",
     "workspaceIdentity", "workerId", "sourceRevision",
     "sourceFingerprintSha256", "requestFingerprintSha256"
   ],
@@ -26,12 +26,12 @@
     "repository": {"const": "https://github.com/jlnieto/atenea.git"},
     "repositoryBranch": {"const": "main"},
     "baseCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
-    "expectedCanonicalCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "sourceCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "workspaceBranch": {"type": "string", "pattern": "^atenea/change-[0-9a-f-]{36}$"},
     "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"},
     "workerId": {"const": "ax42-01"},
     "sourceRevision": {"type": "integer", "minimum": 0},
-    "sourceFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
     "requestFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [

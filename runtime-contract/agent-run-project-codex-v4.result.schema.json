@@ -22,8 +22,8 @@
       "additionalProperties": false,
       "required": [
         "changeKey", "databaseWorkSessionId", "remoteSessionId",
-        "workspaceIdentity", "executionId", "sourceFingerprintSha256",
-        "workspaceOwnershipFingerprintSha256", "workspaceDirty"
+        "workspaceIdentity", "executionId", "sourceCommit",
+        "sourceFingerprintSha256", "workspaceDirty"
       ],
       "properties": {
         "changeKey": {"type": "string", "format": "uuid"},
@@ -34,8 +34,8 @@
           "pattern": "^remote:ax42-01:change:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
         "executionId": {"type": "string", "format": "uuid"},
-        "sourceFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "workspaceOwnershipFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "sourceFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
         "workspaceDirty": {"type": "boolean"}
       }
     }

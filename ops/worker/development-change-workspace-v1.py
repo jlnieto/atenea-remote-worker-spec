@@ -58,7 +58,7 @@ REQUEST_KEYS = {
     "repository",
     "repositoryBranch",
     "baseCommit",
-    "expectedCanonicalCommit",
+    "sourceCommit",
     "workspaceBranch",
     "workspaceIdentity",
     "workerId",
@@ -72,12 +72,14 @@ RECORD_KEYS = {
     "changeKey",
     "databaseProjectId",
     "projectId",
-    "repository",
-    "repositoryBranch",
     "baseCommit",
     "workspaceBranch",
     "workspaceIdentity",
     "workerId",
+}
+LEGACY_RECORD_KEYS = RECORD_KEYS | {
+    "repository",
+    "repositoryBranch",
     "initialSourceFingerprintSha256",
     "recordSha256",
 }
@@ -94,13 +96,12 @@ PUBLICATION_REQUEST_KEYS = {
     "repository",
     "repositoryBranch",
     "baseCommit",
-    "expectedCanonicalCommit",
+    "sourceCommit",
     "workspaceBranch",
     "workspaceIdentity",
     "workerId",
     "sourceRevision",
     "sourceFingerprintSha256",
-    "workspaceOwnershipFingerprintSha256",
     "requestFingerprintSha256",
 }
 PUBLICATION_RECORD_KEYS = PUBLICATION_REQUEST_KEYS | {
@@ -217,9 +218,10 @@ def validate_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
         raise ContractError("server-owned identity is invalid")
     if not GIT_COMMIT.fullmatch(str(value.get("baseCommit", ""))):
         raise ContractError("base commit is invalid")
-    if not GIT_COMMIT.fullmatch(str(value.get("expectedCanonicalCommit", ""))):
-        raise ContractError("canonical commit is invalid")
-    if not SHA256.fullmatch(str(value.get("sourceFingerprintSha256", ""))):
+    if not GIT_COMMIT.fullmatch(str(value.get("sourceCommit", ""))):
+        raise ContractError("source commit is invalid")
+    source_fingerprint = value.get("sourceFingerprintSha256")
+    if source_fingerprint is not None and not SHA256.fullmatch(str(source_fingerprint)):
         raise ContractError("source fingerprint is invalid")
     if not SHA256.fullmatch(str(value.get("requestFingerprintSha256", ""))):
         raise ContractError("request fingerprint is invalid")
@@ -270,16 +272,14 @@ def validate_publication_request(value: dict[str, Any]) -> dict[str, Any]:
         or value.get("workspaceIdentity") != f"remote:{WORKER_ID}:change:{change_key}"
     ):
         raise ContractError("publication server-owned identity is invalid")
-    for field in ("baseCommit", "expectedCanonicalCommit"):
+    for field in ("baseCommit", "sourceCommit"):
         if not GIT_COMMIT.fullmatch(str(value.get(field, ""))):
             raise ContractError("publication Git identity is invalid")
-    for field in (
-        "sourceFingerprintSha256",
-        "workspaceOwnershipFingerprintSha256",
-        "requestFingerprintSha256",
-    ):
-        if not SHA256.fullmatch(str(value.get(field, ""))):
-            raise ContractError("publication fingerprint is invalid")
+    source_fingerprint = value.get("sourceFingerprintSha256")
+    if source_fingerprint is not None and not SHA256.fullmatch(str(source_fingerprint)):
+        raise ContractError("publication fingerprint is invalid")
+    if not SHA256.fullmatch(str(value.get("requestFingerprintSha256", ""))):
+        raise ContractError("publication fingerprint is invalid")
     fingerprint_input = dict(value)
     supplied_fingerprint = fingerprint_input.pop("requestFingerprintSha256")
     if canonical_sha256(fingerprint_input) != supplied_fingerprint:
@@ -419,7 +419,7 @@ class WorkspaceMediator:
             "repository": request["repository"],
             "repositoryBranch": request["repositoryBranch"],
             "baseCommit": request["baseCommit"],
-            "expectedCanonicalCommit": request["expectedCanonicalCommit"],
+            "sourceCommit": request["sourceCommit"],
             "workspaceBranch": request["workspaceBranch"],
             "workspaceIdentity": request["workspaceIdentity"],
             "workerId": request["workerId"],
@@ -441,11 +441,9 @@ class WorkspaceMediator:
         observation = self._workspace_observation_for_publication(request)
         if (
             observation["state"] != "OWNED"
-            or observation["canonicalCommit"] != request["expectedCanonicalCommit"]
+            or observation["sourceCommit"] != request["sourceCommit"]
             or observation["sourceFingerprintSha256"]
                 != request["sourceFingerprintSha256"]
-            or observation["ownershipFingerprintSha256"]
-                != request["workspaceOwnershipFingerprintSha256"]
         ):
             raise ContractError("publication source identity is stale or foreign")
 
@@ -481,8 +479,6 @@ class WorkspaceMediator:
                     observation["state"] != "OWNED"
                     or observation["sourceFingerprintSha256"]
                         != request["sourceFingerprintSha256"]
-                    or observation["ownershipFingerprintSha256"]
-                        != request["workspaceOwnershipFingerprintSha256"]
                 ):
                     raise ContractError("prepared publication source changed")
                 published_head = self._create_publication_commit(
@@ -531,6 +527,7 @@ class WorkspaceMediator:
         receipt = canonical_sha256({
             "changeKey": request["changeKey"],
             "sourceRevision": request["sourceRevision"],
+            "sourceCommit": request["sourceCommit"],
             "sourceFingerprintSha256": request["sourceFingerprintSha256"],
             "workspaceBranch": request["workspaceBranch"],
             "publishedHeadSha": published_head,
@@ -584,8 +581,10 @@ class WorkspaceMediator:
                 f"{request['sourceRevision']}"
             )
             trace = (
-                "Atenea-Source-Fingerprint: "
+                "Atenea-Dirty-Source-Fingerprint: "
                 + request["sourceFingerprintSha256"]
+                if request["sourceFingerprintSha256"] is not None
+                else "Atenea-Source-Commit: " + request["sourceCommit"]
             )
             published_head = self._git(
                 "commit-tree",
@@ -740,14 +739,12 @@ class WorkspaceMediator:
             "projectId": request["projectId"],
             "repositoryBranch": request["repositoryBranch"],
             "baseCommit": request["baseCommit"],
-            "expectedCanonicalCommit": request["expectedCanonicalCommit"],
+            "sourceCommit": request["sourceCommit"],
             "workspaceBranch": request["workspaceBranch"],
             "workspaceIdentity": request["workspaceIdentity"],
             "workerId": request["workerId"],
             "sourceRevision": request["sourceRevision"],
-            "expectedSourceFingerprintSha256": request["sourceFingerprintSha256"],
-            "expectedWorkspaceOwnershipFingerprintSha256":
-                request["workspaceOwnershipFingerprintSha256"],
+            "sourceFingerprintSha256": request["sourceFingerprintSha256"],
             "publishedHeadSha": record["publishedHeadSha"],
             "remoteDisposition": record["remoteDisposition"],
             "requestFingerprintSha256": request["requestFingerprintSha256"],
@@ -756,21 +753,17 @@ class WorkspaceMediator:
         }
 
     def _expected_record(self, request: dict[str, Any]) -> dict[str, Any]:
-        body = {
+        return {
             "schemaVersion": SCHEMA_VERSION,
             "protocolVersion": PROTOCOL_VERSION,
             "changeKey": request["changeKey"],
             "databaseProjectId": request["databaseProjectId"],
             "projectId": request["projectId"],
-            "repository": request["repository"],
-            "repositoryBranch": request["repositoryBranch"],
             "baseCommit": request["baseCommit"],
             "workspaceBranch": request["workspaceBranch"],
             "workspaceIdentity": request["workspaceIdentity"],
             "workerId": request["workerId"],
-            "initialSourceFingerprintSha256": request["sourceFingerprintSha256"],
         }
-        return {**body, "recordSha256": canonical_sha256(body)}
 
     def _record_matches_request(
         self, record: dict[str, Any], request: dict[str, Any]
@@ -781,8 +774,6 @@ class WorkspaceMediator:
             "changeKey": request["changeKey"],
             "databaseProjectId": request["databaseProjectId"],
             "projectId": request["projectId"],
-            "repository": request["repository"],
-            "repositoryBranch": request["repositoryBranch"],
             "baseCommit": request["baseCommit"],
             "workspaceBranch": request["workspaceBranch"],
             "workspaceIdentity": request["workspaceIdentity"],
@@ -824,11 +815,7 @@ class WorkspaceMediator:
         root_present = root.exists() or root.is_symlink()
         branch_present = self._branch_exists(request)
         if not root_present and not branch_present:
-            return self._response(request, "ABSENT", canonical_sha256({
-                "state": "ABSENT",
-                "changeKey": request["changeKey"],
-                "workspaceIdentity": request["workspaceIdentity"],
-            }))
+            return self._response(request, "ABSENT")
         if not root_present or not branch_present:
             return self._foreign(request, "partial")
         try:
@@ -851,36 +838,23 @@ class WorkspaceMediator:
                 or remote != self.publication_remote
             ):
                 return self._foreign(request, "git-identity")
-            canonical_commit = self._git(
-                "rev-parse",
-                "--verify",
-                f"refs/remotes/origin/{REPOSITORY_BRANCH}^{{commit}}",
-                git_dir=True,
-            ).decode().strip()
-            if not GIT_COMMIT.fullmatch(canonical_commit):
-                raise ContractError("canonical commit is invalid")
+            self._git("cat-file", "-e", f"{request['baseCommit']}^{{commit}}", git_dir=True)
+            ancestor = self._git_result(
+                "merge-base", "--is-ancestor", request["baseCommit"], worktree_head,
+                cwd=worktree,
+            )
+            if ancestor.returncode != 0:
+                return self._foreign(request, "base-commit")
             status = self._git("status", "--porcelain=v2", "-z", "--untracked-files=all", cwd=worktree)
             dirty = bool(status)
-            source_fingerprint = record["initialSourceFingerprintSha256"]
-            if dirty or worktree_head != request["baseCommit"]:
-                diff = self._git("diff", "--binary", "--no-ext-diff", "HEAD", cwd=worktree)
-                source_fingerprint = canonical_sha256({
-                    "initialSourceFingerprintSha256": record["initialSourceFingerprintSha256"],
-                    "headCommit": worktree_head,
-                    "statusSha256": hashlib.sha256(status).hexdigest(),
-                    "diffSha256": hashlib.sha256(diff).hexdigest(),
-                    "untracked": self._untracked_fingerprints(worktree),
-                })
-            ownership = canonical_sha256({
-                "recordSha256": record["recordSha256"],
-                "branchHead": branch_head,
-                "workspaceIdentity": request["workspaceIdentity"],
-            })
+            source_fingerprint = (
+                self._dirty_source_fingerprint(worktree, worktree_head, status)
+                if dirty else None
+            )
             return self._response(
                 request,
                 "OWNED",
-                ownership,
-                canonical_commit=canonical_commit,
+                source_commit=worktree_head,
                 source_fingerprint=source_fingerprint,
                 workspace_dirty=dirty,
                 retained_draft=dirty,
@@ -888,12 +862,26 @@ class WorkspaceMediator:
         except (OSError, ContractError, UnicodeDecodeError):
             return self._foreign(request, "observation")
 
-    def _untracked_fingerprints(self, worktree: Path) -> list[dict[str, str]]:
+    def _dirty_source_fingerprint(
+        self, worktree: Path, head: str, status: bytes
+    ) -> str:
+        digest = hashlib.sha256()
+
+        def add(label: bytes, data: bytes) -> None:
+            digest.update(len(label).to_bytes(4, "big"))
+            digest.update(label)
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+
+        add(b"head", head.encode("ascii"))
+        add(b"status", status)
+        add(b"diff", self._git(
+            "diff", "--binary", "--no-ext-diff", "HEAD", cwd=worktree
+        ))
         raw = self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=worktree)
         paths = [part.decode("utf-8") for part in raw.split(b"\0") if part]
         if len(paths) > 4096:
             raise ContractError("too many untracked paths")
-        result: list[dict[str, str]] = []
         total = 0
         for relative in sorted(paths):
             candidate = worktree / relative
@@ -910,25 +898,19 @@ class WorkspaceMediator:
                 data = candidate.read_bytes()
             else:
                 raise ContractError("untracked path type is unsafe")
-            result.append({"pathSha256": hashlib.sha256(relative.encode()).hexdigest(),
-                           "contentSha256": hashlib.sha256(data).hexdigest()})
-        return result
+            add(b"untracked-path", relative.encode("utf-8"))
+            add(b"untracked-content", data)
+        return digest.hexdigest()
 
     def _foreign(self, request: dict[str, Any], classification: str) -> dict[str, Any]:
-        return self._response(request, "FOREIGN", canonical_sha256({
-            "state": "FOREIGN",
-            "classification": classification,
-            "changeKey": request["changeKey"],
-            "workspaceIdentity": request["workspaceIdentity"],
-        }))
+        return self._response(request, "FOREIGN")
 
     def _response(
         self,
         request: dict[str, Any],
         state: str,
-        ownership_fingerprint: str,
         *,
-        canonical_commit: str | None = None,
+        source_commit: str | None = None,
         source_fingerprint: str | None = None,
         workspace_dirty: bool | None = None,
         retained_draft: bool | None = None,
@@ -948,23 +930,34 @@ class WorkspaceMediator:
             "repository": request["repository"],
             "repositoryBranch": request["repositoryBranch"],
             "baseCommit": request["baseCommit"],
-            "expectedCanonicalCommit": request["expectedCanonicalCommit"],
             "workspaceBranch": request["workspaceBranch"],
             "workspaceIdentity": request["workspaceIdentity"],
             "workerId": request["workerId"],
             "sourceRevision": request["sourceRevision"],
-            "expectedSourceFingerprintSha256": request["sourceFingerprintSha256"],
-            "canonicalCommit": canonical_commit,
+            "sourceCommit": source_commit,
             "sourceFingerprintSha256": source_fingerprint,
             "workspaceDirty": workspace_dirty,
             "retainedDraft": retained_draft,
             "requestFingerprintSha256": request["requestFingerprintSha256"],
-            "ownershipFingerprintSha256": ownership_fingerprint,
             "valuesExposed": False,
         }
 
     def _read_record(self, path: Path) -> dict[str, Any]:
-        return self._read_sealed_record(path, RECORD_KEYS)
+        try:
+            observed = path.lstat()
+            if (
+                not stat.S_ISREG(observed.st_mode)
+                or path.is_symlink()
+                or observed.st_uid != os.geteuid()
+                or stat.S_IMODE(observed.st_mode) != 0o600
+            ):
+                raise ContractError("workspace record is unsafe")
+            parsed = strict_json(path.read_bytes())
+        except OSError as error:
+            raise ContractError("workspace record is unavailable") from error
+        if set(parsed) != RECORD_KEYS and set(parsed) != LEGACY_RECORD_KEYS:
+            raise ContractError("workspace record fields are invalid")
+        return parsed
 
     def _read_sealed_record(
         self, path: Path, expected_keys: set[str]
