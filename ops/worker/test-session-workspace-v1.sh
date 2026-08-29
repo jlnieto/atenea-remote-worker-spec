@@ -94,6 +94,13 @@ jq -e \
   fail "first worktree did not start at canonical main"
 [[ "$(git --git-dir="${MIRROR}" config remote.origin.fetch)" == "+refs/heads/*:refs/remotes/origin/*" ]] ||
   fail "canonical refs are not separated from session branches"
+[[ "$(git --git-dir="${MIRROR}" config --get core.sharedRepository)" == 0660 ]] ||
+  fail "canonical mirror is not configured for group-confined sharing"
+! find "${MIRROR}/objects" -type d ! -perm 2770 -print -quit | grep -q . ||
+  fail "canonical mirror object directories are not shared with setgid"
+! find "${MIRROR}/objects" -type f \( ! -perm -0040 -o -perm /0007 \) \
+  -print -quit | grep -q . ||
+  fail "canonical mirror objects are not group-readable and other-confined"
 
 GIT_CONFIG_COUNT=1 \
 GIT_CONFIG_KEY_0="url.${ORIGIN}.insteadOf" \

@@ -55,6 +55,8 @@ PROJECT_PINNED_DIRTY_PATH="android/core-console/src/main/java/com/atenea/android
 PROJECT_PINNED_DIRTY_STATUS=" M ${PROJECT_PINNED_DIRTY_PATH}"
 PROJECT_PINNED_DIRTY_CONTENT_SHA256="c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
+PROJECT_MIRROR_GROUP="atenea"
+PROJECT_MIRROR_SHARED_REPOSITORY="0660"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="1d0876ad85acc34bc0ff81e8ffc453dea41b1768ffc17d0c1be564482eb91f1d"
@@ -69,7 +71,7 @@ BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a4
 PLATFORM_INSTRUCTIONS_SHA256="44c578a286eb50b35612be0b6c38d59a503e6fee1ecf6cd0339415af018cdf0d"
 WORKSPACE_ACTIVATOR_SHA256="5ef544c478c17a0ae6ae88586915185572721ca89dc48dbbf15b65ad417aa889"
 WORKSPACE_RELEASER_SHA256="095e0db0ee77814f59f12907d003bad462c64c57aa8b85137e9c142147416de3"
-SESSION_WORKSPACE_SHA256="3e41ae7f218f360920bed7cd4b2d75cab5396bb07649635694db3271b12d2ffe"
+SESSION_WORKSPACE_SHA256="09818d9b717ec8939137a8c5b7aac634f954d40596cf35d909fd04aa374df213"
 RUNTIME_ADMISSION_SHA256="a81366d3495bb2a7bf4702e9ea934a74e9b3edb30f728926e655a5c0a6a9f7ce"
 SESSION_ALLOCATION_SHA256="2efceeaaba78b349f1d6aa79bfba5d908d397a9e3a480cfa3b100bde52fb99d7"
 
@@ -134,6 +136,59 @@ prepare_development_change_workspace_root() {
     "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT"
   chmod 2770 "$DEVELOPMENT_CHANGE_WORKSPACE_ROOT"
   verify_development_change_workspace_root
+}
+
+verify_project_mirror_shared_permissions() {
+  local objects="${PROJECT_MIRROR}/objects"
+  local shared_gid
+  shared_gid="$(getent group "$PROJECT_MIRROR_GROUP" | cut -d: -f3)"
+  [[ "$shared_gid" =~ ^[0-9]+$ ]] || fail "project mirror group is unavailable"
+  [[ -d "$PROJECT_MIRROR" && ! -L "$PROJECT_MIRROR" \
+      && -d "$objects" && ! -L "$objects" \
+      && -f "$PROJECT_MIRROR/config" && ! -L "$PROJECT_MIRROR/config" \
+      && "$(stat -c %g "$PROJECT_MIRROR")" == "$shared_gid" \
+      && "$(stat -c %a "$PROJECT_MIRROR")" == 2770 \
+      && "$(git --git-dir="$PROJECT_MIRROR" rev-parse --is-bare-repository 2>/dev/null)" \
+        == true \
+      && "$(git --git-dir="$PROJECT_MIRROR" config --get core.sharedRepository)" \
+        == "$PROJECT_MIRROR_SHARED_REPOSITORY" ]] \
+    || fail "project mirror shared permission policy is invalid"
+  ! find "$objects" -xdev \( ! -type d -a ! -type f \) -print -quit | grep -q . \
+    || fail "project object store contains an unsupported entry"
+  ! find "$objects" -xdev -type d \
+      \( ! -gid "$shared_gid" -o ! -perm 2770 \) -print -quit | grep -q . \
+    || fail "project object store directory permissions are not shared"
+  ! find "$objects" -xdev -type f \
+      \( ! -gid "$shared_gid" -o ! -perm -0040 -o -perm /0007 \) \
+      -print -quit | grep -q . \
+    || fail "project object permissions are not group-confined"
+}
+
+prepare_project_mirror_shared_permissions() {
+  require_root
+  local objects="${PROJECT_MIRROR}/objects"
+  [[ -d "$PROJECT_MIRROR" && ! -L "$PROJECT_MIRROR" \
+      && -d "$objects" && ! -L "$objects" \
+      && -f "$PROJECT_MIRROR/config" && ! -L "$PROJECT_MIRROR/config" \
+      && "$(stat -c %G "$PROJECT_MIRROR")" == "$PROJECT_MIRROR_GROUP" \
+      && "$(stat -c %a "$PROJECT_MIRROR")" == 2770 \
+      && "$(git --git-dir="$PROJECT_MIRROR" rev-parse --is-bare-repository 2>/dev/null)" \
+        == true \
+      && "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" \
+        == "$PROJECT_REPOSITORY" ]] \
+    || fail "project mirror identity is invalid"
+  ! find "$objects" -xdev \( ! -type d -a ! -type f \) -print -quit | grep -q . \
+    || fail "project object store contains an unsupported entry"
+
+  git --git-dir="$PROJECT_MIRROR" config core.sharedRepository \
+    "$PROJECT_MIRROR_SHARED_REPOSITORY"
+  chgrp "$PROJECT_MIRROR_GROUP" "$PROJECT_MIRROR/config"
+  chmod 0660 "$PROJECT_MIRROR/config"
+  find "$objects" -xdev -type d -exec chgrp "$PROJECT_MIRROR_GROUP" {} +
+  find "$objects" -xdev -type d -exec chmod 2770 {} +
+  find "$objects" -xdev -type f -exec chgrp "$PROJECT_MIRROR_GROUP" {} +
+  find "$objects" -xdev -type f -exec chmod ug+r,o-rwx {} +
+  verify_project_mirror_shared_permissions
 }
 
 prepare_materialization_root() {
@@ -837,6 +892,7 @@ apply_install() {
   if [[ -e "$MATERIALIZATION_ROOT" || -L "$MATERIALIZATION_ROOT" ]]; then
     verify_materialization_root
   fi
+  prepare_project_mirror_shared_permissions
   local retained_project_config_sha256
   retained_project_config_sha256="$(project_config_install_preflight)"
   verify_beautips_project_runner_upgrade
@@ -955,6 +1011,7 @@ verify() {
   [[ "$(stat -c '%a:%U:%G' "$VALIDATION_JOURNAL_ROOT")" == "750:root:atenea" ]] \
     || fail "validation journal ownership or mode is invalid"
   verify_development_change_workspace_root
+  verify_project_mirror_shared_permissions
   verify_attachment_root
   verify_materialization_parent
   verify_materialization_root

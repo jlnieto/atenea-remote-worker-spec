@@ -252,7 +252,7 @@ else
   [[ ! -e "${TEMP_MIRROR}" ]] ||
     fail "WORKTREE_CONFLICT" "A provisioning temporary path already exists." \
       "Inspect the stale temporary path before retrying."
-  git init -q --bare "${TEMP_MIRROR}"
+  git init -q --bare --shared=0660 "${TEMP_MIRROR}"
   git --git-dir="${TEMP_MIRROR}" remote add origin "${CANONICAL_REMOTE}"
   git --git-dir="${TEMP_MIRROR}" config remote.origin.fetch \
     '+refs/heads/*:refs/remotes/origin/*'
