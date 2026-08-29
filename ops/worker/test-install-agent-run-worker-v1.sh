@@ -99,12 +99,21 @@ service_stop_line="$(grep -n -m1 '^  systemctl stop "\$SERVICE"$' \
 project_config_preflight_line="$(grep -n -m1 \
   'retained_project_config_sha256="\$(project_config_install_preflight)"' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" | cut -d: -f1)"
+project_mirror_permissions_line="$(grep -n -m1 \
+  '^  prepare_project_mirror_shared_permissions$' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" | cut -d: -f1)"
 [[ -n "${dependency_preflight_line}" && -n "${service_stop_line}" \
     && "${dependency_preflight_line}" -lt "${service_stop_line}" ]] \
   || fail "activation dependency is not checked before the worker stops"
 [[ -n "${project_config_preflight_line}" \
     && "${project_config_preflight_line}" -lt "${service_stop_line}" ]] \
   || fail "project configuration is not checked before the worker stops"
+[[ -n "${project_mirror_permissions_line}" \
+    && "${project_mirror_permissions_line}" -lt "${project_config_preflight_line}" ]] \
+  || fail "shared mirror permissions are not applied before a root Git fetch"
+[[ "$(grep -Fc '  verify_project_mirror_shared_permissions' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh")" -eq 2 ]] \
+  || fail "shared mirror permissions are not checked after prepare and by verify"
 [[ "$(grep -Fc '  verify_workspace_activation_dependency' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh")" -eq 2 ]] \
   || fail "activation dependency is not checked by both apply and verify"
