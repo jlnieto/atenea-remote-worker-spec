@@ -21,6 +21,7 @@ PROGRAM_PREDECESSOR_SHA256=61fc03da468f2f9fa1fb101dc42129a773f02acaacbc40fd46e18
 PROGRAM_SHA256=5ef544c478c17a0ae6ae88586915185572721ca89dc48dbbf15b65ad417aa889
 RELEASE_PROGRAM_PREDECESSOR_SHA256=baccb3c7c7053e5d09eb05148f1c2e368faf90d5e2706a537ac3473429dfada0
 RELEASE_PROGRAM_SHA256=095e0db0ee77814f59f12907d003bad462c64c57aa8b85137e9c142147416de3
+SESSION_WORKSPACE_PREDECESSOR_SHA256=3e41ae7f218f360920bed7cd4b2d75cab5396bb07649635694db3271b12d2ffe
 SESSION_WORKSPACE_SHA256=09818d9b717ec8939137a8c5b7aac634f954d40596cf35d909fd04aa374df213
 RUNTIME_ADMISSION_SHA256=a81366d3495bb2a7bf4702e9ea934a74e9b3edb30f728926e655a5c0a6a9f7ce
 SESSION_ALLOCATION_SHA256=2efceeaaba78b349f1d6aa79bfba5d908d397a9e3a480cfa3b100bde52fb99d7
@@ -156,7 +157,7 @@ verify_common_predecessor() {
   [[ -f "${PROGRAM}" && ! -L "${PROGRAM}" &&
       "$(stat -c %U:%G:%a "${PROGRAM}")" == root:root:755 ]] ||
     fail 'installed mediator identity is ambiguous'
-  local digest dependency installed expected
+  local phase="${1:-upgrade}" digest dependency installed expected
   digest="$(sha256sum "${PROGRAM}" | cut -d' ' -f1)"
   [[ "${digest}" == "${PROGRAM_SHA256}" ||
       "${digest}" == "${PROGRAM_PREDECESSOR_SHA256}" ]] ||
@@ -165,8 +166,13 @@ verify_common_predecessor() {
     installed="${WORKER_BUNDLE}/${dependency}"
     expected="$(expected_dependency_sha256 "${dependency}")"
     [[ -f "${installed}" && ! -L "${installed}" &&
-        "$(stat -c %U:%G:%a "${installed}")" == atenea-worker:atenea:750 &&
-        "$(sha256sum "${installed}" | cut -d' ' -f1)" == "${expected}" ]] ||
+        "$(stat -c %U:%G:%a "${installed}")" == atenea-worker:atenea:750 ]] ||
+      fail "installed activation dependency is foreign: ${dependency}"
+    digest="$(sha256sum "${installed}" | cut -d' ' -f1)"
+    # The reviewed dependency predecessor is valid only before upgrading.
+    [[ "${digest}" == "${expected}" ||
+        ( "${phase}" == upgrade && "${dependency}" == session-workspace-v1.sh &&
+          "${digest}" == "${SESSION_WORKSPACE_PREDECESSOR_SHA256}" ) ]] ||
       fail "installed activation dependency is foreign: ${dependency}"
   done
 }
@@ -190,7 +196,7 @@ activation_bundle_preflight() {
   [[ -f "${SUDOERS}" && ! -L "${SUDOERS}" &&
       "$(stat -c %U:%G:%a "${SUDOERS}")" == root:root:440 ]] ||
     fail 'installed sudoers boundary is foreign'
-  verify_common_predecessor
+  verify_common_predecessor "${1:-upgrade}"
   digest="$(sha256sum "${PROGRAM}" | cut -d' ' -f1)"
   sudoers_value="$(cat "${SUDOERS}")"
 
@@ -352,7 +358,7 @@ rollback_install() {
 
 verify() {
   require_root verification
-  [[ "$(activation_bundle_preflight)" == current ]] ||
+  [[ "$(activation_bundle_preflight final)" == current ]] ||
     fail 'installed activation bundle is not current'
   verify_release_program
   visudo -cf "${SUDOERS}" >/dev/null ||

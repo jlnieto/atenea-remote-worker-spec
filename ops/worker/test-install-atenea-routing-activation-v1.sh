@@ -119,6 +119,67 @@ bundle_reset() {
   || fail_test 'all-absent bundle was not accepted'
 verify_source_bundle
 
+# Reconstruct the immediate Git predecessor of 78256ad from the packaged target.
+# Check real bytes against fixed digests; do not substitute the allowlisted SHA.
+bundle_create_current
+sed 's/git init -q --bare --shared=0660 "${TEMP_MIRROR}"/git init -q --bare "${TEMP_MIRROR}"/' \
+  "${SOURCE_DIR}/session-workspace-v1.sh" >"${TEST_ROOT}/session-workspace-predecessor.sh"
+[[ "$(sha256sum "${TEST_ROOT}/session-workspace-predecessor.sh" | cut -d' ' -f1)" == \
+    3e41ae7f218f360920bed7cd4b2d75cab5396bb07649635694db3271b12d2ffe ]] \
+  || fail_test 'historical session workspace fixture does not match the exact predecessor'
+[[ "$(sha256sum "${SOURCE_DIR}/session-workspace-v1.sh" | cut -d' ' -f1)" == \
+    09818d9b717ec8939137a8c5b7aac634f954d40596cf35d909fd04aa374df213 ]] \
+  || fail_test 'packaged session workspace target changed'
+cp "${TEST_ROOT}/session-workspace-predecessor.sh" "${WORKER_BUNDLE}/session-workspace-v1.sh"
+[[ "$(stat -c %U:%G:%a "${WORKER_BUNDLE}/session-workspace-v1.sh")" == atenea-worker:atenea:750 ]] \
+  || fail_test 'dependency predecessor identity differs'
+[[ "$(activation_bundle_preflight)" == current ]] \
+  || fail_test 'exact dependency predecessor was rejected by upgrade preflight'
+if ( verify ) >"${TEST_ROOT}/final-rejection" 2>&1; then
+  fail_test 'final verification accepted the old dependency with current authority'
+fi
+grep -Fq 'installed activation dependency is foreign: session-workspace-v1.sh' \
+  "${TEST_ROOT}/final-rejection" || fail_test 'final verification rejected for an unrelated reason'
+# Exercise the existing predecessor authority with the target release mediator.
+chmod 0640 "${SUDOERS}"
+release_preflight_predecessor_sudoers_content >"${SUDOERS}"
+chmod 0440 "${SUDOERS}"
+[[ "$(activation_bundle_preflight)" == rollback-routing-predecessor ]] \
+  || fail_test 'old dependency and new bundle failed predecessor preflight'
+printf 'PASS: exact old dependency + new bundle upgrade preflight\n'
+apply_install >/dev/null
+[[ "$(sha256sum "${WORKER_BUNDLE}/session-workspace-v1.sh" | cut -d' ' -f1)" == \
+    09818d9b717ec8939137a8c5b7aac634f954d40596cf35d909fd04aa374df213 ]] \
+  || fail_test 'simulated installation did not install the exact target'
+verify >/dev/null
+apply_install >/dev/null
+verify >/dev/null
+printf 'PASS: target final verification and idempotent sandbox installation\n'
+cp "${TEST_ROOT}/session-workspace-predecessor.sh" "${WORKER_BUNDLE}/session-workspace-v1.sh"
+if ( verify ) >"${TEST_ROOT}/final-rejection" 2>&1; then
+  fail_test 'final verification accepted an old dependency restored after installation'
+fi
+grep -Fq 'installed activation dependency is foreign: session-workspace-v1.sh' \
+  "${TEST_ROOT}/final-rejection" || fail_test 'post-install verification rejected for an unrelated reason'
+printf 'PASS: old dependency rejected by final verification after simulated installation\n'
+for content in arbitrary altered; do
+  if [[ "${content}" == arbitrary ]]; then
+    printf 'third arbitrary dependency\n' >"${WORKER_BUNDLE}/session-workspace-v1.sh"
+  else
+    cp "${TEST_ROOT}/session-workspace-predecessor.sh" "${WORKER_BUNDLE}/session-workspace-v1.sh"
+    printf '# altered predecessor\n' >>"${WORKER_BUNDLE}/session-workspace-v1.sh"
+  fi
+  [[ "$(stat -c %U:%G:%a "${WORKER_BUNDLE}/session-workspace-v1.sh")" == atenea-worker:atenea:750 ]] \
+    || fail_test 'negative fixture lost its accepted ownership/mode'
+  if ( activation_bundle_preflight ) >"${TEST_ROOT}/dependency-rejection" 2>&1; then
+    fail_test "${content} dependency was accepted"
+  fi
+  grep -Fq 'installed activation dependency is foreign: session-workspace-v1.sh' \
+    "${TEST_ROOT}/dependency-rejection" || fail_test 'foreign dependency rejected for an unrelated reason'
+  printf 'PASS: %s dependency rejected as foreign with correct ownership/mode\n' "${content}"
+done
+bundle_reset
+
 mkdir -p "$(dirname -- "${SUDOERS}")"
 mkdir -p "$(dirname -- "${RELEASE_STATE_ROOT}")"
 chmod 2770 "$(dirname -- "${RELEASE_STATE_ROOT}")"
@@ -171,6 +232,7 @@ bundle_reset
 
 bundle_create_release_preflight_predecessor
 RELEASE_PROGRAM_PREDECESSOR_SHA256="$(sha256sum "${RELEASE_PROGRAM}" | cut -d' ' -f1)"
+cp "${TEST_ROOT}/session-workspace-predecessor.sh" "${WORKER_BUNDLE}/session-workspace-v1.sh"
 [[ "$(activation_bundle_preflight)" == rollout-predecessor ]] \
   || fail_test 'live release-preflight predecessor was not accepted for upgrade'
 if ( verify ) >/dev/null 2>&1; then
