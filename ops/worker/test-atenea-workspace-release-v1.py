@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -1579,6 +1581,242 @@ class FixedRootReleaseOperatorTest(unittest.TestCase):
         ):
             operator = MODULE.FixedRootReleaseOperator()
         self.assertEqual("reviewed-worker-host", operator.worker_host)
+
+
+class ChangeOwnedReleaseTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.change_key = "df99f1a1-1f14-4ca8-a405-58cd5b91bf2f"
+        self.session = "7151dce0-69ab-4614-86e4-f93f1af825e4"
+        self.change_root = self.root / "srv/atenea/workspaces/changes" / self.change_key
+        self.change_root.mkdir(parents=True)
+        self.worktree = self.change_root / "atenea"
+        self.mirror = self.root / "srv/atenea/repositories/atenea.git"
+        seed = self.root / "seed"
+        seed.mkdir()
+        self.git(seed, "init", "-b", "main")
+        self.git(seed, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "--allow-empty", "-m", "synthetic base")
+        base = self.git(seed, "rev-parse", "HEAD")
+        self.mirror.parent.mkdir(parents=True)
+        self.git(seed, "clone", "--bare", str(seed), str(self.mirror))
+        self.git(self.mirror, "remote", "set-url", "origin", "git@github.com:jlnieto/atenea.git")
+        self.git(self.mirror, "worktree", "add", "-b", f"atenea/change-{self.change_key}",
+                 str(self.worktree), base)
+        self.request = {
+            "operationId": "22222222-2222-4222-8222-222222222222",
+            "idempotencyKey": "22222222-2222-4222-8222-222222222222",
+            "sessionId": self.session, "databaseWorkSessionId": 20,
+            "changeKey": self.change_key, "databaseProjectId": 1,
+            "workspaceIdentity": f"remote:ax42-01:change:{self.change_key}",
+            "projectId": "atenea", "repository": MODULE.REPOSITORY,
+            "branch": "main", "baseCommit": base,
+            "workspaceBranch": f"atenea/change-{self.change_key}", "workerId": "ax42-01",
+        }
+        self.record = MODULE._change_workspace_record(self.request)
+        self.record_path = self.change_root / "workspace-v1.json"
+        self.write_record(self.record)
+        self.operator = MODULE.FixedRootReleaseOperator(self.root, test_mode=True)
+        (self.root / "journals").mkdir(mode=0o700)
+        self.store = MODULE.ReleaseJournalStore(self.root / "journals", test_mode=True)
+        self.finalizer = MODULE.WorkspaceReleaseFinalizer(
+            self.store, MODULE.ReviewedReleaseBoundary(self.operator, mock.Mock()))
+        self.worker = AGENT_MODULE.WorkerState(self.root / "worker", "ax42-01")
+        self.worker.executions = {"synthetic": {
+            "sessionId": self.session, "workspaceIdentity": self.request["workspaceIdentity"],
+            "status": "SUCCEEDED", "changeOwnership": {
+                **{key: self.request[key] for key in (
+                    "changeKey", "databaseWorkSessionId", "databaseProjectId", "workspaceIdentity", "baseCommit")},
+                "remoteSessionId": self.session,
+            },
+        }}
+
+    @staticmethod
+    def git(directory: Path, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(directory), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def write_record(self, record: dict) -> None:
+        self.record_path.write_text(json.dumps(record))
+        self.record_path.chmod(0o600)
+
+    def release(self, request: dict | None = None) -> dict:
+        exact = self.request if request is None else request
+        AGENT_MODULE.validate_workspace_release_request(exact)
+        self.worker._assert_release_executions(exact)
+        projection = self.operator.build_projection(exact)
+        return AGENT_MODULE.validate_workspace_release_receipt(
+            exact, "ax42-01", self.finalizer.release(exact, projection))
+
+    def test_direct_git_sandbox_release_retains_change_and_needs_no_legacy_authority(self) -> None:
+        head = self.git(self.worktree, "rev-parse", "HEAD")
+        record_bytes = self.record_path.read_bytes()
+        # Retained evidence/source is not rewritten or rejected using app projections.
+        evidence = self.worktree / "retained-draft.txt"
+        evidence.write_text("historical draft")
+        receipt = self.release()
+        self.assertEqual("RELEASED", receipt["state"])
+        self.assertEqual(6, receipt["revision"])
+        self.assertEqual(self.request["changeKey"], receipt["changeKey"])
+        self.assertTrue(all(value is False for value in receipt["released"].values()))
+        self.assertNotIn("manifestSha256", receipt)
+        self.assertNotIn("commit", receipt)
+        self.assertEqual(receipt, self.release())
+        self.assertEqual(record_bytes, self.record_path.read_bytes())
+        self.assertEqual(head, self.git(self.worktree, "rev-parse", "HEAD"))
+        self.assertEqual("historical draft", evidence.read_text())
+        self.assertFalse((self.root / "srv/atenea/workspaces/sessions").exists())
+        self.assertFalse(self.operator._physical(self.operator.CONFIG).exists())
+        journal = self.store.load(self.request)
+        self.assertIsNone(journal["allocationFingerprintSha256"])
+        self.assertEqual(set(MODULE.JOURNAL_STAGES), set(journal["stageEvidence"]))
+
+    def test_actual_worker_subprocess_accepts_the_existing_finalizer_receipt(self) -> None:
+        wrapper = self.root / "release-sandbox.py"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\nimport importlib.util,json,sys\nfrom pathlib import Path\n"
+            + f"spec=importlib.util.spec_from_file_location('release', {str(MODULE_PATH)!r})\n"
+            + "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            + f"root=Path({str(self.root)!r})\n"
+            + "r=json.load(sys.stdin)\nop=m.FixedRootReleaseOperator(root,test_mode=True)\n"
+            + "store=m.ReleaseJournalStore(root/'journals',test_mode=True)\n"
+            + "f=m.WorkspaceReleaseFinalizer(store,m.ReviewedReleaseBoundary(op,None))\n"
+            + "print(json.dumps(f.release(r,op.build_projection(r))))\n")
+        wrapper.chmod(0o700)
+        self.worker.privilege_command = ()
+        self.worker.project_workspace_releaser = wrapper
+        receipt = self.worker.release_workspace(self.request)
+        self.assertEqual(receipt, self.worker.release_workspace(self.request))
+        self.assertEqual("RELEASED", receipt["state"])
+
+    def test_preflight_uses_direct_ownership_and_ignores_unrelated_registry(self) -> None:
+        unrelated_registry = self.operator._physical(self.operator.CONFIG)
+        unrelated_registry.parent.mkdir(parents=True)
+        unrelated_registry.write_text("foreign registry must not be read or changed")
+        diagnosis = self.operator.diagnose_release_preflight(self.request, self.store)
+        self.assertIsNone(diagnosis["allocationFingerprintSha256"])
+        AGENT_MODULE.validate_workspace_release_preflight_response(self.request, "ax42-01", diagnosis)
+        self.release()
+        self.assertEqual("foreign registry must not be read or changed", unrelated_registry.read_text())
+        self.write_record({**self.record, "workerId": "foreign"})
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.operator.diagnose_release_preflight(self.request, self.store)
+
+    def test_foreign_or_mixed_request_rejected_by_both_boundaries_without_journal(self) -> None:
+        mutations = {
+            "changeKey": str(uuid.uuid4()), "workspaceIdentity": "remote:ax42-01:change:" + str(uuid.uuid4()),
+            "workspaceBranch": "atenea/change-" + str(uuid.uuid4()), "workerId": "foreign",
+            "projectId": "foreign", "repository": "https://github.com/foreign/repo.git",
+            "databaseProjectId": 0, "databaseWorkSessionId": True,
+            "manifestSha256": "a" * 64, "commit": "a" * 40,
+        }
+        for key, value in mutations.items():
+            with self.subTest(key=key):
+                request = {**self.request, key: value}
+                with self.assertRaises(AGENT_MODULE.ProtocolError):
+                    AGENT_MODULE.validate_workspace_release_request(request)
+                with self.assertRaises(MODULE.PreflightRejected):
+                    self.operator.build_projection(request)
+        self.assertEqual([], list(self.store.root.iterdir()))
+
+    def test_persisted_session_change_worker_and_active_execution_conflicts(self) -> None:
+        for key, value in {"changeKey": str(uuid.uuid4()), "databaseWorkSessionId": 19,
+                           "databaseProjectId": 99, "baseCommit": "f" * 40,
+                           "remoteSessionId": str(uuid.uuid4())}.items():
+            ownership = self.worker.executions["synthetic"]["changeOwnership"]
+            original = ownership[key]
+            ownership[key] = value
+            with self.subTest(key=key), self.assertRaises(AGENT_MODULE.ProtocolError):
+                self.worker._assert_release_executions(self.request)
+            ownership[key] = original
+        self.worker.worker_id = "foreign"
+        with self.assertRaises(AGENT_MODULE.ProtocolError):
+            self.worker._assert_release_executions(self.request)
+        self.worker.worker_id = "ax42-01"
+        for status in AGENT_MODULE.NON_TERMINAL:
+            self.worker.executions["synthetic"]["status"] = status
+            with self.subTest(status=status), self.assertRaises(AGENT_MODULE.ProtocolError):
+                self.worker._assert_release_executions(self.request)
+        # Another WorkSession on the same change must also be terminal.
+        self.worker.executions["synthetic"]["sessionId"] = str(uuid.uuid4())
+        self.worker.executions["synthetic"]["changeOwnership"]["databaseWorkSessionId"] = 21
+        with self.assertRaises(AGENT_MODULE.ProtocolError):
+            self.worker._assert_release_executions(self.request)
+
+    def test_foreign_workspace_record_rejected_before_any_journal(self) -> None:
+        for key, value in {"changeKey": str(uuid.uuid4()), "databaseProjectId": True,
+                           "workerId": "foreign", "workspaceIdentity": "foreign",
+                           "workspaceBranch": "foreign", "baseCommit": "f" * 40}.items():
+            with self.subTest(key=key):
+                self.write_record({**self.record, key: value})
+                with self.assertRaises(MODULE.PreflightRejected):
+                    self.release()
+        self.assertEqual([], list(self.store.root.iterdir()))
+
+    def test_foreign_git_branch_repository_and_common_directory_rejected(self) -> None:
+        self.git(self.worktree, "checkout", "-b", "foreign")
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.release()
+        self.git(self.worktree, "checkout", self.request["workspaceBranch"])
+        self.git(self.mirror, "remote", "set-url", "origin", "https://example.invalid/foreign.git")
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.release()
+        self.git(self.mirror, "remote", "set-url", "origin", "git@github.com:jlnieto/atenea.git")
+        foreign = self.root / "foreign.git"
+        self.git(self.mirror, "clone", "--bare", str(self.mirror), str(foreign))
+        (self.worktree / ".git").write_text(f"gitdir: {foreign}\n")
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.release()
+        self.assertEqual([], list(self.store.root.iterdir()))
+
+    def test_symlink_and_ephemeral_resources_fail_closed(self) -> None:
+        original = self.record_path.read_text()
+        self.record_path.unlink()
+        foreign = self.root / "foreign-record.json"
+        foreign.write_text(original)
+        self.record_path.symlink_to(foreign)
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.release()
+        self.record_path.unlink()
+        self.write_record(self.record)
+        (self.root / "synthetic-ephemeral-present").touch()
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.release()
+        self.assertEqual([], list(self.store.root.iterdir()))
+
+    def test_conflicting_operation_or_receipt_is_rejected(self) -> None:
+        receipt = self.release()
+        for key in ("operationId", "idempotencyKey", "databaseWorkSessionId"):
+            request = {**self.request, key: 21 if key == "databaseWorkSessionId" else str(uuid.uuid4())}
+            with self.subTest(key=key), self.assertRaises(MODULE.PreflightRejected):
+                self.finalizer.release(request, self.operator.build_projection(request))
+        for key, value in {"changeKey": str(uuid.uuid4()), "databaseWorkSessionId": 21,
+                           "manifestSha256": "a" * 64, "workerId": "foreign", "databaseProjectId": True}.items():
+            tampered = {**receipt, key: value}
+            tampered["receiptSha256"] = MODULE.canonical_hash({
+                k: v for k, v in tampered.items() if k != "receiptSha256"})
+            with self.subTest(key=key), self.assertRaises(AGENT_MODULE.ProtocolError):
+                AGENT_MODULE.validate_workspace_release_receipt(self.request, "ax42-01", tampered)
+
+    def test_resume_after_every_existing_stage_and_revalidate_foreign_retry(self) -> None:
+        advance = self.store.advance
+        for stop in MODULE.JOURNAL_STAGES[1:]:
+            def interrupted(request, previous, following, evidence):
+                result = advance(request, previous, following, evidence)
+                if following == stop:
+                    raise OSError("synthetic lost response")
+                return result
+            with mock.patch.object(self.store, "advance", side_effect=interrupted):
+                with self.assertRaises(OSError):
+                    self.release()
+            self.assertEqual(stop, self.store.load(self.request)["state"])
+        receipt = self.release()
+        self.assertEqual(receipt, self.release())
+        self.write_record({**self.record, "changeKey": str(uuid.uuid4())})
+        with self.assertRaises(MODULE.PreflightRejected):
+            self.finalizer.release(self.request, self.store.load(self.request)["preflightProjection"])
 
 
 if __name__ == "__main__":
