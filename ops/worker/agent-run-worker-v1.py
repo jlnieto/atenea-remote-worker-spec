@@ -175,6 +175,9 @@ WORKSPACE_RELEASE_REQUEST_KEYS = {
     "projectId", "repository", "branch", "commit", "manifestSha256",
     "workspaceBranch",
 }
+CHANGE_RELEASE_REQUEST_KEYS = (WORKSPACE_RELEASE_REQUEST_KEYS - {"commit", "manifestSha256"}) | {
+    "changeKey", "databaseWorkSessionId", "databaseProjectId", "baseCommit", "workerId",
+}
 WORKSPACE_RELEASE_PREFLIGHT_RESPONSE_KEYS = {
     "schemaVersion", "state", "operationId", "sessionId",
     "workspaceIdentity", "projectId", "workerId",
@@ -368,14 +371,16 @@ def strict_json_object(raw: str) -> dict[str, Any]:
 
 
 def validate_workspace_release_request(request: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(request, dict) or set(request) != WORKSPACE_RELEASE_REQUEST_KEYS:
+    change_owned = isinstance(request, dict) and "changeKey" in request
+    keys = CHANGE_RELEASE_REQUEST_KEYS if change_owned else WORKSPACE_RELEASE_REQUEST_KEYS
+    if not isinstance(request, dict) or set(request) != keys:
         raise ProtocolError(
             HTTPStatus.BAD_REQUEST,
             "invalid_workspace_release_request",
             "workspace release request fields are invalid",
         )
     canonical: dict[str, str] = {}
-    for key in ("operationId", "idempotencyKey", "sessionId"):
+    for key in ("operationId", "idempotencyKey", "sessionId") + (("changeKey",) if change_owned else ()):
         try:
             value = str(uuid.UUID(request.get(key)))
         except (ValueError, TypeError, AttributeError):
@@ -400,13 +405,24 @@ def validate_workspace_release_request(request: dict[str, Any]) -> dict[str, Any
         "manifestSha256": PROJECT_MANIFEST_SHA256,
         "workspaceBranch": f"atenea/session-{session_id}",
     }
+    if change_owned:
+        exact.pop("manifestSha256")
+        exact.update({
+            "workerId": "ax42-01",
+            "workspaceIdentity": f"remote:ax42-01:change:{canonical['changeKey']}",
+            "workspaceBranch": f"atenea/change-{canonical['changeKey']}",
+        })
+        if any(type(request[key]) is not int or request[key] <= 0
+               for key in ("databaseWorkSessionId", "databaseProjectId")):
+            raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_workspace_release_identity",
+                                "workspace release database identity is invalid")
     if any(request.get(key) != value for key, value in exact.items()):
         raise ProtocolError(
             HTTPStatus.FORBIDDEN,
             "workspace_release_ownership_conflict",
             "workspace release ownership is not exact",
         )
-    commit = request.get("commit")
+    commit = request.get("baseCommit" if change_owned else "commit")
     if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise ProtocolError(
             HTTPStatus.BAD_REQUEST,
@@ -562,6 +578,11 @@ def validate_workspace_release_preflight_response(
             "workspace release preflight response is invalid",
         )
     for key in ("ownershipFingerprintSha256", "allocationFingerprintSha256"):
+        if key == "allocationFingerprintSha256" and "changeKey" in exact:
+            if response.get(key) is not None:
+                raise ProtocolError(HTTPStatus.BAD_GATEWAY, "workspace_release_preflight_response_invalid",
+                                    "change release cannot attest a legacy allocation")
+            continue
         if (
             not isinstance(response.get(key), str)
             or re.fullmatch(r"[0-9a-f]{64}", response[key]) is None
@@ -620,20 +641,27 @@ def validate_workspace_release_receipt(
     receipt: dict[str, Any],
 ) -> dict[str, Any]:
     exact_request = validate_workspace_release_request(request)
-    if not isinstance(receipt, dict) or set(receipt) != WORKSPACE_RELEASE_RECEIPT_KEYS:
+    change_owned = "changeKey" in exact_request
+    receipt_keys = WORKSPACE_RELEASE_RECEIPT_KEYS
+    if change_owned:
+        receipt_keys = (receipt_keys - {"commit", "manifestSha256"}) | {
+            "changeKey", "databaseWorkSessionId", "databaseProjectId", "baseCommit",
+        }
+    if not isinstance(receipt, dict) or set(receipt) != receipt_keys:
         raise ProtocolError(
             HTTPStatus.BAD_GATEWAY,
             "workspace_release_receipt_invalid",
             "workspace release receipt fields are invalid",
         )
-    ownership_keys = WORKSPACE_RELEASE_REQUEST_KEYS - {"operationId", "idempotencyKey"}
+    ownership_keys = set(exact_request) - {"operationId", "idempotencyKey"}
     if (
         receipt.get("schemaVersion") != WORKSPACE_RELEASE_SCHEMA
         or receipt.get("state") != "RELEASED"
         or receipt.get("operationId") != exact_request["operationId"]
         or receipt.get("idempotencyKey") != exact_request["idempotencyKey"]
         or receipt.get("workerId") != worker_id
-        or any(receipt.get(key) != exact_request[key] for key in ownership_keys)
+        or any(receipt.get(key) != exact_request[key]
+               or type(receipt.get(key)) is not type(exact_request[key]) for key in ownership_keys)
         or receipt.get("requestFingerprintSha256") != canonical_hash(exact_request)
         or type(receipt.get("revision")) is not int
         or receipt["revision"] != WORKSPACE_RELEASE_REVISION
@@ -653,7 +681,7 @@ def validate_workspace_release_receipt(
         or any(type(value) is not int or value < 0 for value in removed.values())
         or not isinstance(released, dict)
         or set(released) != WORKSPACE_RELEASE_RELEASED_KEYS
-        or any(value is not True for value in released.values())
+        or any(value is not (not change_owned) for value in released.values())
         or not isinstance(retained, dict)
         or set(retained) != WORKSPACE_RELEASE_RETAINED_KEYS
         or any(value is not True for value in retained.values())
@@ -1914,13 +1942,38 @@ class WorkerState:
         with self.workspace_lifecycle_lock():
             return self._ensure_workspace_locked(request)
 
+    def _assert_release_executions(self, request: dict[str, Any]) -> None:
+        assert_no_non_terminal_session_execution(self.executions, request["sessionId"])
+        if "changeKey" not in request:
+            return
+        if request["workerId"] != self.worker_id:
+            raise ProtocolError(HTTPStatus.FORBIDDEN, "workspace_release_ownership_conflict",
+                                "workspace release worker is not exact")
+        for execution in self.executions.values():
+            ownership = execution.get("changeOwnership") or {}
+            same_session = (execution.get("sessionId") == request["sessionId"]
+                            or ownership.get("databaseWorkSessionId") == request["databaseWorkSessionId"])
+            same_workspace = (execution.get("workspaceIdentity") == request["workspaceIdentity"]
+                              or ownership.get("changeKey") == request["changeKey"])
+            if same_session and (
+                execution.get("sessionId") != request["sessionId"]
+                or execution.get("workspaceIdentity") != request["workspaceIdentity"]
+                or ownership.get("remoteSessionId") != request["sessionId"]
+                or any(ownership.get(key) != request[key] for key in (
+                    "changeKey", "databaseWorkSessionId", "databaseProjectId", "workspaceIdentity", "baseCommit"
+                ))
+            ):
+                raise ProtocolError(HTTPStatus.FORBIDDEN, "workspace_release_ownership_conflict",
+                                    "workspace release conflicts with persisted WorkSession binding")
+            if same_workspace and execution.get("status") in NON_TERMINAL:
+                raise ProtocolError(HTTPStatus.CONFLICT, "workspace_release_execution_live",
+                                    "workspace release requires terminal change executions")
+
     def release_workspace(self, request: dict[str, Any]) -> dict[str, Any]:
         exact_request = validate_workspace_release_request(request)
         with self.workspace_lifecycle_lock():
             with self.lock:
-                assert_no_non_terminal_session_execution(
-                    self.executions, exact_request["sessionId"]
-                )
+                self._assert_release_executions(exact_request)
             releaser = self.project_workspace_releaser
             if releaser is None or not releaser.is_file():
                 raise ProtocolError(
@@ -2105,9 +2158,7 @@ class WorkerState:
         exact_request = validate_workspace_release_request(request)
         with self.workspace_lifecycle_lock():
             with self.lock:
-                assert_no_non_terminal_session_execution(
-                    self.executions, exact_request["sessionId"]
-                )
+                self._assert_release_executions(exact_request)
             releaser = self.project_workspace_releaser
             if releaser is None or not releaser.is_file():
                 raise ProtocolError(

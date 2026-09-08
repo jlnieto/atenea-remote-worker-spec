@@ -132,6 +132,11 @@ def _request_identity(request: Any) -> dict[str, str]:
         "projectId", "repository", "branch", "commit", "manifestSha256",
         "workspaceBranch",
     }
+    change_owned = isinstance(request, dict) and "changeKey" in request
+    if change_owned:
+        expected_keys = (expected_keys - {"commit", "manifestSha256"}) | {
+            "changeKey", "databaseWorkSessionId", "databaseProjectId", "baseCommit", "workerId",
+        }
     request = _exact_dict(request, expected_keys)
     session = _canonical_uuid(request.get("sessionId"))
     _canonical_uuid(request.get("operationId"))
@@ -144,11 +149,34 @@ def _request_identity(request: Any) -> dict[str, str]:
         "manifestSha256": MANIFEST_SHA256,
         "workspaceBranch": f"atenea/session-{session}",
     }
+    if change_owned:
+        change_key = _canonical_uuid(request.get("changeKey"))
+        exact.pop("manifestSha256")
+        exact.update({
+            "workspaceIdentity": f"remote:{WORKER_ID}:change:{change_key}",
+            "workspaceBranch": f"atenea/change-{change_key}",
+            "workerId": WORKER_ID,
+        })
+        if any(type(request[key]) is not int or request[key] <= 0
+               for key in ("databaseWorkSessionId", "databaseProjectId")):
+            _reject()
     if any(request.get(key) != value for key, value in exact.items()):
         _reject()
-    if not isinstance(request.get("commit"), str) or COMMIT.fullmatch(request["commit"]) is None:
+    commit = request.get("baseCommit" if change_owned else "commit")
+    if not isinstance(commit, str) or COMMIT.fullmatch(commit) is None:
         _reject()
     return dict(request)
+
+
+def _change_workspace_record(request: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "protocolVersion": "development-change-workspace/v1",
+        **{key: request[key] for key in (
+            "changeKey", "databaseProjectId", "projectId", "baseCommit",
+            "workspaceBranch", "workspaceIdentity", "workerId",
+        )},
+    }
 
 
 def _capacity_owner_request_identity(request: Any) -> dict[str, str]:
@@ -547,16 +575,28 @@ def validate_release_preflight(
         or projection.get("valuesExposed") is not False
     ):
         _reject()
-    runtime, allocation_fingerprint, loopback_ports = _validate_authoritative_roots(
-        exact_request, projection
-    )
-    counts = _validate_candidates(
-        projection,
-        exact_request["sessionId"],
-        runtime,
-        allocation_fingerprint,
-        loopback_ports,
-    )
+    if "changeKey" in exact_request:
+        workspace = projection.get("workspace")
+        root = f"/srv/atenea/workspaces/changes/{exact_request['changeKey']}"
+        if (workspace != {
+                "recordPath": f"{root}/workspace-v1.json",
+                "worktreePath": f"{root}/{PROJECT_ID}",
+                "record": _change_workspace_record(exact_request),
+                "gitOwned": True,
+            }
+            or any(projection.get(key) is not None for key in ("registry", "allocation", "admission"))
+            or any(projection.get(key) != [] for key in EPHEMERAL_CATEGORIES)):
+            _reject()
+        runtime, allocation_fingerprint = None, None
+        counts = {category: 0 for category in EPHEMERAL_CATEGORIES}
+    else:
+        runtime, allocation_fingerprint, loopback_ports = _validate_authoritative_roots(
+            exact_request, projection
+        )
+        counts = _validate_candidates(
+            projection, exact_request["sessionId"], runtime,
+            allocation_fingerprint, loopback_ports,
+        )
     return {
         "schemaVersion": SCHEMA,
         "state": "PREFLIGHT_ACCEPTED",
@@ -805,7 +845,7 @@ class ReleaseJournalStore:
             or _canonical_uuid(journal.get("idempotencyKey")) != journal["idempotencyKey"]
             or _canonical_uuid(journal.get("sessionId")) != journal["sessionId"]
             or journal.get("workspaceIdentity")
-            != f"remote:{WORKER_ID}:work-session:{journal['sessionId']}"
+            != _request_identity(journal.get("immutableRequest"))["workspaceIdentity"]
             or journal.get("projectId") != PROJECT_ID
             or journal.get("workerId") != WORKER_ID
         ):
@@ -814,6 +854,10 @@ class ReleaseJournalStore:
             "requestFingerprintSha256", "ownershipFingerprintSha256",
             "allocationFingerprintSha256", "journalSha256",
         ):
+            if (key == "allocationFingerprintSha256"
+                    and "changeKey" in journal["immutableRequest"]
+                    and journal.get(key) is None):
+                continue
             if not isinstance(journal.get(key), str) or SHA256.fullmatch(journal[key]) is None:
                 _reject()
         evidence = journal.get("stageEvidence")
@@ -1189,6 +1233,8 @@ class FixedRootReleaseOperator:
 
     def build_projection(self, request: Any) -> dict[str, Any]:
         exact = _request_identity(request)
+        if "changeKey" in exact:
+            return self.build_change_projection(exact)
         session = exact["sessionId"]
         session_root = Path(f"/srv/atenea/workspaces/sessions/{session}")
         worktree = session_root / PROJECT_ID
@@ -1424,6 +1470,75 @@ class FixedRootReleaseOperator:
             },
             **{category: [] for category in EPHEMERAL_CATEGORIES},
             "valuesExposed": False,
+        }
+        validate_release_preflight(exact, projection)
+        return projection
+
+    def build_change_projection(self, request: dict[str, Any]) -> dict[str, Any]:
+        exact = _request_identity(request)
+        root = Path(f"/srv/atenea/workspaces/changes/{exact['changeKey']}")
+        worktree = root / PROJECT_ID
+        mirror = Path("/srv/atenea/repositories/atenea.git")
+        for directory in (root.parent, root, worktree, mirror):
+            physical = self._physical(directory)
+            if physical.resolve() != physical:
+                _reject()
+            self._require_directory(physical, self.worker_uid)
+        record, _observed, _content = self._json_file(
+            root / "workspace-v1.json", uid=self.worker_uid,
+            gid=self.worker_gid, modes={0o600},
+        )
+        expected = _change_workspace_record(exact)
+        # Both existing workspace record shapes describe the same change authority.
+        if set(record) == set(expected) | {
+                "repository", "repositoryBranch", "initialSourceFingerprintSha256", "recordSha256"}:
+            if (record["repository"] != REPOSITORY or record["repositoryBranch"] != BRANCH
+                    or record["recordSha256"] != canonical_hash({
+                        key: value for key, value in record.items() if key != "recordSha256"})):
+                _reject()
+            record = {key: record[key] for key in expected}
+        if record != expected or any(type(record[key]) is not type(expected[key]) for key in expected):
+            _reject()
+        physical_worktree = self._physical(worktree)
+        physical_mirror = self._physical(mirror)
+
+        def git(*arguments: str, bare: bool = False) -> str:
+            directory = physical_mirror if bare else physical_worktree
+            return self._run([
+                "/usr/bin/git", "-c", f"safe.directory={directory}",
+                "-C", str(directory), *arguments,
+            ], 15).stdout.strip()
+
+        branch = f"refs/heads/{exact['workspaceBranch']}"
+        head = git("rev-parse", "--verify", "HEAD^{commit}")
+        if (git("symbolic-ref", "--quiet", "HEAD") != branch
+                or git("remote", "get-url", "origin") != "git@github.com:jlnieto/atenea.git"
+                or git("remote", "get-url", "origin", bare=True) != "git@github.com:jlnieto/atenea.git"
+                or git("rev-parse", "--is-bare-repository", bare=True) != "true"
+                or git("rev-parse", "--path-format=absolute", "--git-common-dir") != str(physical_mirror)
+                or git("rev-parse", "--show-toplevel") != str(physical_worktree)
+                or git("rev-parse", "--verify", f"{branch}^{{commit}}", bare=True) != head):
+            _reject()
+        registrations = [entry.splitlines() for entry in
+                         git("worktree", "list", "--porcelain", bare=True).split("\n\n")
+                         if f"branch {branch}" in entry.splitlines()]
+        if (len(registrations) != 1 or f"worktree {physical_worktree}" not in registrations[0]
+                or f"HEAD {head}" not in registrations[0]):
+            _reject()
+        git("merge-base", "--is-ancestor", exact["baseCommit"], head)
+        # v4 has no session allocation/registration. Retain source and historical
+        # evidence; only finalize after incompatible ephemeral resources are absent.
+        self._assert_unactivated_ephemeral_absent(exact["sessionId"])
+        self._assert_process_resources_absent()
+        projection = {
+            "schemaVersion": SCHEMA,
+            "requestFingerprintSha256": canonical_hash(exact),
+            "sessionId": exact["sessionId"], "workspaceIdentity": exact["workspaceIdentity"],
+            "projectId": PROJECT_ID, "workerId": WORKER_ID,
+            "workspace": {"recordPath": str(root / "workspace-v1.json"),
+                          "worktreePath": str(worktree), "record": record, "gitOwned": True},
+            "registry": None, "allocation": None, "admission": None,
+            **{category: [] for category in EPHEMERAL_CATEGORIES}, "valuesExposed": False,
         }
         validate_release_preflight(exact, projection)
         return projection
@@ -1812,6 +1927,8 @@ class FixedRootReleaseOperator:
                 projection = self.build_projection(exact)
         else:
             projection = self.build_projection(exact)
+        if "changeKey" in exact and projection != self.build_change_projection(exact):
+            _reject()
         preflight = validate_release_preflight(exact, projection)
         return {
             "schemaVersion": RELEASE_PREFLIGHT_SCHEMA,
@@ -1880,6 +1997,11 @@ class FixedRootReleaseOperator:
                 if port in allocated_ports:
                     _reject()
         self._assert_no_owned_preview(session)
+        self._assert_process_resources_absent()
+
+    def _assert_process_resources_absent(self) -> None:
+        if self.test_mode:
+            return
         materialization_root = self._physical(self.MATERIALIZATION_ROOT)
         if materialization_root.exists():
             try:
@@ -2174,6 +2296,20 @@ class WorkspaceReleaseFinalizer:
         stored_projection = journal["preflightProjection"]
         preflight = validate_release_preflight(exact_request, stored_projection)
 
+        if "changeKey" in exact_request:
+            # No legacy resources are fabricated or removed. Recheck direct ownership
+            # on retries, including RELEASED, before returning the exact durable receipt.
+            observed = self.boundary.operator.build_change_projection(exact_request)
+            if observed != stored_projection:
+                _reject()
+            for previous, following in zip(JOURNAL_STAGES, JOURNAL_STAGES[1:]):
+                if journal["state"] == previous:
+                    journal = self.journal_store.advance(
+                        exact_request, previous, following,
+                        preflight["ownershipFingerprintSha256"],
+                    )
+            return self._result(exact_request, preflight, journal)
+
         if journal["state"] == "PREPARED":
             ephemeral = self.boundary.release_ephemeral(
                 exact_request, stored_projection
@@ -2385,8 +2521,8 @@ class WorkspaceReleaseFinalizer:
             "projectId": PROJECT_ID,
             "repository": request["repository"],
             "branch": request["branch"],
-            "commit": request["commit"],
-            "manifestSha256": request["manifestSha256"],
+            "commit": request.get("commit"),
+            "manifestSha256": request.get("manifestSha256"),
             "workspaceBranch": request["workspaceBranch"],
             "workerId": WORKER_ID,
             "revision": journal["revision"],
@@ -2409,6 +2545,13 @@ class WorkspaceReleaseFinalizer:
             "retained": {key: True for key in sorted(RETAINED_KEYS)},
             "valuesExposed": False,
         }
+        if "changeKey" in request:
+            receipt.pop("commit")
+            receipt.pop("manifestSha256")
+            receipt.update({key: request[key] for key in (
+                "changeKey", "databaseWorkSessionId", "databaseProjectId", "baseCommit",
+            )})
+            receipt["released"] = {key: False for key in receipt["released"]}
         receipt["receiptSha256"] = canonical_hash(receipt)
         return receipt
 
