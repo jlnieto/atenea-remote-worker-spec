@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "project": "atenea-platform",
+  "repository": "jlnieto/atenea-remote-worker-spec",
+  "engine": {"version": "0.2.0", "digest": "sha256:686febf56e96383e1e7e63cb9dd42fe09a7ee94644f17cc7c1adc875d72848d8"},
+  "mode": "selective",
+  "default_tier": "T3",
+  "rules": [
+    {
+      "id": "codex-session-negative-corpus",
+      "paths": [{"kind": "exact", "path_b64": "cnVudGltZS1jb250cmFjdC9maXh0dXJlcy9jb2RleC1zZXNzaW9uLW9wZXJhdGlvbnMtdjEvbmVnYXRpdmUtY29ycHVzLmpzb24="}],
+      "min_tier": "T1",
+      "areas": ["codex-session-negative-corpus"],
+      "risk": "local",
+      "requirements": {"tests": [], "checks": [], "builds": [], "smoke": []}
+    }
+  ],
+  "areas": {
+    "codex-session-negative-corpus": {
+      "min_tier": "T1",
+      "consumers": [],
+      "requirements": {"tests": ["codex-session-negative-contract"], "checks": [], "builds": [], "smoke": []}
+    }
+  },
+  "test_groups": {
+    "codex-session-negative-contract": {
+      "operation": "python-unittest",
+      "scope": "selected",
+      "selectors": [{"kind": "file", "value": "ops/worker/test-codex-session-operations-contract-v1.py"}],
+      "covers": [],
+      "expected_count": {"state": "known", "value": 5, "basis": "unittest-summary"},
+      "zero_matches": "fail"
+    },
+    "platform-strong-path": {
+      "operation": "manual-platform-strong",
+      "scope": "full",
+      "selectors": [{"kind": "suite", "value": "platform-strong-path"}],
+      "covers": ["codex-session-negative-contract"],
+      "expected_count": {"state": "unknown", "basis": "not_calibrated"},
+      "zero_matches": "fail"
+    }
+  },
+  "checks": {
+    "ufd-policy": {"operation": "policy-contract"},
+    "platform-strong-review": {"operation": "manual-platform-strong"}
+  },
+  "builds": {"platform-strong-build": {"operation": "manual-platform-strong"}},
+  "smoke": {"platform-strong-smoke": {"operation": "manual-platform-strong"}},
+  "runner_capabilities": {
+    "platform-local": {
+      "selection": true,
+      "test_groups": ["codex-session-negative-contract"],
+      "checks": ["ufd-policy"],
+      "builds": [],
+      "smoke": []
+    }
+  },
+  "baseline": {"tests": [], "checks": ["ufd-policy"], "builds": [], "smoke": []},
+  "full_test_groups": ["platform-strong-path"],
+  "protected_paths": [
+    {"kind": "prefix", "path_b64": "b3BzL3dvcmtlcg=="}
+  ],
+  "overrides": []
+}

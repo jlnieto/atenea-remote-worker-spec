@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENGINE_DIR="${ATENEA_UFD_ENGINE_DIR:-$REPO_DIR/target/ufd-engine}"
+OUTPUT_DIR="${ATENEA_UFD_OUTPUT_DIR:-$REPO_DIR/target/ufd}"
+
+cd "$REPO_DIR"
+
+git rev-parse --verify --quiet HEAD^{commit} >/dev/null || {
+  echo "UFD requires a committed HEAD" >&2
+  exit 2
+}
+
+dirty_entries="$(git status --porcelain --untracked-files=all | grep -vE '^\?\? ops/worker/__pycache__/' || true)"
+if [[ -n "$dirty_entries" ]]; then
+  echo "UFD requires a clean worktree outside ops/worker/__pycache__/" >&2
+  exit 2
+fi
+
+git fetch github main
+if ! BASE_SHA="$(git merge-base HEAD github/main)" || [[ -z "$BASE_SHA" ]]; then
+  echo "UFD could not determine a common base with github/main" >&2
+  exit 2
+fi
+if ! git cat-file -e "$BASE_SHA:.delivery/engine-lock.json" 2>/dev/null; then
+  echo "UFD requires its policy to be present in canonical github/main" >&2
+  exit 2
+fi
+
+python3 "$SCRIPT_DIR/ufd-install.py" --base "$BASE_SHA" --destination "$ENGINE_DIR"
+WHEEL_NAME="$(git show "$BASE_SHA:.delivery/engine-lock.json" | python3 -c '
+import json
+import sys
+
+lock = json.load(sys.stdin)
+print(sys.argv[1] + "/" + lock["filename"])
+' "$ENGINE_DIR")"
+
+"$ENGINE_DIR/venv/bin/python" -I "$SCRIPT_DIR/ufd-platform.py" plan \
+  --base "$BASE_SHA" --wheel "$WHEEL_NAME" --output "$OUTPUT_DIR"
+exec "$ENGINE_DIR/venv/bin/python" -I "$SCRIPT_DIR/ufd-platform.py" run --output "$OUTPUT_DIR"
