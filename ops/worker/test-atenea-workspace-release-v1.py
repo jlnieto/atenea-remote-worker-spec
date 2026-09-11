@@ -1602,7 +1602,7 @@ class ChangeOwnedReleaseTest(unittest.TestCase):
         base = self.git(seed, "rev-parse", "HEAD")
         self.mirror.parent.mkdir(parents=True)
         self.git(seed, "clone", "--bare", str(seed), str(self.mirror))
-        self.git(self.mirror, "remote", "set-url", "origin", "git@github.com:jlnieto/atenea.git")
+        self.git(self.mirror, "remote", "set-url", "origin", MODULE.REPOSITORY)
         self.git(self.mirror, "worktree", "add", "-b", f"atenea/change-{self.change_key}",
                  str(self.worktree), base)
         self.request = {
@@ -1650,9 +1650,11 @@ class ChangeOwnedReleaseTest(unittest.TestCase):
         return AGENT_MODULE.validate_workspace_release_receipt(
             exact, "ax42-01", self.finalizer.release(exact, projection))
 
-    def test_direct_git_sandbox_release_retains_change_and_needs_no_legacy_authority(self) -> None:
+    def test_canonical_https_origin_release_retains_change_and_needs_no_legacy_authority(self) -> None:
         head = self.git(self.worktree, "rev-parse", "HEAD")
         record_bytes = self.record_path.read_bytes()
+        self.assertEqual(MODULE.REPOSITORY, self.git(self.worktree, "remote", "get-url", "origin"))
+        self.assertEqual(MODULE.REPOSITORY, self.git(self.mirror, "remote", "get-url", "origin"))
         # Retained evidence/source is not rewritten or rejected using app projections.
         evidence = self.worktree / "retained-draft.txt"
         evidence.write_text("historical draft")
@@ -1763,7 +1765,7 @@ class ChangeOwnedReleaseTest(unittest.TestCase):
         self.git(self.mirror, "remote", "set-url", "origin", "https://example.invalid/foreign.git")
         with self.assertRaises(MODULE.PreflightRejected):
             self.release()
-        self.git(self.mirror, "remote", "set-url", "origin", "git@github.com:jlnieto/atenea.git")
+        self.git(self.mirror, "remote", "set-url", "origin", MODULE.REPOSITORY)
         foreign = self.root / "foreign.git"
         self.git(self.mirror, "clone", "--bare", str(self.mirror), str(foreign))
         (self.worktree / ".git").write_text(f"gitdir: {foreign}\n")
