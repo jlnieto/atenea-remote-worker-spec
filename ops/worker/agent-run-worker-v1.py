@@ -804,7 +804,7 @@ def reviewed_mediator_stderr_envelope(raw: str) -> dict[str, Any]:
     if stripped.startswith("{"):
         return reviewed_mediator_error_envelope(stripped)
     first_line = stripped.splitlines()[0]
-    match = re.match(r"^([A-Z][A-Z0-9_]{2,79}):(?: |$)", first_line)
+    match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?::(?: |$)|$)", first_line)
     if match is None or match.group(1) not in REVIEWED_MEDIATOR_ERRORS:
         raise ValueError("mediator stderr code is not reviewed")
     code = match.group(1)
