@@ -719,6 +719,66 @@ json.dump(out,sys.stdout,sort_keys=True,separators=(',',':'))
             self.assertEqual("ABSENT", response["state"])
             self.assertFalse(response["valuesExposed"])
 
+    def test_worker_translates_mediator_bare_rejection_to_deterministic_conflict(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="atenea-m2-worker-") as temporary:
+            root = Path(temporary)
+            mediator = root / "mediator.py"
+            mediator.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('DEVELOPMENT_CHANGE_WORKSPACE_REJECTED', file=sys.stderr)\n"
+                "raise SystemExit(65)\n",
+                encoding="utf-8",
+            )
+            mediator.chmod(0o755)
+            state = worker_module.WorkerState(
+                root / "state",
+                "ax42-01",
+                development_change_workspace_mediator=mediator,
+            )
+
+            with self.assertRaises(worker_module.ProtocolError) as rejected:
+                state.execute_development_change_workspace(self._request(), "inspect")
+
+            self.assertEqual(worker_module.HTTPStatus.CONFLICT, rejected.exception.status)
+            self.assertEqual(
+                {
+                    "schemaVersion": worker_module.WORKER_ERROR_SCHEMA,
+                    "code": "DEVELOPMENT_CHANGE_WORKSPACE_REJECTED",
+                    "category": "OWNERSHIP",
+                    "retryable": False,
+                    "nextAction": "CONTACT_PLATFORM_ADMINISTRATOR",
+                },
+                rejected.exception.safe_error,
+            )
+
+    def test_worker_rejects_invalid_mediator_failure_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="atenea-m2-worker-") as temporary:
+            root = Path(temporary)
+            mediator = root / "mediator.py"
+            mediator.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('DEVELOPMENT_CHANGE_WORKSPACE_REJECTED unexpected', file=sys.stderr)\n"
+                "raise SystemExit(65)\n",
+                encoding="utf-8",
+            )
+            mediator.chmod(0o755)
+            state = worker_module.WorkerState(
+                root / "state",
+                "ax42-01",
+                development_change_workspace_mediator=mediator,
+            )
+
+            with self.assertRaises(worker_module.ProtocolError) as rejected:
+                state.execute_development_change_workspace(self._request(), "inspect")
+
+            self.assertEqual(worker_module.HTTPStatus.BAD_GATEWAY, rejected.exception.status)
+            self.assertEqual(
+                "DEVELOPMENT_CHANGE_WORKSPACE_RESPONSE_INVALID",
+                rejected.exception.safe_error["code"],
+            )
+
     def test_service_template_changes_only_worker_protocol_boundary(self) -> None:
         service = (SOURCE / "templates" / "atenea-agent-run-worker-v1.service").read_text()
         self.assertIn(
