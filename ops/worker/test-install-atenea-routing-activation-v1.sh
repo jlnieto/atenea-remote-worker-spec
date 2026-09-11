@@ -123,10 +123,10 @@ verify_source_bundle
 # It must be promotable while the earlier retained rollback predecessor remains
 # byte-for-byte intact.
 git -C "${SOURCE_DIR}" show \
-  '5626f8b50697bb8b3c792f9ae3c16880e819aeef:ops/worker/atenea-workspace-release-v1.py' \
-  >"${TEST_ROOT}/release-095e-predecessor.py"
-[[ "$(sha256sum "${TEST_ROOT}/release-095e-predecessor.py" | cut -d' ' -f1)" == \
-    095e0db0ee77814f59f12907d003bad462c64c57aa8b85137e9c142147416de3 ]] \
+  '419d046e27a6e54316eb4124344c233b4cbac84b:ops/worker/atenea-workspace-release-v1.py' \
+  >"${TEST_ROOT}/release-4bc-predecessor.py"
+[[ "$(sha256sum "${TEST_ROOT}/release-4bc-predecessor.py" | cut -d' ' -f1)" == \
+    4bc09eadbba298d91bde171ede58ba6df10bee691cbe7bfabd5276c689885003 ]] \
   || fail_test 'historical release predecessor does not match the reviewed digest'
 git -C "${SOURCE_DIR}" show \
   '9eacd058c51860d30fb526acd7340ec4e233b4bc:ops/worker/atenea-workspace-release-v1.py' \
@@ -135,23 +135,23 @@ git -C "${SOURCE_DIR}" show \
     baccb3c7c7053e5d09eb05148f1c2e368faf90d5e2706a537ac3473429dfada0 ]] \
   || fail_test 'historical retained predecessor does not match the reviewed digest'
 bundle_create_current
-cp "${TEST_ROOT}/release-095e-predecessor.py" "${RELEASE_PROGRAM}"
+cp "${TEST_ROOT}/release-4bc-predecessor.py" "${RELEASE_PROGRAM}"
 chmod 0755 "${RELEASE_PROGRAM}"
 mkdir -p "${RETAINED_PREDECESSOR_ROOT}"
 chmod 0700 "${RETAINED_PREDECESSOR_ROOT}"
 cp "${TEST_ROOT}/release-bacc-retained.py" "${RETAINED_RELEASE_PROGRAM}"
 chmod 0755 "${RETAINED_RELEASE_PROGRAM}"
 [[ "$(activation_bundle_preflight)" == release-successor-predecessor ]] \
-  || fail_test 'exact 095e release predecessor was not accepted for promotion'
+  || fail_test 'exact 4bc release predecessor was not accepted for promotion'
 if ( verify ) >"${TEST_ROOT}/final-rejection" 2>&1; then
-  fail_test 'final verification accepted the 095e release predecessor'
+  fail_test 'final verification accepted the 4bc release predecessor'
 fi
 grep -Fq 'installed release mediator is not current' "${TEST_ROOT}/final-rejection" \
-  || fail_test '095e final verification rejected for an unrelated reason'
+  || fail_test '4bc final verification rejected for an unrelated reason'
 apply_install >/dev/null
 [[ "$(sha256sum "${RELEASE_PROGRAM}" | cut -d' ' -f1)" == \
-    4bc09eadbba298d91bde171ede58ba6df10bee691cbe7bfabd5276c689885003 ]] \
-  || fail_test 'exact 095e transition did not install the 4bc target'
+    aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4 ]] \
+  || fail_test 'exact 4bc transition did not install the aa02 target'
 [[ "$(sha256sum "${RETAINED_RELEASE_PROGRAM}" | cut -d' ' -f1)" == \
     baccb3c7c7053e5d09eb05148f1c2e368faf90d5e2706a537ac3473429dfada0 ]] \
   || fail_test 'exact bacc retained predecessor was changed by promotion'
@@ -164,7 +164,7 @@ fi
 grep -Fq 'installed release mediator is not an accepted predecessor' \
   "${TEST_ROOT}/release-rejection" \
   || fail_test 'foreign release mediator rejected for an unrelated reason'
-printf 'PASS: exact 095e-to-4bc release promotion retains bacc and rejects foreign provenance\n'
+printf 'PASS: exact 4bc-to-aa02 release promotion retains bacc and rejects foreign provenance\n'
 bundle_reset
 
 # Reconstruct the immediate Git predecessor of 78256ad from the packaged target.
@@ -255,7 +255,7 @@ apply_install >/dev/null
   || fail_test 'capacity-diagnosis predecessor was not upgraded exactly'
 [[ "$(cat "${SUDOERS}")" == "$(sudoers_content)" ]] \
   || fail_test 'release-preflight sudo authority was not installed exactly'
-RELEASE_PROGRAM_PREDECESSOR_SHA256=095e0db0ee77814f59f12907d003bad462c64c57aa8b85137e9c142147416de3
+RELEASE_PROGRAM_PREDECESSOR_SHA256=4bc09eadbba298d91bde171ede58ba6df10bee691cbe7bfabd5276c689885003
 bundle_reset
 
 bundle_create_release_preflight_predecessor
@@ -275,11 +275,11 @@ fi
 after="$(find "${TEST_ROOT}" -type f -print0 | sort -z | xargs -0 sha256sum)"
 [[ "${before}" == "${after}" ]] \
   || fail_test 'rejected retained predecessor changed the installed bundle'
-RELEASE_PROGRAM_PREDECESSOR_SHA256=095e0db0ee77814f59f12907d003bad462c64c57aa8b85137e9c142147416de3
+RELEASE_PROGRAM_PREDECESSOR_SHA256=4bc09eadbba298d91bde171ede58ba6df10bee691cbe7bfabd5276c689885003
 bundle_reset
 
 bundle_create_release_preflight_predecessor
-cp "${TEST_ROOT}/release-095e-predecessor.py" "${RELEASE_PROGRAM}"
+cp "${TEST_ROOT}/release-4bc-predecessor.py" "${RELEASE_PROGRAM}"
 chmod 0755 "${RELEASE_PROGRAM}"
 mkdir -p "${RETAINED_PREDECESSOR_ROOT}"
 chmod 0700 "${RETAINED_PREDECESSOR_ROOT}"
