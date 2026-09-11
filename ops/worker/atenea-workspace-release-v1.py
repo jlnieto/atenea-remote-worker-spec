@@ -1512,8 +1512,8 @@ class FixedRootReleaseOperator:
         branch = f"refs/heads/{exact['workspaceBranch']}"
         head = git("rev-parse", "--verify", "HEAD^{commit}")
         if (git("symbolic-ref", "--quiet", "HEAD") != branch
-                or git("remote", "get-url", "origin") != "git@github.com:jlnieto/atenea.git"
-                or git("remote", "get-url", "origin", bare=True) != "git@github.com:jlnieto/atenea.git"
+                or git("remote", "get-url", "origin") != REPOSITORY
+                or git("remote", "get-url", "origin", bare=True) != REPOSITORY
                 or git("rev-parse", "--is-bare-repository", bare=True) != "true"
                 or git("rev-parse", "--path-format=absolute", "--git-common-dir") != str(physical_mirror)
                 or git("rev-parse", "--show-toplevel") != str(physical_worktree)
