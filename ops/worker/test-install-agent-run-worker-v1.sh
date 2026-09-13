@@ -38,6 +38,18 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
     == "${PLATFORM_INSTRUCTIONS_SHA256}" ]] || fail "platform instruction fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
+[[ "${PROGRAM_SHA256}" \
+    == "a952a6f978fc29620819c652d621554232a429477591143b611e7ab23f3b3aba" ]] \
+  || fail "deterministic workspace rejection promotion fingerprint is not exact"
+PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
+mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
+install -m 0755 "${SCRIPT_DIR}/agent-run-worker-v1.py" "${PROMOTED_PROGRAM}"
+[[ "$(sha256sum "${PROMOTED_PROGRAM}" | cut -d' ' -f1)" == "${PROGRAM_SHA256}" ]] \
+  || fail "promoted worker program fingerprint is not exact"
+printf 'foreign worker provenance\n' >"${PROMOTED_PROGRAM}"
+if [[ "$(sha256sum "${PROMOTED_PROGRAM}" | cut -d' ' -f1)" == "${PROGRAM_SHA256}" ]]; then
+  fail "foreign worker provenance was accepted"
+fi
 [[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
     == "${DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256}" ]] \
   || fail "development-change workspace mediator fingerprint is stale"
