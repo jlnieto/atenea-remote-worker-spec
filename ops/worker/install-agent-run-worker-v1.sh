@@ -49,6 +49,7 @@ PROJECT_PINNED_WORKSPACE_SESSION_ID="6547081d-895e-4be1-a8fd-d115b7743cdf"
 PROJECT_PINNED_WORKSPACE_COMMIT="e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5"
 PROJECT_PINNED_SOURCE_TARGET_COMMIT="96220cd4eb0cf2f6ec985588d086f159eb2baebc"
 PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT="a8612dbf501089daf7043905c0fb67b4c59a3abf"
+PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT="c3ebc2e9d252abe86ff85cb45e97e458b3a826e7"
 PROJECT_PINNED_WORKSPACE_RECORD_SHA256="3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7"
 PROJECT_PINNED_ALLOCATION_SHA256="08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87"
 PROJECT_PINNED_DIRTY_PATH="android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt"
@@ -762,6 +763,19 @@ project_config_install_preflight() {
       "$PROJECT_PINNED_SOURCE_TARGET_COMMIT"
     return 0
   fi
+  if ( verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT" \
+      && [[ "$(observe_project_commit)" \
+        == "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" ]] \
+      && git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor \
+        "$PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT" \
+        "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" \
+      && verify_no_non_terminal_project_operations ) >/dev/null 2>&1; then
+    printf 'pinned-retained-advance:%s:%s:%s\n' \
+      "$retained_sha256" "$PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT" \
+      "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT"
+    return 0
+  fi
   if jq -e \
       --arg commit "$PROJECT_PINNED_WORKSPACE_COMMIT" '
       .commit == $commit and .selectionEnabled == true and
@@ -793,14 +807,16 @@ project_config_install_finalize() {
     <<<"$retained_identity"
   [[ "$operation" == "retain" || "$operation" == "transition" \
       || "$operation" == "source-advance" \
-      || "$operation" == "pinned-source-advance" ]] \
+      || "$operation" == "pinned-source-advance" \
+      || "$operation" == "pinned-retained-advance" ]] \
     || fail "existing project configuration transition identity is invalid"
   [[ "$retained_sha256" =~ ^[0-9a-f]{64}$ ]] \
     || fail "existing project configuration fingerprint is invalid"
   [[ -z "$surplus" ]] \
     || fail "existing project configuration transition identity is ambiguous"
   if [[ "$operation" == "source-advance" \
-      || "$operation" == "pinned-source-advance" ]]; then
+      || "$operation" == "pinned-source-advance" \
+      || "$operation" == "pinned-retained-advance" ]]; then
     [[ "$retained_commit" =~ ^[0-9a-f]{40}$ \
         && "$canonical_commit" =~ ^[0-9a-f]{40}$ ]] \
       || fail "source advance transition commits are invalid"
@@ -861,6 +877,38 @@ project_config_install_finalize() {
       git --git-dir="$PROJECT_MIRROR" update-ref \
         "$PROJECT_REF" "$retained_commit" "$canonical_commit" || true
       fail "pinned source advance postcondition failed and predecessor restoration was attempted"
+    fi
+    rm -f "$predecessor_copy"
+    return 0
+  fi
+  if [[ "$operation" == "pinned-retained-advance" ]]; then
+    [[ "$retained_commit" == "$PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT" \
+        && "$canonical_commit" == "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" ]] \
+      || fail "pinned retained advance identity is not reviewed"
+    [[ "$(observe_project_commit)" == "$canonical_commit" ]] \
+      || fail "canonical mirror ref changed during pinned retained advance"
+    verify_project_config_pinned_workspace_content "$retained_commit"
+    git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor \
+      "$retained_commit" "$canonical_commit" \
+      || fail "pinned retained advance is not forward-only"
+    verify_no_non_terminal_project_operations
+
+    local predecessor_copy successor_config
+    predecessor_copy="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-predecessor.XXXXXX")"
+    successor_config="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-successor.XXXXXX")"
+    cp --preserve=mode,ownership,timestamps "$PROJECT_CONFIG" "$predecessor_copy"
+    write_project_config_commit_only \
+      "$retained_commit" "$canonical_commit" "$successor_config"
+    chown root:root "$successor_config"
+    chmod 0644 "$successor_config"
+    [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" == "$retained_sha256" ]] \
+      || { rm -f "$predecessor_copy" "$successor_config"; \
+        fail "existing project configuration changed before pinned retained finalize"; }
+    if ! mv -f "$successor_config" "$PROJECT_CONFIG" \
+        || ! verify_project_config_pinned_workspace_content "$canonical_commit" \
+        || ! verify_no_non_terminal_project_operations; then
+      mv -f "$predecessor_copy" "$PROJECT_CONFIG" || true
+      fail "pinned retained advance postcondition failed and predecessor restoration was attempted"
     fi
     rm -f "$predecessor_copy"
     return 0
