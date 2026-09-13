@@ -87,6 +87,7 @@ fi
     && "${PROJECT_PINNED_WORKSPACE_COMMIT}" == "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5" \
     && "${PROJECT_PINNED_SOURCE_TARGET_COMMIT}" == "96220cd4eb0cf2f6ec985588d086f159eb2baebc" \
     && "${PROJECT_PINNED_RETAINED_PREDECESSOR_COMMIT}" == "a8612dbf501089daf7043905c0fb67b4c59a3abf" \
+    && "${PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT}" == "c3ebc2e9d252abe86ff85cb45e97e458b3a826e7" \
     && "${PROJECT_PINNED_WORKSPACE_RECORD_SHA256}" == "3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7" \
     && "${PROJECT_PINNED_ALLOCATION_SHA256}" == "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87" \
     && "${PROJECT_PINNED_DIRTY_PATH}" == "android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt" \
@@ -810,6 +811,49 @@ project_config_install_finalize "${HISTORICAL_PREFLIGHT}"
     && "$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)" \
       == "${PINNED_ALLOCATION_SHA_BEFORE}" ]] \
   || fail "exact enabled retained predecessor state changed"
+
+# Promote the reviewed retained predecessor only to its fixed successor. This
+# keeps an enabled WS19 registry intact while refusing a moving canonical ref.
+HISTORICAL_SUCCESSOR_COMMIT="$(printf 'historical successor\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${HISTORICAL_TREE}" -p "${HISTORICAL_PREDECESSOR_COMMIT}")"
+git --git-dir="${PROJECT_MIRROR}" fetch -q "${WORKTREE}" \
+  "${HISTORICAL_SUCCESSOR_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_SUCCESSOR_COMMIT}" "${HISTORICAL_PREDECESSOR_COMMIT}"
+PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT="${HISTORICAL_SUCCESSOR_COMMIT}"
+write_project_config true true "${PINNED_WORKSPACES}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
+HISTORICAL_ADVANCE_PREDECESSOR="${TEST_ROOT}/historical-advance-predecessor.json"
+cp "${PROJECT_CONFIG}" "${HISTORICAL_ADVANCE_PREDECESSOR}"
+HISTORICAL_ADVANCE_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${HISTORICAL_ADVANCE_PREFLIGHT}" == \
+    "pinned-retained-advance:$(sha256sum "${HISTORICAL_ADVANCE_PREDECESSOR}" | cut -d' ' -f1):${HISTORICAL_PREDECESSOR_COMMIT}:${HISTORICAL_SUCCESSOR_COMMIT}" ]] \
+  || fail "installer did not recognize the exact retained predecessor promotion"
+project_config_install_finalize "${HISTORICAL_ADVANCE_PREFLIGHT}"
+jq -e --arg commit "${HISTORICAL_SUCCESSOR_COMMIT}" '
+  .commit == $commit and .selectionEnabled == true and
+  .executionEnabled == true and (.workspaces | length) == 1
+' "${PROJECT_CONFIG}" >/dev/null \
+  || fail "retained predecessor promotion did not preserve the enabled registry"
+
+write_project_config true true "${PINNED_WORKSPACES}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${CANONICAL_COMMIT}" "${HISTORICAL_SUCCESSOR_COMMIT}"
+assert_pinned_preflight_rejected "unreviewed retained predecessor canonical target"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_SUCCESSOR_COMMIT}" "${CANONICAL_COMMIT}"
+
+jq '.executions.active = {status: "RUNNING"}' \
+  "${STATE_DIR}/executions.json" >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+assert_pinned_preflight_rejected "active operation during retained predecessor promotion"
+jq 'del(.executions.active)' "${STATE_DIR}/executions.json" \
+  >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_PREDECESSOR_COMMIT}" "${HISTORICAL_SUCCESSOR_COMMIT}"
 
 OTHER_PREDECESSOR_COMMIT="$(printf 'other predecessor\n' | \
   git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
