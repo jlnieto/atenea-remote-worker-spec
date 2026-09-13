@@ -70,6 +70,19 @@ fi
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-workspace-release-v1.py" | cut -d' ' -f1)" \
     == "${WORKSPACE_RELEASER_SHA256}" ]] \
   || fail "Atenea workspace releaser fingerprint is stale"
+[[ "${WORKSPACE_RELEASER_SHA256}" \
+    == "aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4" ]] \
+  || fail "workspace releaser promotion fingerprint is not exact"
+PROMOTED_RELEASER="${TEST_ROOT}/libexec/atenea-workspace-release-v1.py"
+install -m 0755 "${SCRIPT_DIR}/atenea-workspace-release-v1.py" "${PROMOTED_RELEASER}"
+[[ "$(sha256sum "${PROMOTED_RELEASER}" | cut -d' ' -f1)" \
+    == "${WORKSPACE_RELEASER_SHA256}" ]] \
+  || fail "promoted workspace releaser fingerprint is not exact"
+printf 'foreign workspace releaser provenance\n' >"${PROMOTED_RELEASER}"
+if [[ "$(sha256sum "${PROMOTED_RELEASER}" | cut -d' ' -f1)" \
+    == "${WORKSPACE_RELEASER_SHA256}" ]]; then
+  fail "foreign workspace releaser provenance was accepted"
+fi
 [[ "${PROJECT_PINNED_WORKSPACE_SESSION_ID}" == "6547081d-895e-4be1-a8fd-d115b7743cdf" \
     && "${PROJECT_PINNED_WORKSPACE_COMMIT}" == "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5" \
     && "${PROJECT_PINNED_SOURCE_TARGET_COMMIT}" == "96220cd4eb0cf2f6ec985588d086f159eb2baebc" \
