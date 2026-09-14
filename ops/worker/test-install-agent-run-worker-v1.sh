@@ -836,6 +836,8 @@ jq -e --arg commit "${HISTORICAL_SUCCESSOR_COMMIT}" '
   .executionEnabled == true and (.workspaces | length) == 1
 ' "${PROJECT_CONFIG}" >/dev/null \
   || fail "retained predecessor promotion did not preserve the enabled registry"
+HISTORICAL_RECOVERY_PARTIAL="${TEST_ROOT}/historical-recovery-partial.json"
+cp "${PROJECT_CONFIG}" "${HISTORICAL_RECOVERY_PARTIAL}"
 
 write_project_config true true "${PINNED_WORKSPACES}" \
   "${HISTORICAL_PREDECESSOR_COMMIT}"
@@ -852,6 +854,47 @@ assert_pinned_preflight_rejected "active operation during retained predecessor p
 jq 'del(.executions.active)' "${STATE_DIR}/executions.json" \
   >"${STATE_DIR}/executions.changed"
 mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_PREDECESSOR_COMMIT}" "${HISTORICAL_SUCCESSOR_COMMIT}"
+
+# Recover only the exact partial registry state produced after the reviewed
+# promotion: the canonical commit is advanced, but execution remains enabled.
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${HISTORICAL_SUCCESSOR_COMMIT}" "${HISTORICAL_PREDECESSOR_COMMIT}"
+cp "${HISTORICAL_RECOVERY_PARTIAL}" "${PROJECT_CONFIG}"
+HISTORICAL_RECOVERY_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${HISTORICAL_RECOVERY_PREFLIGHT}" == \
+    "pinned-retained-recovery:$(sha256sum "${HISTORICAL_RECOVERY_PARTIAL}" | cut -d' ' -f1):${HISTORICAL_SUCCESSOR_COMMIT}:${HISTORICAL_SUCCESSOR_COMMIT}" ]] \
+  || fail "installer did not recognize the exact retained partial recovery"
+project_config_install_finalize "${HISTORICAL_RECOVERY_PREFLIGHT}"
+jq -e --arg commit "${HISTORICAL_SUCCESSOR_COMMIT}" '
+  .commit == $commit and .selectionEnabled == true and
+  .executionEnabled == false and (.workspaces | length) == 1
+' "${PROJECT_CONFIG}" >/dev/null \
+  || fail "retained partial recovery did not disable execution"
+verify_project_config_content
+
+cp "${HISTORICAL_RECOVERY_PARTIAL}" "${PROJECT_CONFIG}"
+jq '.manifestSha256 = ("0" * 64)' "${PROJECT_CONFIG}" >"${PROJECT_CONFIG}.rejected"
+mv "${PROJECT_CONFIG}.rejected" "${PROJECT_CONFIG}"
+assert_pinned_preflight_rejected "changed retained partial configuration"
+
+cp "${HISTORICAL_RECOVERY_PARTIAL}" "${PROJECT_CONFIG}"
+cp "${WORKSPACE_RECORD}" "${WORKSPACE_RECORD}.valid"
+printf '\n' >>"${WORKSPACE_RECORD}"
+assert_pinned_preflight_rejected "changed retained partial WS19"
+mv "${WORKSPACE_RECORD}.valid" "${WORKSPACE_RECORD}"
+
+cp "${HISTORICAL_RECOVERY_PARTIAL}" "${PROJECT_CONFIG}"
+jq '.executions.active = {status: "RUNNING"}' \
+  "${STATE_DIR}/executions.json" >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+assert_pinned_preflight_rejected "active operation during retained partial recovery"
+jq 'del(.executions.active)' "${STATE_DIR}/executions.json" \
+  >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+write_project_config true true "${PINNED_WORKSPACES}" \
+  "${HISTORICAL_PREDECESSOR_COMMIT}"
 git --git-dir="${PROJECT_MIRROR}" update-ref \
   "${PROJECT_REF}" "${HISTORICAL_PREDECESSOR_COMMIT}" "${HISTORICAL_SUCCESSOR_COMMIT}"
 
