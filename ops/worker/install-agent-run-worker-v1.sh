@@ -707,6 +707,23 @@ write_project_config_commit_only() {
   rm -f "$restored"
 }
 
+write_project_config_execution_disabled() {
+  local destination="$1"
+  local expression='("executionEnabled"[[:space:]]*:[[:space:]]*)true(,?)'
+  [[ "$(grep -Eoc "$expression" "$PROJECT_CONFIG")" -eq 1 ]] \
+    || fail "execution enabled field is not uniquely replaceable"
+  sed -E "s/${expression}/\\1false\\2/" "$PROJECT_CONFIG" >"$destination"
+  jq -e '.executionEnabled == false' "$destination" >/dev/null \
+    || fail "execution disabled replacement failed"
+  local restored
+  restored="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-restore-check.XXXXXX")"
+  sed -E 's/("executionEnabled"[[:space:]]*:[[:space:]]*)false(,?)/\1true\2/' \
+    "$destination" >"$restored"
+  cmp -s "$PROJECT_CONFIG" "$restored" \
+    || { rm -f "$restored"; fail "execution disabled transition changed fields other than executionEnabled"; }
+  rm -f "$restored"
+}
+
 verify_project_config_file_identity() {
   [[ -f "$PROJECT_CONFIG" && ! -L "$PROJECT_CONFIG" \
       && "$(stat -c '%a:%U:%G' "$PROJECT_CONFIG")" == "644:root:root" ]] \
@@ -776,6 +793,16 @@ project_config_install_preflight() {
       "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT"
     return 0
   fi
+  if ( verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" \
+      && [[ "$(observe_project_commit)" \
+        == "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" ]] \
+      && verify_no_non_terminal_project_operations ) >/dev/null 2>&1; then
+    printf 'pinned-retained-recovery:%s:%s:%s\n' \
+      "$retained_sha256" "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" \
+      "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT"
+    return 0
+  fi
   if jq -e \
       --arg commit "$PROJECT_PINNED_WORKSPACE_COMMIT" '
       .commit == $commit and .selectionEnabled == true and
@@ -808,7 +835,8 @@ project_config_install_finalize() {
   [[ "$operation" == "retain" || "$operation" == "transition" \
       || "$operation" == "source-advance" \
       || "$operation" == "pinned-source-advance" \
-      || "$operation" == "pinned-retained-advance" ]] \
+      || "$operation" == "pinned-retained-advance" \
+      || "$operation" == "pinned-retained-recovery" ]] \
     || fail "existing project configuration transition identity is invalid"
   [[ "$retained_sha256" =~ ^[0-9a-f]{64}$ ]] \
     || fail "existing project configuration fingerprint is invalid"
@@ -816,7 +844,8 @@ project_config_install_finalize() {
     || fail "existing project configuration transition identity is ambiguous"
   if [[ "$operation" == "source-advance" \
       || "$operation" == "pinned-source-advance" \
-      || "$operation" == "pinned-retained-advance" ]]; then
+      || "$operation" == "pinned-retained-advance" \
+      || "$operation" == "pinned-retained-recovery" ]]; then
     [[ "$retained_commit" =~ ^[0-9a-f]{40}$ \
         && "$canonical_commit" =~ ^[0-9a-f]{40}$ ]] \
       || fail "source advance transition commits are invalid"
@@ -909,6 +938,34 @@ project_config_install_finalize() {
         || ! verify_no_non_terminal_project_operations; then
       mv -f "$predecessor_copy" "$PROJECT_CONFIG" || true
       fail "pinned retained advance postcondition failed and predecessor restoration was attempted"
+    fi
+    rm -f "$predecessor_copy"
+    return 0
+  fi
+  if [[ "$operation" == "pinned-retained-recovery" ]]; then
+    [[ "$retained_commit" == "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" \
+        && "$canonical_commit" == "$PROJECT_PINNED_RETAINED_SUCCESSOR_COMMIT" ]] \
+      || fail "pinned retained recovery identity is not reviewed"
+    [[ "$(observe_project_commit)" == "$canonical_commit" ]] \
+      || fail "canonical mirror ref changed during pinned retained recovery"
+    verify_project_config_pinned_workspace_content "$canonical_commit"
+    verify_no_non_terminal_project_operations
+
+    local predecessor_copy successor_config
+    predecessor_copy="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-predecessor.XXXXXX")"
+    successor_config="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-successor.XXXXXX")"
+    cp --preserve=mode,ownership,timestamps "$PROJECT_CONFIG" "$predecessor_copy"
+    write_project_config_execution_disabled "$successor_config"
+    chown root:root "$successor_config"
+    chmod 0644 "$successor_config"
+    [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" == "$retained_sha256" ]] \
+      || { rm -f "$predecessor_copy" "$successor_config"; \
+        fail "existing project configuration changed before pinned retained recovery"; }
+    if ! mv -f "$successor_config" "$PROJECT_CONFIG" \
+        || ! verify_project_config_content \
+        || ! verify_no_non_terminal_project_operations; then
+      mv -f "$predecessor_copy" "$PROJECT_CONFIG" || true
+      fail "pinned retained recovery postcondition failed and predecessor restoration was attempted"
     fi
     rm -f "$predecessor_copy"
     return 0
