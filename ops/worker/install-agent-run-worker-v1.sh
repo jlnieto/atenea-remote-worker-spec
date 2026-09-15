@@ -55,6 +55,9 @@ PROJECT_PINNED_ALLOCATION_SHA256="08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602
 PROJECT_PINNED_DIRTY_PATH="android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt"
 PROJECT_PINNED_DIRTY_STATUS=" M ${PROJECT_PINNED_DIRTY_PATH}"
 PROJECT_PINNED_DIRTY_CONTENT_SHA256="c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563"
+PROJECT_V4_ONLY_PREDECESSOR_COMMIT="c3ebc2e9d252abe86ff85cb45e97e458b3a826e7"
+PROJECT_V4_ONLY_CANONICAL_COMMIT="4baa91edd89d28a9686933db03473460a82d9312"
+PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256="3b2e2e242f88e72b64b1f400b3d703f109641f7aa9922579cb5565ed21dfb666"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
@@ -576,6 +579,8 @@ verify_no_non_terminal_project_operations() {
 
 verify_project_config_pinned_workspace_content() {
   local expected_registry_commit="$1"
+  local expected_selection="${2:-true}"
+  local expected_execution="${3:-true}"
   local expected_identity="remote:ax42-01:work-session:${PROJECT_PINNED_WORKSPACE_SESSION_ID}"
   local expected_worktree="${PROJECT_WORKSPACES_ROOT}/${PROJECT_PINNED_WORKSPACE_SESSION_ID}/atenea"
   local workspace_record="${PROJECT_WORKSPACES_ROOT}/${PROJECT_PINNED_WORKSPACE_SESSION_ID}/workspace-v1.json"
@@ -592,12 +597,15 @@ verify_project_config_pinned_workspace_content() {
     --arg session "$PROJECT_PINNED_WORKSPACE_SESSION_ID" \
     --arg worktree "$expected_worktree" \
     --arg allocation_sha256 "$PROJECT_PINNED_ALLOCATION_SHA256" \
+    --argjson selection_enabled "$expected_selection" \
+    --argjson execution_enabled "$expected_execution" \
     --arg retained_commit "$PROJECT_PINNED_WORKSPACE_COMMIT" '
     (keys | sort) == ["attachmentRoot", "branch", "commit",
       "executionEnabled", "manifestSha256", "projectId", "repository",
       "runner", "schemaVersion", "selectionEnabled", "workspaces"] and
     .schemaVersion == "project-codex-v1" and
-    .selectionEnabled == true and .executionEnabled == true and
+    .selectionEnabled == $selection_enabled and
+    .executionEnabled == $execution_enabled and
     .projectId == "atenea" and .repository == $repository and
     .branch == $branch and .commit == $commit and
     .manifestSha256 == $manifest_sha256 and .runner == $runner and
@@ -670,6 +678,66 @@ verify_project_config_pinned_workspace_content() {
       && "$(sha256sum "$dirty_file" | cut -d' ' -f1)" \
         == "$PROJECT_PINNED_DIRTY_CONTENT_SHA256" ]] \
     || fail "pinned WS19 retained draft content changed"
+}
+
+verify_project_v4_only_source() {
+  [[ "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" \
+      == "$PROJECT_REPOSITORY" ]] \
+    || fail "v4-only canonical mirror remote is foreign"
+  [[ "$(observe_project_commit)" == "$PROJECT_V4_ONLY_CANONICAL_COMMIT" \
+      && "$(git --git-dir="$PROJECT_MIRROR" rev-parse --verify \
+        "${PROJECT_V4_ONLY_CANONICAL_COMMIT}^{commit}")" \
+        == "$PROJECT_V4_ONLY_CANONICAL_COMMIT" ]] \
+    || fail "v4-only canonical source is not the reviewed commit"
+  git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor \
+    "$PROJECT_V4_ONLY_PREDECESSOR_COMMIT" \
+    "$PROJECT_V4_ONLY_CANONICAL_COMMIT" \
+    || fail "v4-only predecessor is not an ancestor of canonical source"
+}
+
+verify_project_v4_only_predecessor_content() {
+  verify_project_config_file_identity
+  [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" \
+      == "$PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256" ]] \
+    || fail "v4-only predecessor configuration fingerprint is not exact"
+  verify_project_config_pinned_workspace_content \
+    "$PROJECT_V4_ONLY_PREDECESSOR_COMMIT" true false
+  verify_project_v4_only_source
+  verify_no_non_terminal_project_operations
+}
+
+verify_project_v4_only_successor_content() {
+  verify_project_config_file_identity
+  verify_project_config_pinned_workspace_content \
+    "$PROJECT_V4_ONLY_PREDECESSOR_COMMIT" false true
+  verify_project_v4_only_source
+  verify_no_non_terminal_project_operations
+}
+
+write_project_v4_only_successor() {
+  local destination="$1"
+  local selection_expression='("selectionEnabled"[[:space:]]*:[[:space:]]*)true'
+  local execution_expression='("executionEnabled"[[:space:]]*:[[:space:]]*)false'
+  [[ "$(grep -Eoc "$selection_expression" "$PROJECT_CONFIG")" -eq 1 \
+      && "$(grep -Eoc "$execution_expression" "$PROJECT_CONFIG")" -eq 1 ]] \
+    || fail "v4-only predecessor flags are not uniquely replaceable"
+  sed -E \
+    -e "s/${selection_expression}/\\1false/" \
+    -e "s/${execution_expression}/\\1true/" \
+    "$PROJECT_CONFIG" >"$destination"
+  jq -e '.selectionEnabled == false and .executionEnabled == true' \
+    "$destination" >/dev/null \
+    || fail "v4-only successor flags were not written exactly"
+
+  local restored
+  restored="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-v4-restore-check.XXXXXX")"
+  sed -E \
+    -e 's/("selectionEnabled"[[:space:]]*:[[:space:]]*)false/\1true/' \
+    -e 's/("executionEnabled"[[:space:]]*:[[:space:]]*)true/\1false/' \
+    "$destination" >"$restored"
+  cmp -s "$PROJECT_CONFIG" "$restored" \
+    || { rm -f "$restored"; fail "v4-only successor changed fields other than execution gates"; }
+  rm -f "$restored"
 }
 
 fetch_project_pinned_source_target() {
@@ -763,6 +831,14 @@ project_config_install_preflight() {
   verify_project_config_file_identity
   local retained_sha256
   retained_sha256="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
+  if ( verify_project_v4_only_predecessor_content ) >/dev/null 2>&1; then
+    printf 'v4-only-predecessor:%s\n' "$retained_sha256"
+    return 0
+  fi
+  if ( verify_project_v4_only_successor_content ) >/dev/null 2>&1; then
+    printf 'v4-only-successor:%s\n' "$retained_sha256"
+    return 0
+  fi
   if ( verify_project_config_pinned_workspace_content \
       "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
       && [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
@@ -833,6 +909,8 @@ project_config_install_finalize() {
   IFS=: read -r operation retained_sha256 retained_commit canonical_commit surplus \
     <<<"$retained_identity"
   [[ "$operation" == "retain" || "$operation" == "transition" \
+      || "$operation" == "v4-only-predecessor" \
+      || "$operation" == "v4-only-successor" \
       || "$operation" == "source-advance" \
       || "$operation" == "pinned-source-advance" \
       || "$operation" == "pinned-retained-advance" \
@@ -856,6 +934,14 @@ project_config_install_finalize() {
   verify_project_config_file_identity
   [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" == "$retained_sha256" ]] \
     || fail "existing project configuration changed during installation"
+  if [[ "$operation" == "v4-only-predecessor" ]]; then
+    verify_project_v4_only_predecessor_content
+    return 0
+  fi
+  if [[ "$operation" == "v4-only-successor" ]]; then
+    verify_project_v4_only_successor_content
+    return 0
+  fi
   if [[ "$operation" == "transition" ]]; then
     verify_project_config_transition_predecessor_content
     local canonical_commit
@@ -1342,6 +1428,43 @@ project_enable() {
   systemctl try-restart "$SERVICE"
 }
 
+project_v4_only_enable() {
+  require_root
+  verify_project_v4_only_predecessor_content
+
+  local predecessor successor transition_applied=false
+  predecessor="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-v4-predecessor.XXXXXX")"
+  successor="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-v4-successor.XXXXXX")"
+  cp --preserve=mode,ownership,timestamps "$PROJECT_CONFIG" "$predecessor"
+  write_project_v4_only_successor "$successor"
+  chown root:root "$successor"
+  chmod 0644 "$successor"
+
+  [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" \
+      == "$PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256" ]] \
+    || { rm -f "$predecessor" "$successor"; \
+      fail "v4-only predecessor changed before transition"; }
+  if mv -f "$successor" "$PROJECT_CONFIG"; then
+    transition_applied=true
+  fi
+  if [[ "$transition_applied" != true ]] \
+      || ! ( verify_project_v4_only_successor_content ) \
+      || ! systemctl try-restart "$SERVICE"; then
+    rm -f "$successor"
+    if [[ "$transition_applied" == true ]]; then
+      mv -f "$predecessor" "$PROJECT_CONFIG" || \
+        fail "v4-only transition failed and predecessor restoration failed"
+      systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
+      ( verify_project_v4_only_predecessor_content ) || \
+        fail "v4-only transition failed and restored predecessor is invalid"
+    else
+      rm -f "$predecessor"
+    fi
+    fail "v4-only transition postcondition failed and predecessor was restored"
+  fi
+  rm -f "$predecessor"
+}
+
 project_activate() {
   require_root
   [[ "$#" -eq 2 ]] || fail "project-activate requires SESSION_ID and WORKSPACE_IDENTITY"
@@ -1425,8 +1548,9 @@ case "$ACTION" in
   project-activate) shift; project_activate "$@" ;;
   project-selection-enable) project_selection_enable ;;
   project-enable) project_enable ;;
+  project-v4-only-enable) project_v4_only_enable ;;
   project-disable) project_disable ;;
   project-unregister) shift; project_unregister "$@" ;;
   prepare-materialization-root) prepare_materialization_root ;;
-  *) fail "usage: $0 plan|apply|verify|disable|rollback|enable|project-register|project-retained-draft-register|project-activate|project-selection-enable|project-enable|project-disable|project-unregister|prepare-materialization-root" ;;
+  *) fail "usage: $0 plan|apply|verify|disable|rollback|enable|project-register|project-retained-draft-register|project-activate|project-selection-enable|project-enable|project-v4-only-enable|project-disable|project-unregister|prepare-materialization-root" ;;
 esac
