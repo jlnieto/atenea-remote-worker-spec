@@ -925,6 +925,149 @@ printf 'arbitrary draft\n' >>"${WORKTREE}/tracked.txt"
 assert_pinned_preflight_rejected "arbitrary enabled retained draft"
 git -C "${WORKTREE}" checkout -q -- tracked.txt
 
+# The v4-only transition accepts only the exact disabled WS19 predecessor,
+# preserves every retained byte, and makes the Atenea change-owned execution
+# guard pass while its legacy guard remains closed.
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${CANONICAL_COMMIT}" "${HISTORICAL_PREDECESSOR_COMMIT}"
+REVIEWED_PROJECT_RUNNER="${PROJECT_RUNNER}"
+PROJECT_RUNNER="${SCRIPT_DIR}/project-codex-runner-v1.py"
+PROJECT_V4_ONLY_PREDECESSOR_COMMIT="${RETAINED_COMMIT}"
+PROJECT_V4_ONLY_CANONICAL_COMMIT="${CANONICAL_COMMIT}"
+write_project_config true false "${PINNED_WORKSPACES}" \
+  "${PROJECT_V4_ONLY_PREDECESSOR_COMMIT}"
+PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256="$(
+  sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1
+)"
+V4_ONLY_PREDECESSOR="${TEST_ROOT}/v4-only-predecessor.json"
+cp "${PROJECT_CONFIG}" "${V4_ONLY_PREDECESSOR}"
+V4_ONLY_WORKSPACE_RECORD_SHA="$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)"
+V4_ONLY_ALLOCATION_SHA="$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)"
+V4_ONLY_DIRTY_SHA="$(sha256sum \
+  "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)"
+V4_ONLY_STATE_SHA="$(sha256sum "${STATE_DIR}/executions.json" | cut -d' ' -f1)"
+V4_ONLY_JOURNAL_SHA="$(sha256sum \
+  "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json" | cut -d' ' -f1)"
+V4_ONLY_SYSTEMCTL_LOG="${TEST_ROOT}/v4-only-systemctl.log"
+: >"${V4_ONLY_SYSTEMCTL_LOG}"
+systemctl() { printf '%s\n' "$*" >>"${V4_ONLY_SYSTEMCTL_LOG}"; }
+V4_ONLY_INSTALL_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${V4_ONLY_INSTALL_PREFLIGHT}" == \
+    "v4-only-predecessor:${PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256}" ]] \
+  || fail "installer apply preflight did not retain the exact v4-only predecessor"
+project_config_install_finalize "${V4_ONLY_INSTALL_PREFLIGHT}"
+cmp -s "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}" \
+  || fail "installer apply finalize rewrote the v4-only predecessor"
+
+ORIGINAL_V4_ONLY_SUCCESSOR_VERIFIER="$(
+  declare -f verify_project_v4_only_successor_content
+)"
+verify_project_v4_only_successor_content() { return 1; }
+if ( project_v4_only_enable ) >/dev/null 2>&1; then
+  fail "v4-only transition accepted a failed postcondition"
+fi
+eval "${ORIGINAL_V4_ONLY_SUCCESSOR_VERIFIER}"
+cmp -s "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}" \
+  || fail "v4-only postcondition failure did not restore predecessor bytes"
+[[ "$(grep -Fxc "try-restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 1 ]] \
+  || fail "v4-only postcondition rollback did not reload the restored predecessor"
+
+assert_v4_only_transition_rejected() {
+  local description="$1"
+  local before
+  before="$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)"
+  if ( project_v4_only_enable ) >/dev/null 2>&1; then
+    fail "unsafe v4-only transition was accepted: ${description}"
+  fi
+  [[ "$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)" == "${before}" ]] \
+    || fail "rejected v4-only transition changed configuration: ${description}"
+}
+
+cp "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" \
+  "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}.valid"
+printf 'foreign retained byte\n' >>"${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+assert_v4_only_transition_rejected "WS19 fingerprint mismatch"
+mv "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}.valid" \
+  "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+
+jq '.foreignAuthority = true' "${V4_ONLY_PREDECESSOR}" >"${PROJECT_CONFIG}"
+assert_v4_only_transition_rejected "unexpected configuration"
+cp "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}"
+
+jq '.executions.active = {status: "RUNNING"}' \
+  "${STATE_DIR}/executions.json" >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+assert_v4_only_transition_rejected "non-terminal operation"
+jq 'del(.executions.active)' "${STATE_DIR}/executions.json" \
+  >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+
+project_v4_only_enable
+jq -e \
+  --arg commit "${PROJECT_V4_ONLY_PREDECESSOR_COMMIT}" \
+  --arg identity "${WORKSPACE_IDENTITY}" '
+    .selectionEnabled == false and
+    .executionEnabled == true and
+    .commit == $commit and
+    (.workspaces | keys) == [$identity]
+  ' "${PROJECT_CONFIG}" >/dev/null \
+  || fail "v4-only transition did not produce the exact execution state"
+sed -E \
+  -e 's/("selectionEnabled"[[:space:]]*:[[:space:]]*)false/\1true/' \
+  -e 's/("executionEnabled"[[:space:]]*:[[:space:]]*)true/\1false/' \
+  "${PROJECT_CONFIG}" >"${PROJECT_CONFIG}.restored-comparison"
+cmp -s "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}.restored-comparison" \
+  || fail "v4-only transition changed configuration outside the two gates"
+rm -f "${PROJECT_CONFIG}.restored-comparison"
+[[ "$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)" \
+      == "${V4_ONLY_WORKSPACE_RECORD_SHA}" \
+    && "$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)" \
+      == "${V4_ONLY_ALLOCATION_SHA}" \
+    && "$(sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)" \
+      == "${V4_ONLY_DIRTY_SHA}" \
+    && "$(sha256sum "${STATE_DIR}/executions.json" | cut -d' ' -f1)" \
+      == "${V4_ONLY_STATE_SHA}" \
+    && "$(sha256sum \
+      "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json" | cut -d' ' -f1)" \
+      == "${V4_ONLY_JOURNAL_SHA}" ]] \
+  || fail "v4-only transition changed retained WS19 or durable operation state"
+
+python3 - "${SCRIPT_DIR}/agent-run-worker-v1.py" "${PROJECT_CONFIG}" <<'PY'
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+module_path = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("agent_run_worker_v4_only_test", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+config = json.loads(config_path.read_text(encoding="utf-8"))
+module.PROJECT_REPOSITORY = config["repository"]
+module.PROJECT_MANIFEST_SHA256 = config["manifestSha256"]
+state = object.__new__(module.WorkerState)
+state.project_config = config_path
+state.project_runner = Path(config["runner"])
+state.project_config_uid = os.stat(config_path).st_uid
+route = state._project_route(module.PROJECT_ID)
+assert route is not None
+assert state._project_execution_enabled(route, False)
+assert not state._project_execution_enabled(route)
+PY
+[[ "$(grep -Fxc "try-restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 2 ]] \
+  || fail "v4-only success did not perform one bounded service reload"
+V4_ONLY_SUCCESSOR_SHA="$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)"
+V4_ONLY_SUCCESSOR_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${V4_ONLY_SUCCESSOR_PREFLIGHT}" == \
+    "v4-only-successor:${V4_ONLY_SUCCESSOR_SHA}" ]] \
+  || fail "installer apply preflight did not retain the exact v4-only successor"
+project_config_install_finalize "${V4_ONLY_SUCCESSOR_PREFLIGHT}"
+assert_v4_only_transition_rejected "already transitioned configuration"
+PROJECT_RUNNER="${REVIEWED_PROJECT_RUNNER}"
+
 CONTROL_PLANE_IP=100.64.0.10
 ATTACHMENT_ROOT="${TEST_ROOT}/retained"
 MATERIALIZATION_PARENT="${TEST_ROOT}/materialization-parent"
