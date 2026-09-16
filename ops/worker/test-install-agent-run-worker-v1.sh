@@ -951,6 +951,50 @@ V4_ONLY_JOURNAL_SHA="$(sha256sum \
 V4_ONLY_SYSTEMCTL_LOG="${TEST_ROOT}/v4-only-systemctl.log"
 : >"${V4_ONLY_SYSTEMCTL_LOG}"
 systemctl() { printf '%s\n' "$*" >>"${V4_ONLY_SYSTEMCTL_LOG}"; }
+V4_ONLY_HEALTH_LOG="${TEST_ROOT}/v4-only-health.log"
+: >"${V4_ONLY_HEALTH_LOG}"
+V4_ONLY_FAIL_LIVE_HEALTH=false
+wait_for_worker_health() {
+  printf '%s\n' "$1" >>"${V4_ONLY_HEALTH_LOG}"
+  [[ "$1" != true || "${V4_ONLY_FAIL_LIVE_HEALTH}" != true ]]
+}
+V4_ONLY_HEALTH_DOCUMENT="$(jq -cn \
+    --arg worker_id "${WORKER_ID}" '
+      {
+        protocolVersion: "agent-run-worker/v1",
+        workerId: $worker_id,
+        healthy: true,
+        capabilities: ["project-codex-v4"]
+      }
+    '
+)"
+V4_ONLY_PREDECESSOR_HEALTH_DOCUMENT="$(jq -cn \
+    --arg worker_id "${WORKER_ID}" '
+      {
+        protocolVersion: "agent-run-worker/v1",
+        workerId: $worker_id,
+        healthy: true,
+        capabilities: ["project-codex-v1"]
+      }
+    '
+)"
+verify_worker_health_document true "${V4_ONLY_HEALTH_DOCUMENT}" \
+  || fail "v4-only health document was rejected"
+verify_worker_health_document false "${V4_ONLY_PREDECESSOR_HEALTH_DOCUMENT}" \
+  || fail "predecessor worker health document was rejected"
+if verify_worker_health_document false "${V4_ONLY_HEALTH_DOCUMENT}"; then
+  fail "predecessor health accepted project-codex-v4"
+fi
+if verify_worker_health_document true "$(
+    jq '.capabilities = []' <<<"${V4_ONLY_HEALTH_DOCUMENT}"
+  )"; then
+  fail "worker health without project-codex-v4 was accepted"
+fi
+if verify_worker_health_document true "$(
+    jq '.healthy = false' <<<"${V4_ONLY_HEALTH_DOCUMENT}"
+  )"; then
+  fail "unhealthy worker document was accepted"
+fi
 V4_ONLY_INSTALL_PREFLIGHT="$(project_config_install_preflight)"
 [[ "${V4_ONLY_INSTALL_PREFLIGHT}" == \
     "v4-only-predecessor:${PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256}" ]] \
@@ -969,8 +1013,38 @@ fi
 eval "${ORIGINAL_V4_ONLY_SUCCESSOR_VERIFIER}"
 cmp -s "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}" \
   || fail "v4-only postcondition failure did not restore predecessor bytes"
-[[ "$(grep -Fxc "try-restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 1 ]] \
-  || fail "v4-only postcondition rollback did not reload the restored predecessor"
+[[ "$(grep -Fxc "restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 1 \
+    && "$(cat "${V4_ONLY_HEALTH_LOG}")" == false ]] \
+  || fail "v4-only postcondition rollback did not recover the restored predecessor"
+
+: >"${V4_ONLY_SYSTEMCTL_LOG}"
+: >"${V4_ONLY_HEALTH_LOG}"
+V4_ONLY_FAIL_LIVE_HEALTH=true
+if ( project_v4_only_enable ) >/dev/null 2>&1; then
+  fail "v4-only transition accepted failed live health"
+fi
+V4_ONLY_FAIL_LIVE_HEALTH=false
+cmp -s "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}" \
+  || fail "v4-only live health failure did not restore predecessor bytes"
+[[ "$(grep -Fxc "restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 2 \
+    && "$(cat "${V4_ONLY_HEALTH_LOG}")" == $'true\nfalse' ]] \
+  || fail "v4-only live health rollback did not restart the restored predecessor"
+
+: >"${V4_ONLY_SYSTEMCTL_LOG}"
+: >"${V4_ONLY_HEALTH_LOG}"
+ORIGINAL_V4_ONLY_LEGACY_VERIFIER="$(
+  declare -f verify_project_v4_only_legacy_rejected
+)"
+verify_project_v4_only_legacy_rejected() { return 1; }
+if ( project_v4_only_enable ) >/dev/null 2>&1; then
+  fail "v4-only transition accepted legacy Atenea admission"
+fi
+eval "${ORIGINAL_V4_ONLY_LEGACY_VERIFIER}"
+cmp -s "${V4_ONLY_PREDECESSOR}" "${PROJECT_CONFIG}" \
+  || fail "v4-only legacy guard failure did not restore predecessor bytes"
+[[ "$(grep -Fxc "restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 2 \
+    && "$(cat "${V4_ONLY_HEALTH_LOG}")" == $'true\nfalse' ]] \
+  || fail "v4-only legacy guard rollback did not recover the restored predecessor"
 
 assert_v4_only_transition_rejected() {
   local description="$1"
@@ -1002,6 +1076,8 @@ jq 'del(.executions.active)' "${STATE_DIR}/executions.json" \
   >"${STATE_DIR}/executions.changed"
 mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
 
+: >"${V4_ONLY_SYSTEMCTL_LOG}"
+: >"${V4_ONLY_HEALTH_LOG}"
 project_v4_only_enable
 jq -e \
   --arg commit "${PROJECT_V4_ONLY_PREDECESSOR_COMMIT}" \
@@ -1057,8 +1133,9 @@ assert route is not None
 assert state._project_execution_enabled(route, False)
 assert not state._project_execution_enabled(route)
 PY
-[[ "$(grep -Fxc "try-restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 2 ]] \
-  || fail "v4-only success did not perform one bounded service reload"
+[[ "$(grep -Fxc "restart ${SERVICE}" "${V4_ONLY_SYSTEMCTL_LOG}")" -eq 1 \
+    && "$(cat "${V4_ONLY_HEALTH_LOG}")" == true ]] \
+  || fail "v4-only success did not restart and verify the worker once"
 V4_ONLY_SUCCESSOR_SHA="$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)"
 V4_ONLY_SUCCESSOR_PREFLIGHT="$(project_config_install_preflight)"
 [[ "${V4_ONLY_SUCCESSOR_PREFLIGHT}" == \

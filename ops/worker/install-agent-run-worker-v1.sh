@@ -69,7 +69,7 @@ PROGRAM_SHA256="a952a6f978fc29620819c652d621554232a429477591143b611e7ab23f3b3aba
 VALIDATION_MEDIATOR_SHA256="e7339c3dc68050b3315b70649bfaee0399d4d2b34c4f52bb26dcd036d3eb9d7d"
 PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="ab4c48e2c7ad783b433ecd0e0ec89433891f10cc9da079be86d45ef2089be601"
-PROJECT_RUNNER_SHA256="8f8bd768f2deecd1c9fa5274fea0957881de902e366f5b578f4c4fedbe44844c"
+PROJECT_RUNNER_SHA256="35c28d5831f904f2f155c58dc0e42e22d3fba8c5087656f4aa941bff8e1bc5cf"
 BEAUTIPS_PROJECT_RUNNER_SHA256="e3d5402fbdb4245ddfa47b1a190f8be5fa2599c81b3ab6206f70cab66bad138f"
 BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a413b4feee5a59ce8152954d97b983"
 PLATFORM_INSTRUCTIONS_SHA256="44c578a286eb50b35612be0b6c38d59a503e6fee1ecf6cd0339415af018cdf0d"
@@ -712,6 +712,88 @@ verify_project_v4_only_successor_content() {
     "$PROJECT_V4_ONLY_PREDECESSOR_COMMIT" false true
   verify_project_v4_only_source
   verify_no_non_terminal_project_operations
+}
+
+read_worker_health() {
+  local bind
+  bind="$(tailscale_ipv4)"
+  python3 - "$bind" "$PORT" "$TOKEN_FILE" <<'PY'
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+bind, port, token_path = sys.argv[1:]
+token = Path(token_path).read_text(encoding="utf-8").strip()
+request = urllib.request.Request(
+    f"http://{bind}:{port}/v1/health",
+    headers={"Authorization": f"Bearer {token}"},
+)
+with urllib.request.urlopen(request, timeout=1.0) as response:
+    payload = response.read(65_537)
+    if response.status != 200 or len(payload) > 65_536:
+        raise SystemExit(1)
+value = json.loads(payload)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+verify_worker_health_document() {
+  local expect_v4="$1" document="$2"
+  jq -e \
+    --arg worker_id "$WORKER_ID" \
+    --argjson expect_v4 "$expect_v4" '
+      .protocolVersion == "agent-run-worker/v1" and
+      .workerId == $worker_id and
+      .healthy == true and
+      ((.capabilities | type) == "array") and
+      (if $expect_v4 then
+        (.capabilities | index("project-codex-v4") != null)
+      else
+        (.capabilities | index("project-codex-v4") == null) and
+        (.capabilities | index("project-codex-v1") != null)
+      end)
+    ' <<<"$document" >/dev/null
+}
+
+wait_for_worker_health() {
+  local expect_v4="$1" health
+  for _attempt in $(seq 1 60); do
+    if systemctl is-active --quiet "$SERVICE"; then
+      health="$(read_worker_health 2>/dev/null || true)"
+      if [[ -n "$health" ]] \
+          && verify_worker_health_document "$expect_v4" "$health"; then
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+verify_project_v4_only_legacy_rejected() {
+  python3 - "$PROJECT_RUNNER" "$PROJECT_CONFIG" <<'PY'
+import contextlib
+import importlib.machinery
+import io
+import json
+import sys
+from pathlib import Path
+
+runner = Path(sys.argv[1]).resolve()
+config = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+module = importlib.machinery.SourceFileLoader(
+    "atenea_project_runner_v4_only_guard", str(runner)
+).load_module()
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        module.validate_config(config, runner)
+except SystemExit as error:
+    raise SystemExit(0 if error.code == 2 else 1)
+raise SystemExit(1)
+PY
 }
 
 write_project_v4_only_successor() {
@@ -1432,7 +1514,7 @@ project_v4_only_enable() {
   require_root
   verify_project_v4_only_predecessor_content
 
-  local predecessor successor transition_applied=false
+  local predecessor successor transition_applied=false transition_succeeded=false
   predecessor="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-v4-predecessor.XXXXXX")"
   successor="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-v4-successor.XXXXXX")"
   cp --preserve=mode,ownership,timestamps "$PROJECT_CONFIG" "$predecessor"
@@ -1447,16 +1529,24 @@ project_v4_only_enable() {
   if mv -f "$successor" "$PROJECT_CONFIG"; then
     transition_applied=true
   fi
-  if [[ "$transition_applied" != true ]] \
-      || ! ( verify_project_v4_only_successor_content ) \
-      || ! systemctl try-restart "$SERVICE"; then
+  if [[ "$transition_applied" == true ]] \
+      && ( verify_project_v4_only_successor_content ) \
+      && systemctl restart "$SERVICE" \
+      && wait_for_worker_health true \
+      && verify_project_v4_only_legacy_rejected; then
+    transition_succeeded=true
+  fi
+  if [[ "$transition_succeeded" != true ]]; then
     rm -f "$successor"
     if [[ "$transition_applied" == true ]]; then
       mv -f "$predecessor" "$PROJECT_CONFIG" || \
         fail "v4-only transition failed and predecessor restoration failed"
-      systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
       ( verify_project_v4_only_predecessor_content ) || \
         fail "v4-only transition failed and restored predecessor is invalid"
+      systemctl restart "$SERVICE" >/dev/null 2>&1 || \
+        fail "v4-only transition failed; predecessor was restored but worker restart failed"
+      wait_for_worker_health false || \
+        fail "v4-only transition failed; predecessor was restored but worker is not healthy"
     else
       rm -f "$predecessor"
     fi

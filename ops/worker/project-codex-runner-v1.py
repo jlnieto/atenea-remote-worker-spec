@@ -345,6 +345,18 @@ def validate_config(
         reject("project configuration rejected")
 
 
+def validate_reconciliation_config(config: dict[str, Any], runner: Path) -> None:
+    if (
+        config.get("selectionEnabled") is False
+        and config.get("executionEnabled") is True
+    ):
+        v4_only = dict(config)
+        v4_only["selectionEnabled"] = True
+        validate_config(v4_only, runner)
+        return
+    validate_config(config, runner, require_execution=False)
+
+
 def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     workload = request.get("workload") if isinstance(request, dict) else None
     capability = workload.get("kind") if isinstance(workload, dict) else None
@@ -1647,7 +1659,7 @@ def main() -> int:
     runner = Path(__file__).resolve()
     config = load_json(args.config)
     if args.reconcile_materializations:
-        validate_config(config, runner, require_execution=False)
+        validate_reconciliation_config(config, runner)
         try:
             reconciliation = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeDecodeError):
