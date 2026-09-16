@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import hashlib
+import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -275,6 +277,92 @@ class ProjectCodexContractTest(unittest.TestCase):
             candidate.pop(legacy_authority)
             with self.assertRaises(SystemExit):
                 MODULE.validate_config(candidate, runner)
+
+    def test_materialization_reconciliation_accepts_exact_v4_only_configuration(self):
+        runner = Path(MODULE.__file__).resolve()
+        config = self.atenea_config()
+        config["selectionEnabled"] = False
+        MODULE.validate_reconciliation_config(config, runner)
+
+        result = {
+            "schemaVersion": "codex-image-reconciliation-v1",
+            "state": "PASS",
+            "removed": 0,
+            "retained": 0,
+            "ambiguous": 0,
+            "valuesExposed": False,
+        }
+        with patch.object(MODULE.os, "geteuid", return_value=0), patch.object(
+            MODULE, "load_json", return_value=config
+        ), patch.object(
+            MODULE, "reconcile_materializations", return_value=result
+        ), patch.object(
+            sys,
+            "argv",
+            [str(runner), "--config", "/reviewed/config", "--reconcile-materializations"],
+        ), patch.object(
+            sys,
+            "stdin",
+            io.StringIO(
+                '{"schemaVersion":"codex-image-reconciliation-state-v1","executions":[]}'
+            ),
+        ), patch.object(sys, "stdout", io.StringIO()) as output:
+            self.assertEqual(0, MODULE.main())
+            self.assertEqual(result, json.loads(output.getvalue()))
+
+    def test_materialization_reconciliation_rejects_invalid_gate_combinations(self):
+        runner = Path(MODULE.__file__).resolve()
+        for selection_enabled, execution_enabled in (
+            (True, True),
+            (True, False),
+            (False, True),
+        ):
+            with self.subTest(
+                accepted_selection_enabled=selection_enabled,
+                accepted_execution_enabled=execution_enabled,
+            ):
+                config = self.atenea_config()
+                config["selectionEnabled"] = selection_enabled
+                config["executionEnabled"] = execution_enabled
+                MODULE.validate_reconciliation_config(config, runner)
+
+        for selection_enabled, execution_enabled in (
+            (False, False),
+            (False, None),
+            (False, "true"),
+            (0, True),
+            (1, True),
+            (None, True),
+            ("false", True),
+        ):
+            with self.subTest(
+                selection_enabled=selection_enabled,
+                execution_enabled=execution_enabled,
+            ):
+                config = self.atenea_config()
+                config["selectionEnabled"] = selection_enabled
+                config["executionEnabled"] = execution_enabled
+                with self.assertRaises(SystemExit):
+                    MODULE.validate_reconciliation_config(config, runner)
+
+    def test_v4_only_reconciliation_preserves_exact_configuration_authority(self):
+        runner = Path(MODULE.__file__).resolve()
+        mutations = {
+            "missing_commit": lambda value: value.pop("commit"),
+            "missing_workspaces": lambda value: value.pop("workspaces"),
+            "foreign_manifest": lambda value: value.__setitem__("manifestSha256", "f" * 64),
+            "foreign_attachment_root": lambda value: value.__setitem__(
+                "attachmentRoot", "/srv/foreign"
+            ),
+            "extra_authority": lambda value: value.__setitem__("foreignAuthority", True),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(case=name):
+                config = self.atenea_config()
+                config["selectionEnabled"] = False
+                mutate(config)
+                with self.assertRaises(SystemExit):
+                    MODULE.validate_reconciliation_config(config, runner)
 
     def test_exact_real_attachment_is_verified_without_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
