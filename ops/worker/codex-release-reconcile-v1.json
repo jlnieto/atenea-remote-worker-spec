@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "codex-release-reconcile-manifest-v1",
+  "workerId": "ax42-01",
+  "sourceRoot": "/home/jose/.codex/packages/standalone/releases",
+  "destinationRoot": "/srv/atenea/worker/codex-releases-v1",
+  "sourceOwner": "jose",
+  "destinationOwner": "atenea-worker",
+  "destinationGroup": "atenea",
+  "planId": "15414500-0000-4000-8000-000000000001",
+  "currentInventoryId": "15414500-0000-4000-8000-000000000002",
+  "candidateInventoryId": "15414500-0000-4000-8000-000000000003",
+  "releases": {
+    "current": {
+      "version": "0.154.0",
+      "packageDirectory": "0.154.0-x86_64-unknown-linux-musl",
+      "target": "x86_64-unknown-linux-musl",
+      "expectedVersionOutput": "codex-cli 0.154.0",
+      "releaseDigestSha256": "37de474b157b0313c73ddc05928855f61517676138827df51660fe8715dca14f",
+      "catalogRevision": null,
+      "files": {
+        "bin/codex": {"sha256": "3188814c35471432d4123203e0eb38e5bddc60226e3d7ddf0e59e649ea140022", "mode": "0755"},
+        "bin/codex-code-mode-host": {"sha256": "0c57be435e73b70d9106c850d751cd259a7f04da958a453d7ef59090d82b70f1", "mode": "0755"},
+        "codex-package.json": {"sha256": "b039964d28d57b2a7e929ee9986303582501c7cc9787f6c018b6d3c7b35c87d7", "mode": "0644"},
+        "codex-path/rg": {"sha256": "e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849", "mode": "0755"},
+        "codex-resources/bwrap": {"sha256": "01fb705f067bd5365b63d8ad2323a61c8d007733ca5e649437e086f3fb9935d8", "mode": "0755"},
+        "codex-resources/zsh/bin/zsh": {"sha256": "67faaaa89242c4a332e16e508a1977cffc24bf7fca31d4411cdfd101f3831ef3", "mode": "0755"}
+      }
+    },
+    "candidate": {
+      "version": "0.145.0",
+      "packageDirectory": "0.145.0-x86_64-unknown-linux-musl",
+      "target": "x86_64-unknown-linux-musl",
+      "expectedVersionOutput": "codex-cli 0.145.0",
+      "releaseDigestSha256": "56da3312ccb2109a2f4e0d71b003f08d33244ec6f5863e8fc7f6f24b7a6489c2",
+      "catalogRevision": "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187",
+      "files": {
+        "bin/codex": {"sha256": "a2a05dafaa1acb002a45eaec0a462de5b13694fcfcd7bc43305f14781ce7be14", "mode": "0755"},
+        "bin/codex-code-mode-host": {"sha256": "60bf16414be5333f09ff082540082304c7352931ef64bdeb170d4c35a82e6ef8", "mode": "0755"},
+        "codex-package.json": {"sha256": "8da5349aa5a4242f5e11c5ca8ff4a16d8f9f912cb8accebea4def94edbf30aee", "mode": "0644"},
+        "codex-path/rg": {"sha256": "e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849", "mode": "0755"},
+        "codex-resources/bwrap": {"sha256": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c", "mode": "0755"},
+        "codex-resources/zsh/bin/zsh": {"sha256": "67faaaa89242c4a332e16e508a1977cffc24bf7fca31d4411cdfd101f3831ef3", "mode": "0755"}
+      }
+    }
+  }
+}

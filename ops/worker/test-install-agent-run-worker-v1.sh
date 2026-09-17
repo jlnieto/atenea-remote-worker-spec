@@ -39,7 +39,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "a952a6f978fc29620819c652d621554232a429477591143b611e7ab23f3b3aba" ]] \
+    == "a1ee7f5938fa4e5dc659d6c7c303c738934ec23b07a64e32831624b57afd54ff" ]] \
   || fail "deterministic workspace rejection promotion fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"

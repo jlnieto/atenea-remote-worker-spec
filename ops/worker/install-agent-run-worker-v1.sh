@@ -23,6 +23,8 @@ WORKSPACE_ACTIVATION_SUDOERS="/etc/sudoers.d/92-atenea-routing-activation-v1"
 WORKSPACE_ACTIVATION_BUNDLE="/srv/atenea/worker/workspace-v1/ops/worker"
 WORKSPACE_RELEASE_ROOT="/srv/atenea/worker/workspace-release-v1/sessions"
 CODEX_UPDATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-stage-v1.py"
+CODEX_RECONCILE_MEDIATOR="/usr/local/libexec/atenea/codex-release-reconcile-v1.py"
+CODEX_RECONCILE_MANIFEST="/etc/atenea-worker/codex-release-reconcile-v1.json"
 CODEX_ACTIVATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-activate-v1.py"
 CODEX_RESTART_SCHEDULER="/usr/local/libexec/atenea/codex-release-restart-v1.sh"
 CODEX_UPDATE_REGISTRY="/etc/atenea-worker/codex-release-stage-v1.json"
@@ -63,13 +65,13 @@ PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
-SERVICE_TEMPLATE_SHA256="1d0876ad85acc34bc0ff81e8ffc453dea41b1768ffc17d0c1be564482eb91f1d"
+SERVICE_TEMPLATE_SHA256="e8258b1bfc6a7a1ac34d94b3728a849d153247ffd72475c817100d2d17da4e8e"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="a952a6f978fc29620819c652d621554232a429477591143b611e7ab23f3b3aba"
+PROGRAM_SHA256="a1ee7f5938fa4e5dc659d6c7c303c738934ec23b07a64e32831624b57afd54ff"
 VALIDATION_MEDIATOR_SHA256="e7339c3dc68050b3315b70649bfaee0399d4d2b34c4f52bb26dcd036d3eb9d7d"
 PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="ab4c48e2c7ad783b433ecd0e0ec89433891f10cc9da079be86d45ef2089be601"
-PROJECT_RUNNER_SHA256="35c28d5831f904f2f155c58dc0e42e22d3fba8c5087656f4aa941bff8e1bc5cf"
+PROJECT_RUNNER_SHA256="2ca6b2619242a440d0067ea9e38d47186a52dcc2966c69a5283b4c1cdfd358ba"
 BEAUTIPS_PROJECT_RUNNER_SHA256="e3d5402fbdb4245ddfa47b1a190f8be5fa2599c81b3ab6206f70cab66bad138f"
 BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a413b4feee5a59ce8152954d97b983"
 PLATFORM_INSTRUCTIONS_SHA256="44c578a286eb50b35612be0b6c38d59a503e6fee1ecf6cd0339415af018cdf0d"
@@ -321,6 +323,10 @@ validate_inputs() {
   [[ -f "$SCRIPT_DIR/atenea-workspace-activation-v1.sh" ]] || fail "workspace activator is missing"
   [[ -f "$SCRIPT_DIR/atenea-workspace-release-v1.py" ]] || fail "workspace releaser is missing"
   [[ -f "$SCRIPT_DIR/codex-release-stage-v1.py" ]] || fail "Codex update stage mediator is missing"
+  [[ -f "$SCRIPT_DIR/codex-release-reconcile-v1.py" ]] \
+    || fail "Codex installed release reconcile mediator is missing"
+  [[ -f "$SCRIPT_DIR/codex-release-reconcile-v1.json" ]] \
+    || fail "Codex installed release reconcile manifest is missing"
   [[ -f "$SCRIPT_DIR/codex-release-activate-v1.py" ]] || fail "Codex update activation mediator is missing"
   [[ -f "$SCRIPT_DIR/codex-release-restart-v1.sh" ]] || fail "Codex update restart scheduler is missing"
   [[ -f "$SCRIPT_DIR/codex-platform-instructions-v1.md" ]] || fail "platform instructions are missing"
@@ -1208,6 +1214,10 @@ apply_install() {
   install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-playwright-validation-v1.js" "$PLAYWRIGHT_CHECK"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-multi-repository-v1.sh" "$ROLE_MEDIATOR"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-stage-v1.py" "$CODEX_UPDATE_MEDIATOR"
+  install -o root -g root -m 0755 \
+    "$SCRIPT_DIR/codex-release-reconcile-v1.py" "$CODEX_RECONCILE_MEDIATOR"
+  install -o root -g root -m 0600 \
+    "$SCRIPT_DIR/codex-release-reconcile-v1.json" "$CODEX_RECONCILE_MANIFEST"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-activate-v1.py" "$CODEX_ACTIVATE_MEDIATOR"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-restart-v1.sh" "$CODEX_RESTART_SCHEDULER"
   install -o root -g root -m 0644 \
@@ -1224,6 +1234,7 @@ apply_install() {
   install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT/inbox"
   install_exact_directory atenea-worker atenea 0750 "$CODEX_RELEASE_ROOT/releases"
   install_exact_directory atenea-worker atenea 0750 "$CODEX_RELEASE_ROOT/operations"
+  install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT/reconciliations"
   install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT/activations"
   install_exact_directory root atenea 0750 "$CODEX_RELEASE_ROOT/rollbacks"
   if [[ ! -e "$TOKEN_FILE" ]]; then
@@ -1255,6 +1266,7 @@ apply_install() {
       printf 'atenea-worker ALL=(root) NOPASSWD: %s cancel %s *\n' "$VALIDATION_MEDIATOR" "$validation_definition"
     done
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ensure *\n' "$ROLE_MEDIATOR"
+    printf 'atenea-worker ALL=(root) NOPASSWD: %s\n' "$CODEX_RECONCILE_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s --registry %s --release-root %s --release-owner-uid %s\n' \
       "$CODEX_ACTIVATE_MEDIATOR" "$CODEX_UPDATE_REGISTRY" "$CODEX_RELEASE_ROOT" "$(id -u atenea-worker)"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s --registry %s --release-root %s --release-owner-uid %s --restart-scheduler %s\n' \
@@ -1365,6 +1377,16 @@ verify() {
       && "$(sha256sum "$CODEX_UPDATE_MEDIATOR" | cut -d' ' -f1)" \
         == "$(sha256sum "$SCRIPT_DIR/codex-release-stage-v1.py" | cut -d' ' -f1)" ]] \
     || fail "Codex update stage mediator differs from the reviewed source"
+  [[ -f "$CODEX_RECONCILE_MEDIATOR" && ! -L "$CODEX_RECONCILE_MEDIATOR" \
+      && "$(stat -c '%a:%U:%G' "$CODEX_RECONCILE_MEDIATOR")" == "755:root:root" \
+      && "$(sha256sum "$CODEX_RECONCILE_MEDIATOR" | cut -d' ' -f1)" \
+        == "$(sha256sum "$SCRIPT_DIR/codex-release-reconcile-v1.py" | cut -d' ' -f1)" ]] \
+    || fail "Codex installed release reconcile mediator differs from reviewed source"
+  [[ -f "$CODEX_RECONCILE_MANIFEST" && ! -L "$CODEX_RECONCILE_MANIFEST" \
+      && "$(stat -c '%a:%U:%G' "$CODEX_RECONCILE_MANIFEST")" == "600:root:root" \
+      && "$(sha256sum "$CODEX_RECONCILE_MANIFEST" | cut -d' ' -f1)" \
+        == "$(sha256sum "$SCRIPT_DIR/codex-release-reconcile-v1.json" | cut -d' ' -f1)" ]] \
+    || fail "Codex installed release reconcile manifest differs from reviewed source"
   [[ -f "$CODEX_ACTIVATE_MEDIATOR" && ! -L "$CODEX_ACTIVATE_MEDIATOR" \
       && "$(stat -c '%a:%U:%G' "$CODEX_ACTIVATE_MEDIATOR")" == "755:root:root" \
       && "$(sha256sum "$CODEX_ACTIVATE_MEDIATOR" | cut -d' ' -f1)" \

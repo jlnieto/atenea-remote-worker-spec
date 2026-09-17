@@ -2536,6 +2536,78 @@ print(json.dumps({
         self.assertIn("refused to duplicate", terminal["statusReason"])
 
 
+class CodexReleaseReconcileWorkerTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.calls = root / "calls"
+        self.mediator = root / "reconcile.py"
+        self.mediator.write_text(
+            """#!/usr/bin/env python3
+import hashlib
+import json
+import pathlib
+import sys
+request = json.load(sys.stdin)
+calls = pathlib.Path(sys.argv[0]).with_name("calls")
+calls.write_text(calls.read_text() + "1\\n" if calls.exists() else "1\\n")
+digest = hashlib.sha256(b"exact-recovery").hexdigest()
+print(json.dumps({
+    "schemaVersion": "codex-release-reconcile-v1",
+    "operation": request["operation"], "workerId": "ax42-01",
+    "idempotencyKey": request["idempotencyKey"], "state": "RECONCILED",
+    "planId": "15414500-0000-4000-8000-000000000001",
+    "currentInventoryId": "15414500-0000-4000-8000-000000000002",
+    "candidateInventoryId": "15414500-0000-4000-8000-000000000003",
+    "currentVersion": "0.154.0", "candidateVersion": "0.145.0",
+    "currentReleaseDigestSha256": "37de474b157b0313c73ddc05928855f61517676138827df51660fe8715dca14f",
+    "candidateReleaseDigestSha256": "56da3312ccb2109a2f4e0d71b003f08d33244ec6f5863e8fc7f6f24b7a6489c2",
+    "candidateCatalogRevision": "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187",
+    "currentInstallationState": "INSTALLED",
+    "currentLinkState": "CURRENT", "currentCompatibilityState": "UNKNOWN",
+    "candidateInstallationState": "STAGED", "candidateLinkState": "NONE",
+    "candidateCompatibilityState": "COMPATIBLE", "previousState": "ABSENT",
+    "previousCompatibilityState": "UNKNOWN", "structureVerification": "PASS",
+    "permissionVerification": "PASS", "metadataVerification": "PASS",
+    "versionVerification": "PASS", "hashVerification": "PASS",
+    "zeroNonTerminalRuns": "PASS", "currentLinkFingerprint": digest,
+    "linksChanged": True, "inventorySha256": digest, "planSha256": digest,
+    "registrySha256": digest, "valuesExposed": False,
+    "completedAt": "2026-09-17T00:00:00Z",
+}))
+""", encoding="utf-8")
+        self.mediator.chmod(0o755)
+        self.state = MODULE.WorkerState(
+            root / "state", "ax42-01", privilege_command=(),
+            codex_reconcile_mediator=self.mediator,
+        )
+        self.request = {
+            "operation": "RECONCILE_INSTALLED_CODEX_RELEASES",
+            "idempotencyKey": str(uuid.uuid4()),
+        }
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_closed_reconcile_invokes_only_fixed_mediator_and_validates_result(self):
+        self.assertIn(MODULE.CODEX_UPDATE_RECONCILE_CAPABILITY,
+                      self.state.health()["capabilities"])
+        result = self.state.reconcile_installed_codex_releases(self.request)
+        self.assertEqual("RECONCILED", result["state"])
+        self.assertEqual("ABSENT", result["previousState"])
+        self.assertEqual(["1"], self.calls.read_text().splitlines())
+        with self.assertRaises(MODULE.ProtocolError):
+            self.state.reconcile_installed_codex_releases(
+                {**self.request, "sourceRoot": "/tmp/foreign"})
+        self.assertEqual(["1"], self.calls.read_text().splitlines())
+
+    def test_reconcile_rejects_non_terminal_execution_before_mediator(self):
+        self.state.executions["active"] = {"status": "RUNNING"}
+        with self.assertRaisesRegex(MODULE.ProtocolError, "zero non-terminal"):
+            self.state.reconcile_installed_codex_releases(self.request)
+        self.assertFalse(self.calls.exists())
+
+
 class CodexUpdateStageWorkerTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
