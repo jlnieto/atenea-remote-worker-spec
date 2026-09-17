@@ -35,6 +35,13 @@ CODEX_CATALOG_CAPABILITY = "codex-model-catalog-v1"
 CODEX_UPDATE_STAGE_CAPABILITY = "codex-update-stage-v1"
 CODEX_UPDATE_ACTIVATE_CAPABILITY = "codex-update-activate-v1"
 CODEX_UPDATE_ROLLBACK_CAPABILITY = "codex-update-rollback-v1"
+CODEX_UPDATE_RECONCILE_CAPABILITY = "codex-release-reconcile-v1"
+CODEX_RECOVERY_PLAN_ID = "15414500-0000-4000-8000-000000000001"
+CODEX_RECOVERY_CURRENT_ID = "15414500-0000-4000-8000-000000000002"
+CODEX_RECOVERY_CANDIDATE_ID = "15414500-0000-4000-8000-000000000003"
+CODEX_RECOVERY_CURRENT_DIGEST = "37de474b157b0313c73ddc05928855f61517676138827df51660fe8715dca14f"
+CODEX_RECOVERY_CANDIDATE_DIGEST = "56da3312ccb2109a2f4e0d71b003f08d33244ec6f5863e8fc7f6f24b7a6489c2"
+CODEX_RECOVERY_CATALOG_REVISION = "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187"
 DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
 DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
 DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publication/v1"
@@ -274,6 +281,19 @@ CODEX_UPDATE_ROLLBACK_RESULT_KEYS = {
     "previousBeforeFingerprint", "currentAfterFingerprint",
     "previousAfterFingerprint", "valuesExposed",
 }
+CODEX_UPDATE_RECONCILE_KEYS = {"operation", "idempotencyKey"}
+CODEX_UPDATE_RECONCILE_RESULT_KEYS = {
+    "schemaVersion", "operation", "workerId", "idempotencyKey", "state",
+    "planId", "currentInventoryId", "candidateInventoryId", "currentVersion",
+    "candidateVersion", "currentReleaseDigestSha256", "candidateReleaseDigestSha256",
+    "candidateCatalogRevision", "currentInstallationState", "currentLinkState",
+    "currentCompatibilityState", "candidateInstallationState", "candidateLinkState",
+    "candidateCompatibilityState", "previousState", "previousCompatibilityState",
+    "structureVerification", "permissionVerification", "metadataVerification",
+    "versionVerification", "hashVerification", "zeroNonTerminalRuns",
+    "currentLinkFingerprint", "linksChanged", "inventorySha256", "planSha256",
+    "registrySha256", "valuesExposed", "completedAt",
+}
 DEVELOPMENT_CHANGE_WORKSPACE_REQUEST_KEYS = {
     "schemaVersion", "protocolVersion", "effect", "operationId",
     "idempotencyKey", "operation", "predecessorOperationId", "changeKey",
@@ -346,6 +366,16 @@ def utc_now() -> str:
 def canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_uuid(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = str(uuid.UUID(value))
+    except ValueError:
+        return None
+    return parsed if parsed == value else None
 
 
 def subprocess_environment(*, systemd_credentials: bool = False) -> dict[str, str]:
@@ -873,6 +903,7 @@ class WorkerState:
         project_validation_mediator: Path | None = None,
         repository_role_mediator: Path | None = None,
         codex_update_mediator: Path | None = None,
+        codex_reconcile_mediator: Path | None = None,
         codex_activate_mediator: Path | None = None,
         codex_rollback_mediator: Path | None = None,
         codex_restart_scheduler: Path | None = None,
@@ -904,6 +935,7 @@ class WorkerState:
         self.project_validation_mediator = project_validation_mediator
         self.repository_role_mediator = repository_role_mediator
         self.codex_update_mediator = codex_update_mediator
+        self.codex_reconcile_mediator = codex_reconcile_mediator
         self.codex_activate_mediator = codex_activate_mediator
         self.codex_rollback_mediator = codex_rollback_mediator
         self.codex_restart_scheduler = codex_restart_scheduler
@@ -1249,6 +1281,11 @@ class WorkerState:
                             and self.codex_restart_scheduler is not None
                             and self.codex_restart_scheduler.is_file()):
                         capabilities.append(CODEX_UPDATE_ROLLBACK_CAPABILITY)
+            if (self.codex_reconcile_mediator is not None
+                    and self.codex_reconcile_mediator.is_file()
+                    and not self.codex_reconcile_mediator.is_symlink()
+                    and os.access(self.codex_reconcile_mediator, os.X_OK)):
+                capabilities.append(CODEX_UPDATE_RECONCILE_CAPABILITY)
             return {
                 "protocolVersion": PROTOCOL,
                 "workerId": self.worker_id,
@@ -1607,6 +1644,106 @@ class WorkerState:
                 HTTPStatus.CONFLICT, "codex_update_stage_result_conflict",
                 "Codex update stage result is incomplete or conflicting")
         return result
+
+    def reconcile_installed_codex_releases(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict) or set(request) != CODEX_UPDATE_RECONCILE_KEYS:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST, "invalid_codex_release_reconciliation",
+                "exact installed Codex release reconciliation fields are required")
+        if request.get("operation") != "RECONCILE_INSTALLED_CODEX_RELEASES":
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST, "invalid_codex_release_reconciliation",
+                "installed Codex release reconciliation operation is invalid")
+        try:
+            parsed = str(uuid.UUID(request.get("idempotencyKey")))
+        except (ValueError, TypeError, AttributeError):
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST, "invalid_codex_release_reconciliation",
+                "reconciliation idempotency key must be a canonical UUID")
+        if parsed != request["idempotencyKey"]:
+            raise ProtocolError(
+                HTTPStatus.BAD_REQUEST, "invalid_codex_release_reconciliation",
+                "reconciliation idempotency key must be a canonical UUID")
+        if (self.codex_reconcile_mediator is None
+                or not self.codex_reconcile_mediator.is_file()
+                or self.codex_reconcile_mediator.is_symlink()):
+            raise ProtocolError(
+                HTTPStatus.SERVICE_UNAVAILABLE, "codex_release_reconciliation_unavailable",
+                "installed Codex release reconciliation is unavailable")
+        with self.lock:
+            if self.codex_update_in_progress or any(
+                execution["status"] in NON_TERMINAL for execution in self.executions.values()
+            ):
+                raise ProtocolError(
+                    HTTPStatus.CONFLICT, "codex_update_active_execution",
+                    "Codex release reconciliation requires zero non-terminal executions")
+            self.codex_update_in_progress = True
+        try:
+            try:
+                completed = subprocess.run(
+                    [*self.privilege_command, str(self.codex_reconcile_mediator)],
+                    input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                    timeout=300, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                raise ProtocolError(
+                    HTTPStatus.SERVICE_UNAVAILABLE, "codex_release_reconciliation_failed",
+                    "installed Codex release reconciliation failed closed")
+            if completed.returncode != 0:
+                raise ProtocolError(
+                    HTTPStatus.CONFLICT, "codex_release_reconciliation_rejected",
+                    "installed Codex releases do not match recovery authority")
+            try:
+                result = json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                result = None
+            digest_fields = {
+                "currentReleaseDigestSha256", "candidateReleaseDigestSha256",
+                "candidateCatalogRevision", "currentLinkFingerprint", "inventorySha256",
+                "planSha256", "registrySha256",
+            }
+            if (not isinstance(result, dict)
+                    or set(result) != CODEX_UPDATE_RECONCILE_RESULT_KEYS
+                    or result.get("schemaVersion") != CODEX_UPDATE_RECONCILE_CAPABILITY
+                    or result.get("operation") != request["operation"]
+                    or result.get("workerId") != self.worker_id
+                    or result.get("idempotencyKey") != request["idempotencyKey"]
+                    or result.get("state") != "RECONCILED"
+                    or result.get("planId") != CODEX_RECOVERY_PLAN_ID
+                    or result.get("currentInventoryId") != CODEX_RECOVERY_CURRENT_ID
+                    or result.get("candidateInventoryId") != CODEX_RECOVERY_CANDIDATE_ID
+                    or result.get("currentVersion") != "0.154.0"
+                    or result.get("candidateVersion") != CODEX_VERSION
+                    or result.get("currentReleaseDigestSha256") != CODEX_RECOVERY_CURRENT_DIGEST
+                    or result.get("candidateReleaseDigestSha256") != CODEX_RECOVERY_CANDIDATE_DIGEST
+                    or result.get("candidateCatalogRevision") != CODEX_RECOVERY_CATALOG_REVISION
+                    or result.get("currentInstallationState") != "INSTALLED"
+                    or result.get("currentLinkState") != "CURRENT"
+                    or result.get("currentCompatibilityState") != "UNKNOWN"
+                    or result.get("candidateInstallationState") != "STAGED"
+                    or result.get("candidateLinkState") != "NONE"
+                    or result.get("candidateCompatibilityState") != "COMPATIBLE"
+                    or result.get("previousState") != "ABSENT"
+                    or result.get("previousCompatibilityState") != "UNKNOWN"
+                    or any(result.get(field) != "PASS" for field in (
+                        "structureVerification", "permissionVerification",
+                        "metadataVerification", "versionVerification", "hashVerification",
+                        "zeroNonTerminalRuns"))
+                    or any(re.fullmatch(r"[0-9a-f]{64}", str(result.get(field))) is None
+                           for field in digest_fields)
+                    or any(canonical_uuid(result.get(field)) is None for field in (
+                        "planId", "currentInventoryId", "candidateInventoryId"))
+                    or not isinstance(result.get("linksChanged"), bool)
+                    or result.get("valuesExposed") is not False
+                    or not isinstance(result.get("completedAt"), str)):
+                raise ProtocolError(
+                    HTTPStatus.CONFLICT, "codex_release_reconciliation_result_conflict",
+                    "installed Codex release reconciliation result is incomplete or conflicting")
+            return result
+        finally:
+            with self.lock:
+                self.codex_update_in_progress = False
 
     def activate_codex_update(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != CODEX_UPDATE_ACTIVATE_KEYS:
@@ -4753,6 +4890,12 @@ class AgentRunHandler(BaseHTTPRequestHandler):
             if path == "/v1/codex/update/stage":
                 self._write(HTTPStatus.OK, self.server.state.stage_codex_update(body))
                 return
+            if path == "/v1/codex/update/reconcile-installed":
+                self._write(
+                    HTTPStatus.OK,
+                    self.server.state.reconcile_installed_codex_releases(body),
+                )
+                return
             if path == "/v1/codex/update/activate":
                 self._write(HTTPStatus.OK, self.server.state.activate_codex_update(body))
                 return
@@ -4873,6 +5016,11 @@ def main() -> int:
         default=Path("/usr/local/libexec/atenea/codex-release-stage-v1.py"),
     )
     parser.add_argument(
+        "--codex-reconcile-mediator",
+        type=Path,
+        default=Path("/usr/local/libexec/atenea/codex-release-reconcile-v1.py"),
+    )
+    parser.add_argument(
         "--codex-update-registry",
         type=Path,
         default=Path("/etc/atenea-worker/codex-release-stage-v1.json"),
@@ -4929,6 +5077,7 @@ def main() -> int:
         project_validation_mediator=args.project_validation_mediator,
         repository_role_mediator=args.repository_role_mediator,
         codex_update_mediator=args.codex_update_mediator,
+        codex_reconcile_mediator=args.codex_reconcile_mediator,
         codex_activate_mediator=args.codex_activate_mediator,
         codex_rollback_mediator=args.codex_rollback_mediator,
         codex_restart_scheduler=args.codex_restart_scheduler,

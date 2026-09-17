@@ -79,6 +79,9 @@ class CodexSessionOperationsContractTest(unittest.TestCase):
             "stageResult": read_json(
                 CONTRACT / "codex-update-stage-v1.result.schema.json"
             ),
+            "reconcileResult": read_json(
+                CONTRACT / "codex-update-reconcile-v1.result.schema.json"
+            ),
             "activateResult": read_json(
                 CONTRACT / "codex-update-activate-v1.result.schema.json"
             ),
@@ -209,6 +212,34 @@ class CodexSessionOperationsContractTest(unittest.TestCase):
             "valuesExposed": False,
         }
         self.assert_schema_valid("stageResult", stage_result)
+        reconcile_result = {
+            "schemaVersion": "codex-release-reconcile-v1",
+            "operation": "RECONCILE_INSTALLED_CODEX_RELEASES",
+            "workerId": "ax42-01", "idempotencyKey": self.api_requests[3]["idempotencyKey"],
+            "state": "RECONCILED",
+            "planId": "15414500-0000-4000-8000-000000000001",
+            "currentInventoryId": "15414500-0000-4000-8000-000000000002",
+            "candidateInventoryId": "15414500-0000-4000-8000-000000000003",
+            "currentVersion": "0.154.0", "candidateVersion": "0.145.0",
+            "currentReleaseDigestSha256":
+                "37de474b157b0313c73ddc05928855f61517676138827df51660fe8715dca14f",
+            "candidateReleaseDigestSha256":
+                "56da3312ccb2109a2f4e0d71b003f08d33244ec6f5863e8fc7f6f24b7a6489c2",
+            "candidateCatalogRevision":
+                "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187",
+            "currentInstallationState": "INSTALLED", "currentLinkState": "CURRENT",
+            "currentCompatibilityState": "UNKNOWN", "candidateInstallationState": "STAGED",
+            "candidateLinkState": "NONE", "candidateCompatibilityState": "COMPATIBLE",
+            "previousState": "ABSENT", "previousCompatibilityState": "UNKNOWN",
+            "structureVerification": "PASS", "permissionVerification": "PASS",
+            "metadataVerification": "PASS", "versionVerification": "PASS",
+            "hashVerification": "PASS", "zeroNonTerminalRuns": "PASS",
+            "currentLinkFingerprint": "d" * 64, "linksChanged": True,
+            "inventorySha256": "e" * 64, "planSha256": "f" * 64,
+            "registrySha256": "0" * 64, "valuesExposed": False,
+            "completedAt": "2026-09-17T00:00:00Z",
+        }
+        self.assert_schema_valid("reconcileResult", reconcile_result)
         activation_result = {
             "schemaVersion": "codex-update-activate-v1",
             "operation": "ACTIVATE_CODEX_UPDATE",

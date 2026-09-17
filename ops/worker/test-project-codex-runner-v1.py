@@ -33,6 +33,13 @@ TEST_COMMIT = "1" * 40
 
 
 class ProjectCodexContractTest(unittest.TestCase):
+    def test_runner_uses_only_managed_current_codex(self):
+        self.assertEqual(
+            "/srv/atenea/worker/codex-releases-v1/current/bin/codex",
+            MODULE.CODEX,
+        )
+        self.assertNotIn("/home/jose/.codex/packages/standalone", MODULE.CODEX)
+
     def workload(self, thread_id=None):
         return {
             "kind": "project-codex-v1",
