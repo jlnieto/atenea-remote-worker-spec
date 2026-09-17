@@ -1142,6 +1142,44 @@ V4_ONLY_SUCCESSOR_PREFLIGHT="$(project_config_install_preflight)"
     "v4-only-successor:${V4_ONLY_SUCCESSOR_SHA}" ]] \
   || fail "installer apply preflight did not retain the exact v4-only successor"
 project_config_install_finalize "${V4_ONLY_SUCCESSOR_PREFLIGHT}"
+V4_ONLY_SUCCESSOR="${TEST_ROOT}/v4-only-successor.json"
+cp "${PROJECT_CONFIG}" "${V4_ONLY_SUCCESSOR}"
+
+: >"${V4_ONLY_HEALTH_LOG}"
+verify_project_runtime_state
+[[ "$(cat "${V4_ONLY_HEALTH_LOG}")" == true ]] \
+  || fail "installer verify did not require live v4-only health"
+
+jq '.foreignAuthority = true' "${V4_ONLY_SUCCESSOR}" >"${PROJECT_CONFIG}"
+if ( verify_project_runtime_state ) >/dev/null 2>&1; then
+  fail "installer verify accepted a v4-only successor with changed invariants"
+fi
+cp "${V4_ONLY_SUCCESSOR}" "${PROJECT_CONFIG}"
+
+V4_ONLY_FAIL_LIVE_HEALTH=true
+if ( verify_project_runtime_state ) >/dev/null 2>&1; then
+  fail "installer verify accepted an unhealthy v4-only successor"
+fi
+V4_ONLY_FAIL_LIVE_HEALTH=false
+
+ORIGINAL_V4_ONLY_LEGACY_VERIFIER="$(
+  declare -f verify_project_v4_only_legacy_rejected
+)"
+verify_project_v4_only_legacy_rejected() { return 1; }
+if ( verify_project_runtime_state ) >/dev/null 2>&1; then
+  fail "installer verify accepted v4-only while legacy Atenea was admitted"
+fi
+eval "${ORIGINAL_V4_ONLY_LEGACY_VERIFIER}"
+
+: >"${V4_ONLY_HEALTH_LOG}"
+write_project_config false false '{}' "${CANONICAL_COMMIT}"
+verify_project_runtime_state
+write_project_config true false '{}' "${CANONICAL_COMMIT}"
+verify_project_runtime_state
+[[ ! -s "${V4_ONLY_HEALTH_LOG}" ]] \
+  || fail "installer verify changed health policy for prior supported states"
+cp "${V4_ONLY_SUCCESSOR}" "${PROJECT_CONFIG}"
+
 assert_v4_only_transition_rejected "already transitioned configuration"
 PROJECT_RUNNER="${REVIEWED_PROJECT_RUNNER}"
 
