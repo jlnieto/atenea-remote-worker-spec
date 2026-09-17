@@ -1150,6 +1150,29 @@ project_config_install_finalize() {
   verify_project_config_content
 }
 
+verify_project_runtime_state() {
+  if jq -e '
+      .selectionEnabled == false and .executionEnabled == true
+    ' "$PROJECT_CONFIG" >/dev/null 2>&1; then
+    verify_project_v4_only_successor_content
+    wait_for_worker_health true \
+      || fail "v4-only worker health or project-codex-v4 capability is unavailable"
+    verify_project_v4_only_legacy_rejected \
+      || fail "v4-only worker still admits legacy Atenea execution"
+    return 0
+  fi
+  if [[ "$(jq -r '.commit' "$PROJECT_CONFIG")" \
+      == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
+      && "$(jq -r '.workspaces | length' "$PROJECT_CONFIG")" -eq 1 ]]; then
+    [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
+      || fail "pinned project canonical mirror ref moved"
+    verify_project_config_pinned_workspace_content \
+      "$PROJECT_PINNED_SOURCE_TARGET_COMMIT"
+  else
+    verify_project_config_content
+  fi
+}
+
 apply_install() {
   require_root
   validate_inputs
@@ -1376,16 +1399,7 @@ verify() {
     || fail "programme role identity is unavailable or interactive"
   [[ "$(getent passwd atenea-worker-role | cut -d: -f7)" == /usr/sbin/nologin ]] \
     || fail "worker source role identity is unavailable or interactive"
-  if [[ "$(jq -r '.commit' "$PROJECT_CONFIG")" \
-      == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
-      && "$(jq -r '.workspaces | length' "$PROJECT_CONFIG")" -eq 1 ]]; then
-    [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
-      || fail "pinned project canonical mirror ref moved"
-    verify_project_config_pinned_workspace_content \
-      "$PROJECT_PINNED_SOURCE_TARGET_COMMIT"
-  else
-    verify_project_config_content
-  fi
+  verify_project_runtime_state
   visudo -cf "$SUDOERS_FILE" >/dev/null
   verify_project_runner_sudoers
   verify_validation_sudoers
