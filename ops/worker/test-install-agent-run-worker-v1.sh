@@ -91,7 +91,10 @@ fi
     && "${PROJECT_PINNED_WORKSPACE_RECORD_SHA256}" == "3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7" \
     && "${PROJECT_PINNED_ALLOCATION_SHA256}" == "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87" \
     && "${PROJECT_PINNED_DIRTY_PATH}" == "android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt" \
-    && "${PROJECT_PINNED_DIRTY_CONTENT_SHA256}" == "c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563" ]] \
+    && "${PROJECT_PINNED_DIRTY_CONTENT_SHA256}" == "c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563" \
+    && "${PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT}" == "c3ebc2e9d252abe86ff85cb45e97e458b3a826e7" \
+    && "${PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT}" == "847a2f240e3d64af2cf3f166ff3c70ad7cc8497f" \
+    && "${PROJECT_V4_ONLY_SOURCE_PREDECESSOR_CONFIG_SHA256}" == "ad8dc6a38fe720a587acd370c424c942a6f620a9fe032533bf6c42cd8f34cc36" ]] \
   || fail "reviewed WS19 pinned source identity changed"
 [[ "$(workspace_activation_sudoers_content | wc -l)" -eq 5 ]] \
   || fail "workspace lifecycle sudo authority count is not exact"
@@ -1179,6 +1182,133 @@ verify_project_runtime_state
 [[ ! -s "${V4_ONLY_HEALTH_LOG}" ]] \
   || fail "installer verify changed health policy for prior supported states"
 cp "${V4_ONLY_SUCCESSOR}" "${PROJECT_CONFIG}"
+
+# Advance the already-v4-only registry only across one reviewed source edge.
+# The fixed predecessor bytes, WS19 ownership and durable operation state must
+# remain unchanged apart from the registry commit field.
+V4_ONLY_SOURCE_TREE="$(git -C "${WORKTREE}" rev-parse "${CANONICAL_COMMIT}^{tree}")"
+V4_ONLY_SOURCE_TARGET_COMMIT="$(printf 'v4-only reviewed source target\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${V4_ONLY_SOURCE_TREE}" -p "${CANONICAL_COMMIT}")"
+git --git-dir="${PROJECT_MIRROR}" fetch -q "${WORKTREE}" \
+  "${V4_ONLY_SOURCE_TARGET_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${V4_ONLY_SOURCE_TARGET_COMMIT}" "${CANONICAL_COMMIT}"
+PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT="${RETAINED_COMMIT}"
+PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT="${V4_ONLY_SOURCE_TARGET_COMMIT}"
+PROJECT_V4_ONLY_SOURCE_PREDECESSOR_CONFIG_SHA256="$(
+  sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1
+)"
+V4_ONLY_SOURCE_PREDECESSOR="${TEST_ROOT}/v4-only-source-predecessor.json"
+cp "${PROJECT_CONFIG}" "${V4_ONLY_SOURCE_PREDECESSOR}"
+V4_ONLY_SOURCE_STATE_SHA="$(sha256sum "${STATE_DIR}/executions.json" | cut -d' ' -f1)"
+V4_ONLY_SOURCE_JOURNAL_SHA="$(sha256sum \
+  "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json" | cut -d' ' -f1)"
+V4_ONLY_SOURCE_WORKSPACE_RECORD_SHA="$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)"
+V4_ONLY_SOURCE_ALLOCATION_SHA="$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)"
+V4_ONLY_SOURCE_DIRTY_SHA="$(sha256sum \
+  "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)"
+
+assert_v4_only_source_advance_rejected() {
+  local description="$1"
+  local before
+  before="$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)"
+  if ( project_config_install_preflight ) >/dev/null 2>&1; then
+    fail "unsafe v4-only source advance was accepted: ${description}"
+  fi
+  [[ "$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)" == "${before}" ]] \
+    || fail "rejected v4-only source advance changed configuration: ${description}"
+}
+
+jq '.foreignAuthority = true' "${PROJECT_CONFIG}" >"${PROJECT_CONFIG}.rejected"
+mv "${PROJECT_CONFIG}.rejected" "${PROJECT_CONFIG}"
+assert_v4_only_source_advance_rejected "changed retained configuration"
+cp "${V4_ONLY_SOURCE_PREDECESSOR}" "${PROJECT_CONFIG}"
+
+cp "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" \
+  "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}.valid"
+printf 'foreign retained byte\n' >>"${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+assert_v4_only_source_advance_rejected "changed WS19 draft"
+mv "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}.valid" \
+  "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}"
+
+jq '.executions.active = {status: "RUNNING"}' \
+  "${STATE_DIR}/executions.json" >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+assert_v4_only_source_advance_rejected "non-terminal operation"
+jq 'del(.executions.active)' "${STATE_DIR}/executions.json" \
+  >"${STATE_DIR}/executions.changed"
+mv "${STATE_DIR}/executions.changed" "${STATE_DIR}/executions.json"
+
+V4_ONLY_MOVED_COMMIT="$(printf 'unreviewed moving origin\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${V4_ONLY_SOURCE_TREE}" -p "${V4_ONLY_SOURCE_TARGET_COMMIT}")"
+git --git-dir="${PROJECT_MIRROR}" fetch -q "${WORKTREE}" "${V4_ONLY_MOVED_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${V4_ONLY_MOVED_COMMIT}" "${V4_ONLY_SOURCE_TARGET_COMMIT}"
+assert_v4_only_source_advance_rejected "origin/main moved beyond the reviewed target"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${V4_ONLY_SOURCE_TARGET_COMMIT}" "${V4_ONLY_MOVED_COMMIT}"
+
+V4_ONLY_UNRELATED_COMMIT="$(printf 'unrelated source\n' | \
+  git -C "${WORKTREE}" -c user.name=Test -c user.email=test@example.invalid \
+    commit-tree "${V4_ONLY_SOURCE_TREE}")"
+git --git-dir="${PROJECT_MIRROR}" fetch -q "${WORKTREE}" "${V4_ONLY_UNRELATED_COMMIT}"
+PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT="${V4_ONLY_UNRELATED_COMMIT}"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${V4_ONLY_UNRELATED_COMMIT}" "${V4_ONLY_SOURCE_TARGET_COMMIT}"
+assert_v4_only_source_advance_rejected "reviewed target is not a descendant"
+git --git-dir="${PROJECT_MIRROR}" update-ref \
+  "${PROJECT_REF}" "${V4_ONLY_SOURCE_TARGET_COMMIT}" "${V4_ONLY_UNRELATED_COMMIT}"
+PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT="${V4_ONLY_SOURCE_TARGET_COMMIT}"
+
+V4_ONLY_SOURCE_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${V4_ONLY_SOURCE_PREFLIGHT}" == \
+    "v4-only-source-advance:${PROJECT_V4_ONLY_SOURCE_PREDECESSOR_CONFIG_SHA256}:${RETAINED_COMMIT}:${V4_ONLY_SOURCE_TARGET_COMMIT}" ]] \
+  || fail "installer did not recognize the exact v4-only source advance"
+printf '\n' >>"${PROJECT_CONFIG}"
+if ( project_config_install_finalize "${V4_ONLY_SOURCE_PREFLIGHT}" ) \
+    >/dev/null 2>&1; then
+  fail "v4-only source advance ignored registry compare-and-swap"
+fi
+cp "${V4_ONLY_SOURCE_PREDECESSOR}" "${PROJECT_CONFIG}"
+V4_ONLY_SOURCE_PREFLIGHT="$(project_config_install_preflight)"
+project_config_install_finalize "${V4_ONLY_SOURCE_PREFLIGHT}"
+jq -e \
+  --arg commit "${V4_ONLY_SOURCE_TARGET_COMMIT}" \
+  --arg identity "${WORKSPACE_IDENTITY}" '
+    .commit == $commit and .selectionEnabled == false and
+    .executionEnabled == true and (.workspaces | keys) == [$identity]
+  ' "${PROJECT_CONFIG}" >/dev/null \
+  || fail "v4-only source advance did not preserve v4-only and WS19"
+sed -E \
+  's/("commit"[[:space:]]*:[[:space:]]*")'"${V4_ONLY_SOURCE_TARGET_COMMIT}"'(\")/\1'"${RETAINED_COMMIT}"'\2/' \
+  "${PROJECT_CONFIG}" >"${PROJECT_CONFIG}.restored-comparison"
+cmp -s "${V4_ONLY_SOURCE_PREDECESSOR}" "${PROJECT_CONFIG}.restored-comparison" \
+  || fail "v4-only source advance changed fields other than commit"
+rm -f "${PROJECT_CONFIG}.restored-comparison"
+[[ "$(sha256sum "${STATE_DIR}/executions.json" | cut -d' ' -f1)" \
+      == "${V4_ONLY_SOURCE_STATE_SHA}" \
+    && "$(sha256sum \
+      "${VALIDATION_JOURNAL_ROOT}/${SESSION_ID}/terminal/operation-v1.json" | cut -d' ' -f1)" \
+      == "${V4_ONLY_SOURCE_JOURNAL_SHA}" \
+    && "$(sha256sum "${WORKSPACE_RECORD}" | cut -d' ' -f1)" \
+      == "${V4_ONLY_SOURCE_WORKSPACE_RECORD_SHA}" \
+    && "$(sha256sum "${ALLOCATION}" | cut -d' ' -f1)" \
+      == "${V4_ONLY_SOURCE_ALLOCATION_SHA}" \
+    && "$(sha256sum "${WORKTREE}/${PROJECT_PINNED_DIRTY_PATH}" | cut -d' ' -f1)" \
+      == "${V4_ONLY_SOURCE_DIRTY_SHA}" ]] \
+  || fail "v4-only source advance changed WS19 or durable operation state"
+V4_ONLY_SOURCE_SUCCESSOR_SHA="$(sha256sum "${PROJECT_CONFIG}" | cut -d' ' -f1)"
+V4_ONLY_SOURCE_REPEAT_PREFLIGHT="$(project_config_install_preflight)"
+[[ "${V4_ONLY_SOURCE_REPEAT_PREFLIGHT}" == \
+    "v4-only-source-successor:${V4_ONLY_SOURCE_SUCCESSOR_SHA}" ]] \
+  || fail "v4-only source advance is not idempotent"
+project_config_install_finalize "${V4_ONLY_SOURCE_REPEAT_PREFLIGHT}"
+: >"${V4_ONLY_HEALTH_LOG}"
+verify_project_runtime_state
+[[ "$(cat "${V4_ONLY_HEALTH_LOG}")" == true ]] \
+  || fail "advanced v4-only runtime did not require healthy v4 capability"
 
 assert_v4_only_transition_rejected "already transitioned configuration"
 PROJECT_RUNNER="${REVIEWED_PROJECT_RUNNER}"

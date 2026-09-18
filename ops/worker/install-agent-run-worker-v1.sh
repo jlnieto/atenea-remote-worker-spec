@@ -60,6 +60,9 @@ PROJECT_PINNED_DIRTY_CONTENT_SHA256="c50a9aa5b07cd394b85a51c65aff3a9eff37844cd07
 PROJECT_V4_ONLY_PREDECESSOR_COMMIT="c3ebc2e9d252abe86ff85cb45e97e458b3a826e7"
 PROJECT_V4_ONLY_CANONICAL_COMMIT="4baa91edd89d28a9686933db03473460a82d9312"
 PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256="3b2e2e242f88e72b64b1f400b3d703f109641f7aa9922579cb5565ed21dfb666"
+PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT="c3ebc2e9d252abe86ff85cb45e97e458b3a826e7"
+PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT="847a2f240e3d64af2cf3f166ff3c70ad7cc8497f"
+PROJECT_V4_ONLY_SOURCE_PREDECESSOR_CONFIG_SHA256="ad8dc6a38fe720a587acd370c424c942a6f620a9fe032533bf6c42cd8f34cc36"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
@@ -720,6 +723,40 @@ verify_project_v4_only_successor_content() {
   verify_no_non_terminal_project_operations
 }
 
+verify_project_v4_only_source_advance() {
+  [[ "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" \
+      == "$PROJECT_REPOSITORY" ]] \
+    || fail "v4-only source advance canonical mirror remote is foreign"
+  [[ "$(observe_project_commit)" == "$PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT" \
+      && "$(git --git-dir="$PROJECT_MIRROR" rev-parse --verify \
+        "${PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT}^{commit}")" \
+        == "$PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT" ]] \
+    || fail "v4-only source advance target is not the reviewed commit"
+  git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor \
+    "$PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT" \
+    "$PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT" \
+    || fail "v4-only source advance is not forward-only"
+}
+
+verify_project_v4_only_source_advance_predecessor_content() {
+  verify_project_config_file_identity
+  [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" \
+      == "$PROJECT_V4_ONLY_SOURCE_PREDECESSOR_CONFIG_SHA256" ]] \
+    || fail "v4-only source advance predecessor fingerprint is not exact"
+  verify_project_config_pinned_workspace_content \
+    "$PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT" false true
+  verify_project_v4_only_source_advance
+  verify_no_non_terminal_project_operations
+}
+
+verify_project_v4_only_source_advance_successor_content() {
+  verify_project_config_file_identity
+  verify_project_config_pinned_workspace_content \
+    "$PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT" false true
+  verify_project_v4_only_source_advance
+  verify_no_non_terminal_project_operations
+}
+
 read_worker_health() {
   local bind
   bind="$(tailscale_ipv4)"
@@ -927,6 +964,18 @@ project_config_install_preflight() {
     printf 'v4-only-successor:%s\n' "$retained_sha256"
     return 0
   fi
+  if ( verify_project_v4_only_source_advance_predecessor_content ) \
+      >/dev/null 2>&1; then
+    printf 'v4-only-source-advance:%s:%s:%s\n' \
+      "$retained_sha256" "$PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT" \
+      "$PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT"
+    return 0
+  fi
+  if ( verify_project_v4_only_source_advance_successor_content ) \
+      >/dev/null 2>&1; then
+    printf 'v4-only-source-successor:%s\n' "$retained_sha256"
+    return 0
+  fi
   if ( verify_project_config_pinned_workspace_content \
       "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" \
       && [[ "$(observe_project_commit)" == "$PROJECT_PINNED_SOURCE_TARGET_COMMIT" ]] \
@@ -999,6 +1048,8 @@ project_config_install_finalize() {
   [[ "$operation" == "retain" || "$operation" == "transition" \
       || "$operation" == "v4-only-predecessor" \
       || "$operation" == "v4-only-successor" \
+      || "$operation" == "v4-only-source-advance" \
+      || "$operation" == "v4-only-source-successor" \
       || "$operation" == "source-advance" \
       || "$operation" == "pinned-source-advance" \
       || "$operation" == "pinned-retained-advance" \
@@ -1009,6 +1060,7 @@ project_config_install_finalize() {
   [[ -z "$surplus" ]] \
     || fail "existing project configuration transition identity is ambiguous"
   if [[ "$operation" == "source-advance" \
+      || "$operation" == "v4-only-source-advance" \
       || "$operation" == "pinned-source-advance" \
       || "$operation" == "pinned-retained-advance" \
       || "$operation" == "pinned-retained-recovery" ]]; then
@@ -1030,6 +1082,10 @@ project_config_install_finalize() {
     verify_project_v4_only_successor_content
     return 0
   fi
+  if [[ "$operation" == "v4-only-source-successor" ]]; then
+    verify_project_v4_only_source_advance_successor_content
+    return 0
+  fi
   if [[ "$operation" == "transition" ]]; then
     verify_project_config_transition_predecessor_content
     local canonical_commit
@@ -1046,6 +1102,33 @@ project_config_install_finalize() {
       || fail "canonical source advance changed during installation"
     write_project_config false false '{}' "$canonical_commit"
     verify_project_config_content
+    return 0
+  fi
+  if [[ "$operation" == "v4-only-source-advance" ]]; then
+    [[ "$retained_commit" == "$PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT" \
+        && "$canonical_commit" == "$PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT" ]] \
+      || fail "v4-only source advance identity is not reviewed"
+    [[ "$(observe_project_commit)" == "$canonical_commit" ]] \
+      || fail "canonical mirror ref changed during v4-only source advance"
+    verify_project_v4_only_source_advance_predecessor_content
+
+    local predecessor_copy successor_config
+    predecessor_copy="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-predecessor.XXXXXX")"
+    successor_config="$(mktemp "$(dirname "$PROJECT_CONFIG")/.project-codex-successor.XXXXXX")"
+    cp --preserve=mode,ownership,timestamps "$PROJECT_CONFIG" "$predecessor_copy"
+    write_project_config_commit_only \
+      "$retained_commit" "$canonical_commit" "$successor_config"
+    chown root:root "$successor_config"
+    chmod 0644 "$successor_config"
+    [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" == "$retained_sha256" ]] \
+      || { rm -f "$predecessor_copy" "$successor_config"; \
+        fail "existing project configuration changed before v4-only source finalize"; }
+    if ! mv -f "$successor_config" "$PROJECT_CONFIG" \
+        || ! verify_project_v4_only_source_advance_successor_content; then
+      mv -f "$predecessor_copy" "$PROJECT_CONFIG" || true
+      fail "v4-only source advance postcondition failed and predecessor restoration was attempted"
+    fi
+    rm -f "$predecessor_copy"
     return 0
   fi
   if [[ "$operation" == "pinned-source-advance" ]]; then
@@ -1160,7 +1243,14 @@ verify_project_runtime_state() {
   if jq -e '
       .selectionEnabled == false and .executionEnabled == true
     ' "$PROJECT_CONFIG" >/dev/null 2>&1; then
-    verify_project_v4_only_successor_content
+    if ( verify_project_v4_only_successor_content ) >/dev/null 2>&1; then
+      verify_project_v4_only_successor_content
+    elif ( verify_project_v4_only_source_advance_successor_content ) \
+        >/dev/null 2>&1; then
+      verify_project_v4_only_source_advance_successor_content
+    else
+      fail "v4-only project configuration is not an exact supported state"
+    fi
     wait_for_worker_health true \
       || fail "v4-only worker health or project-codex-v4 capability is unavailable"
     verify_project_v4_only_legacy_rejected \
