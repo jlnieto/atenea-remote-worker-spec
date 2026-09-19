@@ -38,7 +38,85 @@ class ProjectCodexContractTest(unittest.TestCase):
             "/srv/atenea/worker/codex-releases-v1/current/bin/codex",
             MODULE.CODEX,
         )
+        self.assertEqual(
+            "/srv/atenea/worker/codex-releases-v1/current",
+            MODULE.CODEX_CURRENT,
+        )
         self.assertNotIn("/home/jose/.codex/packages/standalone", MODULE.CODEX)
+
+    def test_sandbox_mounts_only_managed_current_read_only(self):
+        workload = self.workload()
+        workload["codexRuntimePath"] = "/tmp/unauthorized-codex-runtime"
+        command = MODULE.sandbox_command(
+            workload,
+            Path("/srv/atenea/workspaces/sessions/11111111-1111-4111-8111-111111111111/atenea"),
+            MODULE.GIT_COMMON_DIR,
+            Path("/tmp/atenea-codex-result-test/final.txt"),
+            Path("/tmp/atenea-codex-result-test/resolv.conf"),
+            Path("/tmp/atenea-codex-result-test/empty-instructions"),
+            "reviewed instructions",
+            str(uuid.uuid4()),
+        )
+        current = MODULE.CODEX_CURRENT
+        managed_mounts = [
+            command[index:index + 3]
+            for index, argument in enumerate(command)
+            if argument in {"--bind", "--ro-bind"}
+            and "/srv/atenea/worker/codex-releases-v1" in command[index + 1]
+        ]
+        self.assertEqual([["--ro-bind", current, current]], managed_mounts)
+        self.assertIn(MODULE.CODEX, command)
+        self.assertIn(["--dir", "/srv/atenea/worker"], [
+            command[index:index + 2] for index in range(len(command) - 1)
+        ])
+        self.assertIn(["--dir", str(Path(current).parent)], [
+            command[index:index + 2] for index in range(len(command) - 1)
+        ])
+        self.assertNotIn("/srv/atenea/worker/codex-releases-v1/releases", command)
+        self.assertNotIn("/srv/atenea/worker/codex-releases-v1/inventory-v1.json", command)
+        self.assertNotIn("/etc/atenea-worker", "\n".join(command))
+        self.assertNotIn(workload["codexRuntimePath"], command)
+
+    def test_managed_current_mount_exposes_only_selected_release_read_only(self):
+        if not Path("/usr/bin/bwrap").is_file():
+            self.skipTest("Bubblewrap is not installed")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release = root / "releases" / "managed-current"
+            (release / "bin").mkdir(parents=True)
+            binary = release / "bin" / "codex"
+            binary.write_text("selected-managed-current", encoding="ascii")
+            binary.chmod(0o666)
+            (root / "releases" / "other-release").mkdir()
+            (root / "inventory-v1.json").write_text("private-inventory", encoding="ascii")
+            current = root / "current"
+            current.symlink_to("releases/managed-current")
+            destination = MODULE.CODEX_CURRENT
+            probe = (
+                f'test "$(cat {destination}/bin/codex)" = selected-managed-current; '
+                f'! printf changed >{destination}/bin/codex 2>/dev/null; '
+                f'test ! -e {Path(destination).parent}/releases; '
+                f'test ! -e {Path(destination).parent}/inventory-v1.json'
+            )
+            subprocess.run(
+                [
+                    "/usr/bin/bwrap", "--unshare-all", "--share-net",
+                    "--ro-bind", "/usr", "/usr",
+                    "--symlink", "usr/bin", "/bin",
+                    "--symlink", "usr/lib", "/lib",
+                    "--symlink", "usr/lib64", "/lib64",
+                    "--dir", "/srv", "--dir", "/srv/atenea",
+                    "--dir", "/srv/atenea/worker",
+                    "--dir", str(Path(destination).parent),
+                    "--ro-bind", str(current), destination,
+                    "--", "/bin/sh", "-ceu", probe,
+                ],
+                check=True,
+                timeout=30,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual("selected-managed-current", binary.read_text(encoding="ascii"))
 
     def workload(self, thread_id=None):
         return {
