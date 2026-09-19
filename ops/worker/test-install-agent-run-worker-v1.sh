@@ -455,6 +455,36 @@ printf '%s\n' \
 if ( verify_validation_sudoers ) >/dev/null 2>&1; then
   fail "unregistered validation sudo authority was accepted"
 fi
+SUDOERS_FILE="${TEST_ROOT}/recovery-activation.sudoers"
+recovery_activation_sudoers_content >"${SUDOERS_FILE}"
+/usr/sbin/visudo -cf "${SUDOERS_FILE}" >/dev/null \
+  || fail "recovery activation sudo rules are invalid"
+verify_recovery_activation_sudoers
+mapfile -t recovery_rules <"${SUDOERS_FILE}"
+[[ "${#recovery_rules[@]}" -eq 2 \
+    && "${recovery_rules[0]}" == \
+      "atenea-worker ALL=(root) NOPASSWD: ${CODEX_RECOVERY_ACTIVATE_MEDIATOR} --prepare" ]] \
+  || fail "exact recovery preparation command is not allowed"
+inspect_args="${recovery_rules[1]#"atenea-worker ALL=(root) NOPASSWD: ${CODEX_RECOVERY_ACTIVATE_MEDIATOR} "}"
+[[ "--inspect 0bbed69c-61e2-4326-a3bf-4a1372a348da" =~ $inspect_args ]] \
+  || fail "canonical recovery inspection command is not allowed"
+for unexpected_args in \
+  '--prepare --execute' \
+  '--inspect 0bbed69c-61e2-4326-a3bf-4a1372a348da --execute' \
+  '--inspect arbitrary' \
+  '--execute 0bbed69c-61e2-4326-a3bf-4a1372a348da'; do
+  if [[ "$unexpected_args" =~ $inspect_args \
+      || "${recovery_rules[0]}" == \
+        "atenea-worker ALL=(root) NOPASSWD: ${CODEX_RECOVERY_ACTIVATE_MEDIATOR} ${unexpected_args}" ]]; then
+    fail "unexpected recovery activation arguments were allowed: ${unexpected_args}"
+  fi
+done
+printf '%s\n' \
+  "atenea-worker ALL=(root) NOPASSWD: ${CODEX_RECOVERY_ACTIVATE_MEDIATOR} --prepare *" \
+  >>"${SUDOERS_FILE}"
+if ( verify_recovery_activation_sudoers ) >/dev/null 2>&1; then
+  fail "broad recovery activation sudo authority was accepted"
+fi
 SUDOERS_FILE="${PROJECT_SUDOERS_FILE}"
 BEFORE="$(git -C "${WORKTREE}" status --porcelain=v1 --untracked-files=all)"
 project_retained_draft_register "${SESSION_ID}" "${WORKSPACE_IDENTITY}" "${RETAINED_COMMIT}"
