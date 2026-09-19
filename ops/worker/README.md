@@ -461,6 +461,27 @@ Run its focused link, gate, restore and repetition suite with:
 python3 ./test-codex-release-activate-v1.py
 ```
 
+The separate `codex-release-recovery-activate-v1.py` applies only to the
+single reconciled 0.154.0 → 0.145.0 bootstrap with `previous=ABSENT_UNKNOWN`.
+It consumes the root-owned manifest, candidate registry, exact reconciliation
+record, inventory and recovery plan; rehashes both managed packages; and
+requires zero non-terminal executions. The authenticated worker accepts only
+an operation name and an idempotency UUID. A durable pending record blocks new
+AgentRuns, and a fixed transient systemd unit performs the link transition and
+worker restart outside the worker cgroup. The unit verifies the effective
+version, worker health, catalog revision and a fixed read-only `codex exec
+--help` canary. Any failed postcondition restores the 0.154.0 `current`,
+removes bootstrap `previous`, restores the exact pre-activation inventory and
+plan, and restarts the worker. An interrupted unit can resume by the same key;
+ambiguous links remain fail-closed. It never accepts a caller path, command,
+version, symlink or service and never uses a normal stage record.
+
+Run only the isolated recovery tests before integration:
+
+```bash
+python3 ./test-codex-release-recovery-activate-v1.py
+```
+
 The same closed mediator accepts the distinct `ROLLBACK_CODEX_UPDATE`
 operation only with exact persisted plan, candidate, activation, rollback
 authorization and idempotency UUIDs. It requires the live `current` and

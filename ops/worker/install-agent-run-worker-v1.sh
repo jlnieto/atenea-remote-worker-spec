@@ -24,6 +24,7 @@ WORKSPACE_ACTIVATION_BUNDLE="/srv/atenea/worker/workspace-v1/ops/worker"
 WORKSPACE_RELEASE_ROOT="/srv/atenea/worker/workspace-release-v1/sessions"
 CODEX_UPDATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-stage-v1.py"
 CODEX_RECONCILE_MEDIATOR="/usr/local/libexec/atenea/codex-release-reconcile-v1.py"
+CODEX_RECOVERY_ACTIVATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-recovery-activate-v1.py"
 CODEX_RECONCILE_MANIFEST="/etc/atenea-worker/codex-release-reconcile-v1.json"
 CODEX_ACTIVATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-activate-v1.py"
 CODEX_RESTART_SCHEDULER="/usr/local/libexec/atenea/codex-release-restart-v1.sh"
@@ -68,9 +69,9 @@ PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
 PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
-SERVICE_TEMPLATE_SHA256="e8258b1bfc6a7a1ac34d94b3728a849d153247ffd72475c817100d2d17da4e8e"
+SERVICE_TEMPLATE_SHA256="0028eda39a04ee91ecc6a8ca4888e9d26b8a3506c76500b7fe727ab2c2c0bdf7"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="a1ee7f5938fa4e5dc659d6c7c303c738934ec23b07a64e32831624b57afd54ff"
+PROGRAM_SHA256="1ffe27ee60bba1d8ef910c1eef37ae569867392b0cf68a4d4f4189c98abb6d5c"
 VALIDATION_MEDIATOR_SHA256="e7339c3dc68050b3315b70649bfaee0399d4d2b34c4f52bb26dcd036d3eb9d7d"
 PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="ab4c48e2c7ad783b433ecd0e0ec89433891f10cc9da079be86d45ef2089be601"
@@ -328,6 +329,8 @@ validate_inputs() {
   [[ -f "$SCRIPT_DIR/codex-release-stage-v1.py" ]] || fail "Codex update stage mediator is missing"
   [[ -f "$SCRIPT_DIR/codex-release-reconcile-v1.py" ]] \
     || fail "Codex installed release reconcile mediator is missing"
+  [[ -f "$SCRIPT_DIR/codex-release-recovery-activate-v1.py" ]] \
+    || fail "Codex recovery activation mediator is missing"
   [[ -f "$SCRIPT_DIR/codex-release-reconcile-v1.json" ]] \
     || fail "Codex installed release reconcile manifest is missing"
   [[ -f "$SCRIPT_DIR/codex-release-activate-v1.py" ]] || fail "Codex update activation mediator is missing"
@@ -1306,6 +1309,8 @@ apply_install() {
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-stage-v1.py" "$CODEX_UPDATE_MEDIATOR"
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/codex-release-reconcile-v1.py" "$CODEX_RECONCILE_MEDIATOR"
+  install -o root -g root -m 0755 \
+    "$SCRIPT_DIR/codex-release-recovery-activate-v1.py" "$CODEX_RECOVERY_ACTIVATE_MEDIATOR"
   install -o root -g root -m 0600 \
     "$SCRIPT_DIR/codex-release-reconcile-v1.json" "$CODEX_RECONCILE_MANIFEST"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-activate-v1.py" "$CODEX_ACTIVATE_MEDIATOR"
@@ -1472,6 +1477,11 @@ verify() {
       && "$(sha256sum "$CODEX_RECONCILE_MEDIATOR" | cut -d' ' -f1)" \
         == "$(sha256sum "$SCRIPT_DIR/codex-release-reconcile-v1.py" | cut -d' ' -f1)" ]] \
     || fail "Codex installed release reconcile mediator differs from reviewed source"
+  [[ -f "$CODEX_RECOVERY_ACTIVATE_MEDIATOR" && ! -L "$CODEX_RECOVERY_ACTIVATE_MEDIATOR" \
+      && "$(stat -c '%a:%U:%G' "$CODEX_RECOVERY_ACTIVATE_MEDIATOR")" == "755:root:root" \
+      && "$(sha256sum "$CODEX_RECOVERY_ACTIVATE_MEDIATOR" | cut -d' ' -f1)" \
+        == "$(sha256sum "$SCRIPT_DIR/codex-release-recovery-activate-v1.py" | cut -d' ' -f1)" ]] \
+    || fail "Codex recovery activation mediator differs from reviewed source"
   [[ -f "$CODEX_RECONCILE_MANIFEST" && ! -L "$CODEX_RECONCILE_MANIFEST" \
       && "$(stat -c '%a:%U:%G' "$CODEX_RECONCILE_MANIFEST")" == "600:root:root" \
       && "$(sha256sum "$CODEX_RECONCILE_MANIFEST" | cut -d' ' -f1)" \

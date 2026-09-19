@@ -2763,6 +2763,7 @@ print(json.dumps({
             root / "state", "ax42-01", privilege_command=(),
             codex_update_mediator=self.mediator,
             codex_activate_mediator=self.mediator,
+            codex_recovery_activate_mediator=self.mediator,
             codex_rollback_mediator=self.mediator,
             codex_restart_scheduler=self.mediator,
             codex_update_registry=self.registry,
@@ -2801,6 +2802,37 @@ print(json.dumps({
         with self.assertRaisesRegex(MODULE.ProtocolError, "zero"):
             self.state.activate_codex_update({**self.request, "idempotencyKey": str(uuid.uuid4())})
         self.assertEqual(["1"], self.calls.read_text().splitlines())
+
+    def test_recovery_activation_accepts_only_closed_identity_and_blocks_normal_activation(self):
+        key = str(uuid.uuid4())
+        request = {"operation": "ACTIVATE_RECONCILED_CODEX_RELEASES",
+                   "idempotencyKey": key}
+        result = {
+            "schemaVersion": MODULE.CODEX_RECOVERY_ACTIVATE_CAPABILITY,
+            "operation": request["operation"], "idempotencyKey": key,
+            "workerId": "ax42-01", "planId": MODULE.CODEX_RECOVERY_PLAN_ID,
+            "currentInventoryId": MODULE.CODEX_RECOVERY_CURRENT_ID,
+            "candidateInventoryId": MODULE.CODEX_RECOVERY_CANDIDATE_ID,
+            "state": "PENDING", "valuesExposed": False,
+        }
+        with mock.patch.object(self.state, "_recovery_activation_mediator", return_value=result):
+            self.assertEqual("PENDING", self.state.activate_reconciled_codex_releases(request)["state"])
+            with self.assertRaisesRegex(MODULE.ProtocolError, "exact"):
+                self.state.activate_reconciled_codex_releases({**request, "path": "/tmp/foreign"})
+        directory = self.release_root / "recovery-activations"
+        directory.mkdir(parents=True)
+        (directory / (key + ".json")).write_text(json.dumps(result))
+        self.assertTrue(self.state._recovery_activation_pending())
+        with self.assertRaisesRegex(MODULE.ProtocolError, "zero non-terminal"):
+            self.state.activate_codex_update(self.request)
+        with self.assertRaisesRegex(MODULE.ProtocolError, "blocked during recovery"):
+            self.state.stage_codex_update({
+                "operation": "STAGE_CODEX_UPDATE", "planId": str(uuid.uuid4()),
+                "candidateId": str(uuid.uuid4()), "idempotencyKey": str(uuid.uuid4()),
+            })
+        result["state"] = "ACTIVATED"
+        (directory / (key + ".json")).write_text(json.dumps(result))
+        self.assertFalse(self.state._recovery_activation_pending())
 
     def test_conflicting_activation_result_fails_closed(self):
         source = self.mediator.read_text(encoding="utf-8")

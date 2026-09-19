@@ -36,6 +36,7 @@ CODEX_UPDATE_STAGE_CAPABILITY = "codex-update-stage-v1"
 CODEX_UPDATE_ACTIVATE_CAPABILITY = "codex-update-activate-v1"
 CODEX_UPDATE_ROLLBACK_CAPABILITY = "codex-update-rollback-v1"
 CODEX_UPDATE_RECONCILE_CAPABILITY = "codex-release-reconcile-v1"
+CODEX_RECOVERY_ACTIVATE_CAPABILITY = "codex-release-recovery-activate-v1"
 CODEX_RECOVERY_PLAN_ID = "15414500-0000-4000-8000-000000000001"
 CODEX_RECOVERY_CURRENT_ID = "15414500-0000-4000-8000-000000000002"
 CODEX_RECOVERY_CANDIDATE_ID = "15414500-0000-4000-8000-000000000003"
@@ -904,6 +905,7 @@ class WorkerState:
         repository_role_mediator: Path | None = None,
         codex_update_mediator: Path | None = None,
         codex_reconcile_mediator: Path | None = None,
+        codex_recovery_activate_mediator: Path | None = None,
         codex_activate_mediator: Path | None = None,
         codex_rollback_mediator: Path | None = None,
         codex_restart_scheduler: Path | None = None,
@@ -936,6 +938,7 @@ class WorkerState:
         self.repository_role_mediator = repository_role_mediator
         self.codex_update_mediator = codex_update_mediator
         self.codex_reconcile_mediator = codex_reconcile_mediator
+        self.codex_recovery_activate_mediator = codex_recovery_activate_mediator
         self.codex_activate_mediator = codex_activate_mediator
         self.codex_rollback_mediator = codex_rollback_mediator
         self.codex_restart_scheduler = codex_restart_scheduler
@@ -1286,6 +1289,11 @@ class WorkerState:
                     and not self.codex_reconcile_mediator.is_symlink()
                     and os.access(self.codex_reconcile_mediator, os.X_OK)):
                 capabilities.append(CODEX_UPDATE_RECONCILE_CAPABILITY)
+            if (self.codex_recovery_activate_mediator is not None
+                    and self.codex_recovery_activate_mediator.is_file()
+                    and not self.codex_recovery_activate_mediator.is_symlink()
+                    and os.access(self.codex_recovery_activate_mediator, os.X_OK)):
+                capabilities.append(CODEX_RECOVERY_ACTIVATE_CAPABILITY)
             return {
                 "protocolVersion": PROTOCOL,
                 "workerId": self.worker_id,
@@ -1596,6 +1604,18 @@ class WorkerState:
             raise ProtocolError(
                 HTTPStatus.SERVICE_UNAVAILABLE, "codex_update_stage_unavailable",
                 "Codex update stage mediator is unavailable")
+        with self.lock:
+            if self.codex_update_in_progress or self._recovery_activation_pending():
+                raise ProtocolError(HTTPStatus.CONFLICT, "codex_update_active_execution",
+                                    "Codex update stage is blocked during recovery activation")
+            self.codex_update_in_progress = True
+        try:
+            return self._stage_codex_update_unlocked(request)
+        finally:
+            with self.lock:
+                self.codex_update_in_progress = False
+
+    def _stage_codex_update_unlocked(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
             completed = subprocess.run(
                 [str(self.codex_update_mediator),
@@ -1671,7 +1691,7 @@ class WorkerState:
                 HTTPStatus.SERVICE_UNAVAILABLE, "codex_release_reconciliation_unavailable",
                 "installed Codex release reconciliation is unavailable")
         with self.lock:
-            if self.codex_update_in_progress or any(
+            if self.codex_update_in_progress or self._recovery_activation_pending() or any(
                 execution["status"] in NON_TERMINAL for execution in self.executions.values()
             ):
                 raise ProtocolError(
@@ -1745,6 +1765,114 @@ class WorkerState:
             with self.lock:
                 self.codex_update_in_progress = False
 
+    def _recovery_activation_pending(self) -> bool:
+        if self.codex_release_root is None:
+            return False
+        directory = self.codex_release_root / "recovery-activations"
+        if not directory.exists():
+            return False
+        try:
+            for path in directory.iterdir():
+                if path.suffix != ".json" or path.is_symlink():
+                    return True
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if (not isinstance(value, dict) or value.get("state") not in
+                        {"ACTIVATED", "RESTORED"}):
+                    return True
+        except (OSError, json.JSONDecodeError):
+            return True
+        return False
+
+    def _recovery_activation_mediator(self, arguments: list[str],
+                                      request: dict[str, Any] | None = None) -> dict[str, Any]:
+        mediator = self.codex_recovery_activate_mediator
+        if (mediator is None or not mediator.is_file() or mediator.is_symlink()
+                or not os.access(mediator, os.X_OK)):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE,
+                                "codex_recovery_activation_unavailable",
+                                "closed recovery activation is unavailable")
+        try:
+            completed = subprocess.run(
+                [*self.privilege_command, str(mediator), *arguments],
+                input=(json.dumps(request, sort_keys=True, separators=(",", ":"))
+                       if request is not None else None),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE,
+                                "codex_recovery_activation_failed",
+                                "closed recovery activation failed")
+        if completed.returncode != 0:
+            raise ProtocolError(HTTPStatus.CONFLICT,
+                                "codex_recovery_activation_rejected",
+                                "closed recovery activation rejected the state")
+        try:
+            result = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            result = None
+        if (not isinstance(result, dict)
+                or result.get("schemaVersion") != CODEX_RECOVERY_ACTIVATE_CAPABILITY
+                or result.get("operation") != "ACTIVATE_RECONCILED_CODEX_RELEASES"
+                or result.get("workerId") != self.worker_id
+                or result.get("planId") != CODEX_RECOVERY_PLAN_ID
+                or result.get("currentInventoryId") != CODEX_RECOVERY_CURRENT_ID
+                or result.get("candidateInventoryId") != CODEX_RECOVERY_CANDIDATE_ID
+                or result.get("state") not in
+                    {"PENDING", "ACTIVATING", "RESTORING", "ACTIVATED", "RESTORED"}
+                or result.get("valuesExposed") is not False):
+            raise ProtocolError(HTTPStatus.CONFLICT,
+                                "codex_recovery_activation_result_conflict",
+                                "closed recovery activation result is conflicting")
+        return result
+
+    def activate_reconciled_codex_releases(self, request: dict[str, Any]) -> dict[str, Any]:
+        if (not isinstance(request, dict)
+                or set(request) != {"operation", "idempotencyKey"}
+                or request.get("operation") != "ACTIVATE_RECONCILED_CODEX_RELEASES"):
+            raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_codex_recovery_activation",
+                                "exact recovery activation fields are required")
+        try:
+            key = str(uuid.UUID(request["idempotencyKey"]))
+        except (ValueError, TypeError, AttributeError):
+            raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_codex_recovery_activation",
+                                "canonical idempotency key is required")
+        if key != request["idempotencyKey"]:
+            raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_codex_recovery_activation",
+                                "canonical idempotency key is required")
+        with self.lock:
+            existing = (self.codex_release_root is not None and
+                        (self.codex_release_root / "recovery-activations" /
+                         (key + ".json")).is_file())
+            if self.codex_update_in_progress or (self._recovery_activation_pending() and not existing) or any(
+                    execution["status"] in NON_TERMINAL for execution in self.executions.values()):
+                raise ProtocolError(HTTPStatus.CONFLICT, "codex_update_active_execution",
+                                    "recovery activation requires zero non-terminal executions")
+            self.codex_update_in_progress = True
+        try:
+            result = self._recovery_activation_mediator(["--prepare"], request)
+            if result.get("idempotencyKey") != key:
+                raise ProtocolError(HTTPStatus.CONFLICT,
+                                    "codex_recovery_activation_result_conflict",
+                                    "recovery activation idempotency differs")
+            return result
+        finally:
+            with self.lock:
+                self.codex_update_in_progress = False
+
+    def inspect_recovery_activation(self, key: str) -> dict[str, Any]:
+        try:
+            if str(uuid.UUID(key)) != key:
+                raise ValueError("noncanonical")
+        except ValueError:
+            raise ProtocolError(HTTPStatus.BAD_REQUEST, "invalid_codex_recovery_activation",
+                                "canonical idempotency key is required")
+        result = self._recovery_activation_mediator(["--inspect", key])
+        if result.get("idempotencyKey") != key:
+            raise ProtocolError(HTTPStatus.CONFLICT,
+                                "codex_recovery_activation_result_conflict",
+                                "recovery activation idempotency differs")
+        return result
+
     def activate_codex_update(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != CODEX_UPDATE_ACTIVATE_KEYS:
             raise ProtocolError(
@@ -1776,7 +1904,7 @@ class WorkerState:
                 HTTPStatus.SERVICE_UNAVAILABLE, "codex_update_activation_unavailable",
                 "Codex update activation mediator is unavailable")
         with self.lock:
-            if self.codex_update_in_progress or any(
+            if self.codex_update_in_progress or self._recovery_activation_pending() or any(
                 execution["status"] in NON_TERMINAL for execution in self.executions.values()
             ):
                 raise ProtocolError(
@@ -1871,7 +1999,7 @@ class WorkerState:
                 HTTPStatus.SERVICE_UNAVAILABLE, "codex_update_rollback_unavailable",
                 "Codex update rollback mediator is unavailable")
         with self.lock:
-            if self.codex_update_in_progress or any(
+            if self.codex_update_in_progress or self._recovery_activation_pending() or any(
                 execution["status"] in NON_TERMINAL for execution in self.executions.values()
             ):
                 raise ProtocolError(
@@ -1978,7 +2106,7 @@ class WorkerState:
         dispatch_id = request["dispatchId"]
         fingerprint = canonical_hash(request)
         with self.lock:
-            if self.codex_update_in_progress:
+            if self.codex_update_in_progress or self._recovery_activation_pending():
                 raise ProtocolError(
                     HTTPStatus.CONFLICT,
                     "codex_update_activation_in_progress",
@@ -4799,6 +4927,10 @@ class AgentRunHandler(BaseHTTPRequestHandler):
             if path == "/v1/codex/catalog":
                 self._write(HTTPStatus.OK, self.server.state.codex_catalog())
                 return
+            if path.startswith("/v1/codex/update/activate-recovery/"):
+                key = path.rsplit("/", 1)[-1]
+                self._write(HTTPStatus.OK, self.server.state.inspect_recovery_activation(key))
+                return
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[:2] == ["v1", "executions"]:
                 self._write(HTTPStatus.OK, self.server.state.get(parts[2]))
@@ -4895,6 +5027,10 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     self.server.state.reconcile_installed_codex_releases(body),
                 )
+                return
+            if path == "/v1/codex/update/activate-recovery":
+                self._write(HTTPStatus.OK,
+                            self.server.state.activate_reconciled_codex_releases(body))
                 return
             if path == "/v1/codex/update/activate":
                 self._write(HTTPStatus.OK, self.server.state.activate_codex_update(body))
@@ -5021,6 +5157,11 @@ def main() -> int:
         default=Path("/usr/local/libexec/atenea/codex-release-reconcile-v1.py"),
     )
     parser.add_argument(
+        "--codex-recovery-activate-mediator",
+        type=Path,
+        default=Path("/usr/local/libexec/atenea/codex-release-recovery-activate-v1.py"),
+    )
+    parser.add_argument(
         "--codex-update-registry",
         type=Path,
         default=Path("/etc/atenea-worker/codex-release-stage-v1.json"),
@@ -5078,6 +5219,7 @@ def main() -> int:
         repository_role_mediator=args.repository_role_mediator,
         codex_update_mediator=args.codex_update_mediator,
         codex_reconcile_mediator=args.codex_reconcile_mediator,
+        codex_recovery_activate_mediator=args.codex_recovery_activate_mediator,
         codex_activate_mediator=args.codex_activate_mediator,
         codex_rollback_mediator=args.codex_rollback_mediator,
         codex_restart_scheduler=args.codex_restart_scheduler,
