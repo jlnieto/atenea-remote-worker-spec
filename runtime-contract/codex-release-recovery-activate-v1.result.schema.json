@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.internal/contracts/codex-release-recovery-activate-v1.result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "operation", "idempotencyKey", "workerId", "planId",
+    "currentInventoryId", "candidateInventoryId", "state", "gates",
+    "automaticRestore", "valuesExposed"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "codex-release-recovery-activate-v1"},
+    "operation": {"const": "ACTIVATE_RECONCILED_CODEX_RELEASES"},
+    "idempotencyKey": {"type": "string", "format": "uuid"},
+    "workerId": {"const": "ax42-01"},
+    "planId": {"const": "15414500-0000-4000-8000-000000000001"},
+    "currentInventoryId": {"const": "15414500-0000-4000-8000-000000000002"},
+    "candidateInventoryId": {"const": "15414500-0000-4000-8000-000000000003"},
+    "state": {"enum": ["PENDING", "ACTIVATING", "RESTORING", "ACTIVATED", "RESTORED"]},
+    "gates": {
+      "type": "object",
+      "additionalProperties": {"const": "PASS"}
+    },
+    "automaticRestore": {"enum": ["NOT_REQUIRED", "PASS"]},
+    "currentBeforeFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "currentAfterFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "previousAfterFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "inventorySha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "planSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "failure": {"type": "string"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "valuesExposed": {"const": false}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "ACTIVATED"}}, "required": ["state"]},
+      "then": {
+        "required": ["currentBeforeFingerprint", "currentAfterFingerprint",
+                     "previousAfterFingerprint", "inventorySha256", "planSha256", "completedAt"],
+        "properties": {
+          "gates": {
+            "required": ["hashes", "catalog", "version", "workerHealth",
+                         "fixedCanary", "zeroNonTerminalRuns"]
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "RESTORED"}}, "required": ["state"]},
+      "then": {
+        "required": ["currentAfterFingerprint", "inventorySha256", "planSha256", "completedAt"],
+        "properties": {"automaticRestore": {"const": "PASS"}}
+      }
+    }
+  ]
+}

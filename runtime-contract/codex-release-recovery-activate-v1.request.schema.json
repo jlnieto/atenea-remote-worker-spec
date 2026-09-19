@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.internal/contracts/codex-release-recovery-activate-v1.request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "idempotencyKey"],
+  "properties": {
+    "operation": {"const": "ACTIVATE_RECONCILED_CODEX_RELEASES"},
+    "idempotencyKey": {"type": "string", "format": "uuid"}
+  }
+}
