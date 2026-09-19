@@ -34,6 +34,7 @@ BRANCH = "main"
 BASE_COMMIT: str | None = None
 MANIFEST_SHA256 = "327a0c521017109d7c0067a11e7d8c3ad2079de4ea78d28296848f9de39c164b"
 CODEX = "/srv/atenea/worker/codex-releases-v1/current/bin/codex"
+CODEX_CURRENT = str(Path(CODEX).parent.parent)
 GIT_COMMON_DIR = Path("/srv/atenea/repositories/atenea.git")
 CHANGE_WORKSPACE_PARENT = Path("/srv/atenea/workspaces/changes")
 CHANGE_WORKSPACE_OWNER = "atenea-worker"
@@ -1485,6 +1486,9 @@ def sandbox_command(
         "--ro-bind", str(instruction_mask_path), "/home/jose/.codex/AGENTS.md",
         "--ro-bind", str(instruction_mask_path), "/home/jose/.codex/AGENTS.override.md",
         "--dir", "/srv", "--dir", "/srv/atenea", "--dir", "/srv/atenea/workspaces",
+        "--dir", "/srv/atenea/worker",
+        "--dir", str(Path(CODEX_CURRENT).parent),
+        "--ro-bind", CODEX_CURRENT, CODEX_CURRENT,
         "--dir", "/srv/atenea/workspaces/sessions",
         "--dir", str(worktree.parent),
         "--bind", str(worktree), str(worktree),
