@@ -247,6 +247,24 @@ verify_validation_sudoers() {
     || fail "validation sudo authority is not exact"
 }
 
+recovery_activation_sudoers_content() {
+  local uuid_pattern='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  printf 'atenea-worker ALL=(root) NOPASSWD: %s --prepare\n' \
+    "$CODEX_RECOVERY_ACTIVATE_MEDIATOR"
+  printf 'atenea-worker ALL=(root) NOPASSWD: %s ^--inspect %s$\n' \
+    "$CODEX_RECOVERY_ACTIVATE_MEDIATOR" "$uuid_pattern"
+}
+
+verify_recovery_activation_sudoers() {
+  local -a actual_rules expected_rules
+  mapfile -t actual_rules < <(grep -F -- "$CODEX_RECOVERY_ACTIVATE_MEDIATOR" "$SUDOERS_FILE")
+  mapfile -t expected_rules < <(recovery_activation_sudoers_content)
+  [[ "${#actual_rules[@]}" -eq 2 \
+      && "${actual_rules[0]}" == "${expected_rules[0]}" \
+      && "${actual_rules[1]}" == "${expected_rules[1]}" ]] \
+    || fail "recovery activation sudo authority is not exact"
+}
+
 verify_beautips_project_runner_file_identity() {
   [[ -f "$BEAUTIPS_PROJECT_RUNNER" && ! -L "$BEAUTIPS_PROJECT_RUNNER" \
       && "$(stat -c '%a:%U:%G' "$BEAUTIPS_PROJECT_RUNNER")" == "755:root:root" ]] \
@@ -1362,6 +1380,7 @@ apply_install() {
     done
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ensure *\n' "$ROLE_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s\n' "$CODEX_RECONCILE_MEDIATOR"
+    recovery_activation_sudoers_content
     printf 'atenea-worker ALL=(root) NOPASSWD: %s --registry %s --release-root %s --release-owner-uid %s\n' \
       "$CODEX_ACTIVATE_MEDIATOR" "$CODEX_UPDATE_REGISTRY" "$CODEX_RELEASE_ROOT" "$(id -u atenea-worker)"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s --registry %s --release-root %s --release-owner-uid %s --restart-scheduler %s\n' \
@@ -1525,6 +1544,7 @@ verify() {
   visudo -cf "$SUDOERS_FILE" >/dev/null
   verify_project_runner_sudoers
   verify_validation_sudoers
+  verify_recovery_activation_sudoers
   printf '%s\n' 'agent-run-worker-v1 verification passed'
 }
 
