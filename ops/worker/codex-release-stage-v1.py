@@ -25,6 +25,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "codex-release-stage-v1"
+RESULT_SCHEMA_VERSION = "codex-update-stage-v1"
 WORKER_ID = "ax42-01"
 REQUEST_FIELDS = {"operation", "planId", "candidateId", "idempotencyKey"}
 RESULT_FIELDS = {
@@ -325,7 +326,7 @@ def stage(args: argparse.Namespace, request: dict[str, str]) -> dict[str, Any]:
         raise StageError("staging changed a canonical release link")
 
     result: dict[str, Any] = {
-        "schemaVersion": SCHEMA_VERSION,
+        "schemaVersion": RESULT_SCHEMA_VERSION,
         "operation": "STAGE_CODEX_UPDATE",
         "workerId": WORKER_ID,
         "planId": request["planId"],
