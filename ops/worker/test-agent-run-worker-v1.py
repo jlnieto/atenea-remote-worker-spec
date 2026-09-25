@@ -1264,6 +1264,56 @@ print(json.dumps({"sessionId": session,
         with self.assertRaisesRegex(MODULE.ProtocolError, "not exact"):
             self.state.fingerprint_source_tree(foreign)
 
+    def test_change_owned_source_tree_is_resolved_only_from_sealed_identity(self):
+        change_key = str(uuid.uuid4())
+        root = Path(self.temporary.name) / "changes" / change_key
+        root.mkdir(parents=True)
+        change_worktree = root / "atenea"
+        subprocess.run(
+            ["git", "clone", "-q", str(self.worktree), str(change_worktree)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "-q", self.retained_head],
+            cwd=change_worktree,
+            check=True,
+        )
+        (change_worktree / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+        identity = f"remote:ax42-01:change:{change_key}"
+        record = {
+            "schemaVersion": 1,
+            "protocolVersion": "development-change-workspace/v1",
+            "changeKey": change_key,
+            "databaseProjectId": 1,
+            "projectId": MODULE.PROJECT_ID,
+            "baseCommit": self.retained_head,
+            "workspaceBranch": f"atenea/change-{change_key}",
+            "workspaceIdentity": identity,
+            "workerId": "ax42-01",
+        }
+        record_path = root / "workspace-v1.json"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        record_path.chmod(0o600)
+        request = {
+            "sessionId": self.session_id,
+            "workspaceIdentity": identity,
+            "projectId": MODULE.PROJECT_ID,
+            "repository": MODULE.PROJECT_REPOSITORY,
+            "branch": MODULE.PROJECT_BRANCH,
+            "commit": self.retained_head,
+            "manifestSha256": MODULE.PROJECT_MANIFEST_SHA256,
+        }
+        with mock.patch.object(MODULE, "DEVELOPMENT_CHANGE_WORKSPACE_ROOT", root.parent):
+            observed = self.state.fingerprint_source_tree(request)
+            foreign = dict(request)
+            foreign["commit"] = "f" * 40
+            with self.assertRaises(MODULE.ProtocolError):
+                self.state.fingerprint_source_tree(foreign)
+
+        self.assertEqual(identity, observed["workspaceIdentity"])
+        self.assertEqual(1, observed["untrackedChangeCount"])
+        self.assertNotIn("candidate.txt", json.dumps(observed))
+
     def validation_request(self, validation_id=None):
         self.state._observe_project_commit = lambda _route: self.retained_head
         source_request = {
@@ -1374,6 +1424,32 @@ print(json.dumps({"sessionId": session,
         conflicting["definitionRevision"] = "atenea-web-build-v1"
         with self.assertRaisesRegex(MODULE.ProtocolError, "different immutable request"):
             self.state.start_validation(conflicting)
+
+    def test_change_validation_mediator_receives_exact_workspace_identity(self):
+        request = self.durable_validation_request()
+        request["workspaceIdentity"] = (
+            "remote:ax42-01:change:59315b6e-59bc-4884-9def-356e1ca86ef4"
+        )
+        validation = {
+            "validationDefinition": request["operation"],
+            "sessionId": request["sessionId"],
+            "workspaceIdentity": request["workspaceIdentity"],
+            "sourceTreeFingerprintSha256": request["sourceTreeFingerprintSha256"],
+            "operationId": request["operationId"],
+            "definitionRevision": request["definitionRevision"],
+        }
+        completed = subprocess.CompletedProcess(
+            [], 0,
+            stdout=json.dumps(self.mediator_observation(request, "RUNNING")),
+            stderr="",
+        )
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            observed = self.state._validation_mediator_observation("start", validation)
+
+        command = run.call_args.args[0]
+        self.assertIn(request["workspaceIdentity"], command)
+        self.assertNotIn("/srv/atenea/workspaces/changes", command)
+        self.assertEqual("RUNNING", observed["state"])
 
     def test_durable_validation_cancel_before_start_is_repeatable_and_owned(self):
         request = self.durable_validation_request()

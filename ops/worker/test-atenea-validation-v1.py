@@ -304,12 +304,86 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             "KillMode=control-group",
             "ProtectSystem=strict",
             "RestrictAddressFamilies=AF_UNIX",
-            f"ReadOnlyPaths={MODULE.WORKSPACE_ROOT} {MODULE.CONFIG.parent} /run/user",
+            f"ReadOnlyPaths={MODULE.WORKSPACE_ROOT} {MODULE.CHANGE_WORKSPACE_ROOT} "
+            f"{MODULE.CONFIG.parent} /run/user {MODULE.RUNTIME_ADMISSION}",
+            "ReadWritePaths=/srv/atenea/artifacts /srv/atenea/worker/validation-broker-v1 "
+            "/srv/atenea/worker/runtime-admission-v1",
             "--durable-execute\0ANDROID_BUILD",
         ):
             self.assertIn(required, rendered)
         self.assertNotIn("--shell", rendered)
         self.assertNotIn("--privileged", rendered)
+
+    def test_change_identity_is_exact_and_ephemeral_slot_is_released(self):
+        session_id = "11111111-1111-4111-8111-111111111111"
+        change_key = "33333333-3333-4333-8333-333333333333"
+        operation_id = "22222222-2222-4222-8222-222222222222"
+        identity = MODULE.durable_identity([
+            "ANDROID_BUILD",
+            session_id,
+            f"remote:ax42-01:change:{change_key}",
+            "a" * 64,
+            operation_id,
+        ])
+        self.assertEqual(f"remote:ax42-01:change:{change_key}", identity["workspaceIdentity"])
+        calls = []
+
+        def admission(operation, observed_session):
+            calls.append((operation, observed_session))
+            return {
+                "sessionId": session_id,
+                "record": {"normal": {"slot": "slot3"}},
+            }
+
+        slot = ("atenea-slot3", 1103, Path("/var/lib/atenea-slots/slot3"), Path("/run/user/1103/docker.sock"))
+        with mock.patch.object(MODULE, "admission_call", side_effect=admission), mock.patch.object(
+            MODULE, "slot_authority", return_value=slot
+        ):
+            with MODULE.validation_slot(session_id, MODULE.DEFINITIONS["ANDROID_BUILD"], None) as observed:
+                self.assertEqual(slot, observed)
+        self.assertEqual(
+            [
+                ("acquire-normal", session_id),
+                ("acquire-heavy", session_id),
+                ("release-heavy", session_id),
+                ("release-normal", session_id),
+            ],
+            calls,
+        )
+
+        with self.assertRaises(MODULE.Rejected):
+            MODULE.durable_identity([
+                "ANDROID_BUILD", session_id, "remote:ax42-01:change:../../foreign",
+                "a" * 64, operation_id,
+            ])
+
+    def test_failed_heavy_admission_releases_the_normal_slot(self):
+        session_id = "11111111-1111-4111-8111-111111111111"
+        calls = []
+
+        def admission(operation, observed_session):
+            calls.append((operation, observed_session))
+            if operation == "acquire-heavy":
+                raise MODULE.Rejected("validation authority rejected")
+            return {
+                "sessionId": session_id,
+                "record": {"normal": {"slot": "slot2"}},
+            }
+
+        with mock.patch.object(MODULE, "admission_call", side_effect=admission):
+            with self.assertRaises(MODULE.Rejected):
+                with MODULE.validation_slot(
+                    session_id, MODULE.DEFINITIONS["ANDROID_BUILD"], None
+                ):
+                    self.fail("heavy validation must not start")
+        self.assertEqual(
+            [
+                ("acquire-normal", session_id),
+                ("acquire-heavy", session_id),
+                ("release-normal", session_id),
+            ],
+            calls,
+        )
 
 
 if __name__ == "__main__":
