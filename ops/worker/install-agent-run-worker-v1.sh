@@ -1518,7 +1518,7 @@ verify() {
     || fail "Codex update restart scheduler differs from the reviewed source"
   if [[ -e "$CODEX_UPDATE_REGISTRY" ]]; then
     [[ -f "$CODEX_UPDATE_REGISTRY" && ! -L "$CODEX_UPDATE_REGISTRY" \
-        && "$(stat -c '%a:%U:%G' "$CODEX_UPDATE_REGISTRY")" == "600:root:root" ]] \
+        && "$(stat -c '%a:%U:%G' "$CODEX_UPDATE_REGISTRY")" == "640:root:atenea" ]] \
       || fail "Codex update registry ownership or mode is invalid"
   fi
   [[ -f "$PLATFORM_INSTRUCTIONS" && ! -L "$PLATFORM_INSTRUCTIONS" \
