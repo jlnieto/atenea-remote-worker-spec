@@ -43,6 +43,7 @@ CODEX_RECOVERY_CANDIDATE_ID = "15414500-0000-4000-8000-000000000003"
 CODEX_RECOVERY_CURRENT_DIGEST = "37de474b157b0313c73ddc05928855f61517676138827df51660fe8715dca14f"
 CODEX_RECOVERY_CANDIDATE_DIGEST = "56da3312ccb2109a2f4e0d71b003f08d33244ec6f5863e8fc7f6f24b7a6489c2"
 CODEX_RECOVERY_CATALOG_REVISION = "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187"
+CODEX_RECOVERY_VERSION = "0.145.0"
 DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
 DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
 DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publication/v1"
@@ -50,8 +51,15 @@ DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
 CLOSED_VALIDATION_CAPABILITY = "closed-validation-broker/v1"
 CLOSED_VALIDATION_PATH_PREFIX = "/v1/project-workspaces/validations/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
-CODEX_VERSION = "0.145.0"
+CODEX_VERSION = "0.157.0"
 CODEX_MODELS = [
+    {
+        "modelId": "gpt-6-sol",
+        "displayName": "GPT-6 Sol",
+        "supportedEfforts": ["low", "medium", "high", "xhigh", "max"],
+        "defaultEffort": "high",
+        "availability": "AVAILABLE",
+    },
     {
         "modelId": "gpt-5.6-sol",
         "displayName": "GPT-5.6 Sol",
@@ -1734,7 +1742,7 @@ class WorkerState:
                     or result.get("currentInventoryId") != CODEX_RECOVERY_CURRENT_ID
                     or result.get("candidateInventoryId") != CODEX_RECOVERY_CANDIDATE_ID
                     or result.get("currentVersion") != "0.154.0"
-                    or result.get("candidateVersion") != CODEX_VERSION
+                    or result.get("candidateVersion") != CODEX_RECOVERY_VERSION
                     or result.get("currentReleaseDigestSha256") != CODEX_RECOVERY_CURRENT_DIGEST
                     or result.get("candidateReleaseDigestSha256") != CODEX_RECOVERY_CANDIDATE_DIGEST
                     or result.get("candidateCatalogRevision") != CODEX_RECOVERY_CATALOG_REVISION

@@ -25,9 +25,12 @@ CAPABILITY = "project-codex-v1"
 PROFILED_CAPABILITY = "project-codex-v2"
 IMAGE_CAPABILITY = "project-codex-v3"
 CHANGE_CAPABILITY = "project-codex-v4"
-CODEX_VERSION = "0.145.0"
-CODEX_MODEL = "gpt-5.6-sol"
-CODEX_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
+CODEX_VERSION = "0.157.0"
+CODEX_MODEL = "gpt-6-sol"
+CODEX_MODEL_EFFORTS = {
+    "gpt-6-sol": {"low", "medium", "high", "xhigh", "max"},
+    "gpt-5.6-sol": {"none", "low", "medium", "high", "xhigh", "max"},
+}
 PROJECT_ID = "atenea"
 REPOSITORY = "https://github.com/jlnieto/atenea.git"
 BRANCH = "main"
@@ -111,7 +114,7 @@ MATERIALIZED_NAME = re.compile(
     r"(?P<extension>\.png|\.jpg|\.webp)$"
 )
 CODEX_CATALOG_REVISION = (
-    "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187"
+    "1372647bd09888c3305147b9a7cf6889b5b4526e04d332971f7e3a43ccb7efc7"
 )
 SAFE_PROGRESS_MESSAGES = {
     "CODEX_STARTED": "Codex started the accepted turn.",
@@ -409,8 +412,8 @@ def validate_request(request: Any, config: dict[str, Any]) -> tuple[dict[str, An
     ):
         reject("workspace ownership rejected")
     if capability in {PROFILED_CAPABILITY, IMAGE_CAPABILITY, CHANGE_CAPABILITY} and (
-        workload.get("modelId") != CODEX_MODEL
-        or workload.get("reasoningEffort") not in CODEX_EFFORTS
+        workload.get("reasoningEffort") not in CODEX_MODEL_EFFORTS.get(
+            workload.get("modelId"), set())
         or workload.get("catalogRevision") != CODEX_CATALOG_REVISION
         or workload.get("codexVersion") != CODEX_VERSION
     ):
