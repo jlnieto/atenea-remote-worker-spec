@@ -25,11 +25,21 @@ digest with the fixed value above before copying it to AX42.
    inventory still has 0.145.0 CURRENT, 0.154.0 PREVIOUS, no other NONE
    candidate, and no nonterminal AX42 AgentRuns. Confirm the managed AX42
    `current` link and installed worker/runner still match those facts.
-2. Fast-forward the app operational mirror from `github/main` using
-   `docs/mobile-server-operations.md`, then run `scripts/deploy-prod.sh` from
-   that source. Check backend health and V83's single DISCOVERED/NONE candidate
-   with the fixed inventory ID and archive digest. Do not continue if Flyway
-   rejects the reviewed 0.145.0 state.
+2. Fast-forward the clean app production checkout to `github/main` after the
+   ancestry check in `docs/mobile-server-operations.md`. On the Atenea host,
+   the current backend is an immutable `atenea-app:<commit>` image built from
+   the root `Dockerfile`, with a commit-specific Compose override that keeps
+   `ATENEA_CODEX_MANAGED_UPDATES_ENABLED=true`. The base Compose alone pins an
+   older image and sets that flag to `false`, so `scripts/deploy-prod.sh` alone
+   cannot deploy this update. Build `atenea-app:<new-main-commit>` from the
+   exact fast-forwarded checkout, carrying the commit as
+   `org.opencontainers.image.revision`. Create a new mode-0600 override for
+   only `atenea-backend-prod`, setting that image and the managed-updates flag
+   to `true`; preserve the previous override. Check the effective Compose
+   image, flag and other services before recreating only `atenea-backend-prod`
+   with `--no-deps --no-build`. Check backend health, image/revision and V83's
+   single DISCOVERED/NONE candidate with the fixed inventory ID and archive
+   digest. Do not continue if Flyway rejects the reviewed 0.145.0 state.
 3. As a platform administrator, create the managed update plan in Atenea while
    its worker still advertises 0.145.0. Require state READY and capture its
    `planId`. Place the verified archive at
