@@ -44,10 +44,12 @@ digest with the fixed value above before copying it to AX42.
    its worker still advertises 0.145.0. Require state READY and capture its
    `planId`. Place the verified archive at
    `/srv/atenea/worker/codex-releases-v1/inbox/1d586e4a-0409-453a-9ea9-762e99d1438a.tar.gz`
-   on AX42, owned by root with mode 0600. Add exactly this candidate and the
-   captured `planId` to the root-owned
+   on AX42, owned by `root:atenea` with mode 0640. Add exactly this candidate and the
+   captured `planId` to the `root:atenea` registry
    `/etc/atenea-worker/codex-release-stage-v1.json`, preserving the existing
-   recovery entry and mode 0600. The candidate fields are `planId`,
+   recovery entry and mode 0640. The stage mediator runs as `atenea-worker`
+   (group `atenea`) and needs read access to both files; ownership remains
+   root and neither file may be group-writable. The candidate fields are `planId`,
    `candidateId`, `codexVersion`, `releaseDigestSha256`, and `catalogRevision`.
 4. Use Atenea's **Verificar** action to stage the planned candidate. Require
    STAGED and unchanged `current`/`previous` links. Check zero nonterminal
