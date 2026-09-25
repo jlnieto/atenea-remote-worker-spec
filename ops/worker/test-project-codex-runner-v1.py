@@ -1297,23 +1297,23 @@ class ProjectCodexContractTest(unittest.TestCase):
 
         self.assertEqual(1, command.count("--model"))
         model_index = command.index("--model")
-        self.assertEqual("gpt-5.6-sol", command[model_index + 1])
+        self.assertEqual("gpt-6-sol", command[model_index + 1])
         self.assertIn('model_reasoning_effort="xhigh"', command)
         self.assertNotIn("--provider", command)
         self.assertNotIn("--profile", command)
         self.assertEqual(
             {
-                "modelId": "gpt-5.6-sol",
+                "modelId": "gpt-6-sol",
                 "reasoningEffort": "xhigh",
                 "catalogRevision": MODULE.CODEX_CATALOG_REVISION,
-                "codexVersion": "0.145.0",
+                "codexVersion": "0.157.0",
             },
             MODULE.effective_profile(workload),
         )
 
     def test_profiled_runner_rejects_installed_codex_version_drift(self):
         workload = self.profiled_workload()
-        accepted = subprocess.CompletedProcess([], 0, "codex-cli 0.145.0\n", "")
+        accepted = subprocess.CompletedProcess([], 0, "codex-cli 0.157.0\n", "")
         with patch.object(MODULE.subprocess, "run", return_value=accepted) as run:
             MODULE.validate_codex_version(workload)
         self.assertEqual([MODULE.CODEX, "--version"], run.call_args.args[0])

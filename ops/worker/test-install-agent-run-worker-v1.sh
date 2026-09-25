@@ -39,8 +39,8 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "1ffe27ee60bba1d8ef910c1eef37ae569867392b0cf68a4d4f4189c98abb6d5c" ]] \
-  || fail "recovery activation admission fingerprint is not exact"
+    == "fe8c6983ea76356886c3843097e62096fae468e6f5a56ad2ba7498abad39e50b" ]] \
+  || fail "worker upgrade admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
 install -m 0755 "${SCRIPT_DIR}/agent-run-worker-v1.py" "${PROMOTED_PROGRAM}"

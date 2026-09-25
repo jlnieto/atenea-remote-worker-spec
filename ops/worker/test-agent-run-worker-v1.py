@@ -753,16 +753,19 @@ class WorkerStateTest(unittest.TestCase):
 
         self.assertIn(MODULE.CODEX_CATALOG_CAPABILITY, self.state.health()["capabilities"])
         self.assertEqual("codex-model-catalog-v1", first["schemaVersion"])
-        self.assertEqual("0.145.0", first["codexVersion"])
+        self.assertEqual("0.157.0", first["codexVersion"])
         self.assertEqual(
-            "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187",
+            "1372647bd09888c3305147b9a7cf6889b5b4526e04d332971f7e3a43ccb7efc7",
             first["catalogRevision"],
         )
         self.assertEqual(first["catalogRevision"], second["catalogRevision"])
         self.assertEqual(
-            ["none", "low", "medium", "high", "xhigh", "max"],
+            ["low", "medium", "high", "xhigh", "max"],
             first["models"][0]["supportedEfforts"],
         )
+        self.assertEqual("gpt-6-sol", first["models"][0]["modelId"])
+        self.assertEqual("high", first["models"][0]["defaultEffort"])
+        self.assertEqual("gpt-5.6-sol", first["models"][1]["modelId"])
 
 
 class WorkspaceActivationTest(unittest.TestCase):
@@ -3261,7 +3264,7 @@ class WorkerHttpTest(unittest.TestCase):
             set(catalog),
         )
         self.assertEqual("http-worker", catalog["workerId"])
-        self.assertEqual("gpt-5.6-sol", catalog["models"][0]["modelId"])
+        self.assertEqual("gpt-6-sol", catalog["models"][0]["modelId"])
 
     def test_exact_reconcile_and_doctor_routes_require_closed_ownership(self):
         request = {
