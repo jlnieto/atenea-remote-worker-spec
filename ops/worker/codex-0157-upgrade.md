@@ -51,7 +51,11 @@ digest with the fixed value above before copying it to AX42.
    (group `atenea`) and needs read access to both files; ownership remains
    root and neither file may be group-writable. The candidate fields are `planId`,
    `candidateId`, `codexVersion`, `releaseDigestSha256`, and `catalogRevision`.
-4. Use Atenea's **Verificar** action to stage the planned candidate. Require
+4. Install only the reviewed `codex-release-stage-v1.py` mediator from the
+   merged platform source at its installed path, preserving `root:root 0755`.
+   This corrects the stage result schema expected by the running worker and
+   does not restart it or alter its catalog. Verify the installed source hash.
+   Then use Atenea's **Verificar** action to stage the planned candidate. Require
    STAGED and unchanged `current`/`previous` links. Check zero nonterminal
    AgentRuns again. Install the reviewed platform worker source using its
    `install-agent-run-worker-v1.sh apply` procedure and verify the service is

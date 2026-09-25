@@ -122,6 +122,7 @@ for name in ("app-server.schema.json", "cli.schema.json"):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         result = json.loads(completed.stdout)
+        self.assertEqual("codex-update-stage-v1", result["schemaVersion"])
         self.assertEqual("STAGED", result["state"])
         self.assertEqual(VERSION, result["codexVersion"])
         self.assertEqual("PASS", result["releaseVerification"])
