@@ -349,6 +349,7 @@ PROJECT_ID = "atenea"
 PROJECT_REPOSITORY = "https://github.com/jlnieto/atenea.git"
 PROJECT_BRANCH = "main"
 PROJECT_MANIFEST_SHA256 = "327a0c521017109d7c0067a11e7d8c3ad2079de4ea78d28296848f9de39c164b"
+DEVELOPMENT_CHANGE_WORKSPACE_ROOT = Path("/srv/atenea/workspaces/changes")
 INSTRUCTION_BUNDLE_REVISION = "atenea-reviewed-instruction-bundle-v1"
 PLATFORM_INSTRUCTION_SHA256 = "44c578a286eb50b35612be0b6c38d59a503e6fee1ecf6cd0339415af018cdf0d"
 PROJECT_INSTRUCTION_PATH = "AGENTS.md"
@@ -2130,6 +2131,20 @@ class WorkerState:
                     )
                 return self._public(existing), False
 
+            if any(
+                validation.get("state") in VALIDATION_NON_TERMINAL
+                and (
+                    validation.get("sessionId") == request["sessionId"]
+                    or validation.get("workspaceIdentity") == request["workspaceIdentity"]
+                )
+                for validation in self.validations.values()
+            ):
+                raise ProtocolError(
+                    HTTPStatus.CONFLICT,
+                    "validation_in_progress",
+                    "WorkSession or workspace already owns a non-terminal validation",
+                )
+
             if change_aware:
                 self._validate_change_project_shape(request, workload)
                 self._validate_change_project_ownership(request, workload)
@@ -2889,6 +2904,15 @@ class WorkerState:
                 "sessionId must be a canonical UUID",
             )
         route = self._project_route(request.get("projectId"))
+        change_prefix = f"remote:{self.worker_id}:change:"
+        change_key = str(request.get("workspaceIdentity", "")).removeprefix(change_prefix)
+        if (
+            str(request.get("workspaceIdentity", "")).startswith(change_prefix)
+            and canonical_uuid(change_key) is not None
+        ):
+            return self._fingerprint_change_source_tree(
+                request, session_id, route, change_key
+            )
         exact = {
             "sessionId": session_id,
             "workspaceIdentity": f"remote:{self.worker_id}:work-session:{session_id}",
@@ -2959,6 +2983,93 @@ class WorkerState:
             "valuesExposed": False,
         }
 
+    def _fingerprint_change_source_tree(
+        self,
+        request: dict[str, Any],
+        session_id: str,
+        route: dict[str, Any] | None,
+        change_key: str,
+    ) -> dict[str, Any]:
+        exact = {
+            "sessionId": session_id,
+            "workspaceIdentity": f"remote:{self.worker_id}:change:{change_key}",
+            "projectId": PROJECT_ID,
+            "repository": PROJECT_REPOSITORY,
+            "branch": PROJECT_BRANCH,
+            "manifestSha256": PROJECT_MANIFEST_SHA256,
+        }
+        if (
+            request.get("sessionId") != session_id
+            or route is None
+            or any(request.get(key) != value for key, value in exact.items())
+        ):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "source_tree_ownership_conflict",
+                "change source tree identity is not exact",
+            )
+        root = DEVELOPMENT_CHANGE_WORKSPACE_ROOT / change_key
+        record_path = root / "workspace-v1.json"
+        worktree = root / "atenea"
+        try:
+            observed = record_path.lstat()
+            record = strict_json_object(record_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "source_tree_unavailable",
+                "change source tree authority is unavailable",
+            ) from error
+        required = {
+            "schemaVersion", "protocolVersion", "changeKey", "databaseProjectId",
+            "projectId", "baseCommit", "workspaceBranch", "workspaceIdentity", "workerId",
+        }
+        legacy = required | {
+            "repository", "repositoryBranch", "initialSourceFingerprintSha256", "recordSha256",
+        }
+        commit = request.get("commit")
+        if (
+            record_path.is_symlink()
+            or not record_path.is_file()
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) != 0o600
+            or frozenset(record) not in {frozenset(required), frozenset(legacy)}
+            or record.get("schemaVersion") != 1
+            or record.get("protocolVersion") != "development-change-workspace/v1"
+            or record.get("changeKey") != change_key
+            or record.get("projectId") != PROJECT_ID
+            or record.get("workspaceIdentity") != exact["workspaceIdentity"]
+            or record.get("workspaceBranch") != f"atenea/change-{change_key}"
+            or record.get("workerId") != self.worker_id
+            or record.get("baseCommit") != commit
+            or not isinstance(commit, str)
+            or COMMIT_PATTERN.fullmatch(commit) is None
+            or not worktree.is_dir()
+            or worktree.is_symlink()
+        ):
+            raise ProtocolError(
+                HTTPStatus.FORBIDDEN,
+                "source_tree_ownership_conflict",
+                "persisted change source tree ownership is incomplete or conflicting",
+            )
+        head = self._draft_git(worktree, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+        if head != commit:
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "source_tree_head_moved",
+                "change source tree HEAD no longer equals its owned base commit",
+            )
+        source = self._source_tree_fingerprint(worktree, head)
+        return {
+            "state": "observed",
+            "sessionId": session_id,
+            "workspaceIdentity": exact["workspaceIdentity"],
+            "projectId": PROJECT_ID,
+            "headCommit": head,
+            **source,
+            "valuesExposed": False,
+        }
+
     def start_validation(
         self, request: dict[str, Any]
     ) -> tuple[dict[str, Any], bool]:
@@ -2979,6 +3090,19 @@ class WorkerState:
                         ),
                     )
                 return self._public_validation(existing), False
+            if any(
+                execution.get("status") in NON_TERMINAL
+                and (
+                    execution.get("sessionId") == request["sessionId"]
+                    or execution.get("workspaceIdentity") == request["workspaceIdentity"]
+                )
+                for execution in self.executions.values()
+            ):
+                raise ProtocolError(
+                    HTTPStatus.CONFLICT,
+                    "execution_in_progress",
+                    "WorkSession or workspace already owns a non-terminal execution",
+                )
 
         source_request = {key: request[key] for key in SOURCE_TREE_FINGERPRINT_KEYS}
         source = self.fingerprint_source_tree(source_request)
@@ -3380,16 +3504,23 @@ class WorkerState:
         mediator = self.project_validation_mediator
         if mediator is None or not mediator.is_file():
             raise OSError("validation mediator unavailable")
+        arguments = [
+            *self.privilege_command,
+            str(mediator),
+            action,
+            validation["validationDefinition"],
+            validation["sessionId"],
+        ]
+        if validation["workspaceIdentity"] != (
+            f"remote:{self.worker_id}:work-session:{validation['sessionId']}"
+        ):
+            arguments.append(validation["workspaceIdentity"])
+        arguments.extend((
+            validation["sourceTreeFingerprintSha256"],
+            validation["operationId"],
+        ))
         completed = subprocess.run(
-            [
-                *self.privilege_command,
-                str(mediator),
-                action,
-                validation["validationDefinition"],
-                validation["sessionId"],
-                validation["sourceTreeFingerprintSha256"],
-                validation["operationId"],
-            ],
+            arguments,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

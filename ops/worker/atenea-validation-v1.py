@@ -27,6 +27,9 @@ CONFIG = Path("/etc/atenea-worker/project-codex-v1.json")
 ARTIFACT_ROOT = Path("/srv/atenea/artifacts/validations")
 JOURNAL_ROOT = Path("/srv/atenea/worker/validation-broker-v1")
 WORKSPACE_ROOT = Path("/srv/atenea/workspaces/sessions")
+CHANGE_WORKSPACE_ROOT = Path("/srv/atenea/workspaces/changes")
+RUNTIME_ADMISSION = Path("/usr/local/libexec/atenea/runtime-admission-v1.sh")
+WORKER_USER = "atenea-worker"
 PLAYWRIGHT_CHECK = Path("/usr/local/libexec/atenea/atenea-playwright-validation-v1.js")
 PLAYWRIGHT_IMAGE = (
     "mcr.microsoft.com/playwright:v1.60.0-noble@"
@@ -205,7 +208,75 @@ def git_observation_command(worktree: Path, arguments: list[str]) -> list[str]:
     ]
 
 
-def resolve_authority(session_id: str) -> tuple[Path, str, int, Path, Path]:
+def slot_authority(slot: str) -> tuple[str, int, Path, Path]:
+    if re.fullmatch(r"slot[1-4]", slot) is None:
+        reject()
+    slot_user = f"atenea-{slot}"
+    try:
+        account = pwd.getpwnam(slot_user)
+    except KeyError:
+        reject()
+    expected_uid = 1100 + int(slot.removeprefix("slot"))
+    slot_home = Path(f"/var/lib/atenea-slots/{slot}")
+    if (
+        account.pw_uid != expected_uid
+        or account.pw_gid != expected_uid
+        or Path(account.pw_dir) != slot_home
+    ):
+        reject()
+    return slot_user, account.pw_uid, slot_home, Path(f"/run/user/{account.pw_uid}/docker.sock")
+
+
+def resolve_authority(
+    session_id: str, workspace_identity: str
+) -> tuple[Path, tuple[str, int, Path, Path] | None, str]:
+    change_prefix = "remote:ax42-01:change:"
+    if workspace_identity.startswith(change_prefix):
+        change_key = workspace_identity.removeprefix(change_prefix)
+        if not canonical_uuid(change_key):
+            reject()
+        root = CHANGE_WORKSPACE_ROOT / change_key
+        worktree = root / "atenea"
+        record_path = root / "workspace-v1.json"
+        try:
+            worker_account = pwd.getpwnam(WORKER_USER)
+            worker_uid = worker_account.pw_uid
+            worker_gid = worker_account.pw_gid
+        except KeyError:
+            reject()
+        if not exact_regular_file(record_path, 0o600, uid=worker_uid, gid=worker_gid):
+            reject()
+        record = load_json(record_path)
+        if (
+            set(record) not in ({
+                "schemaVersion", "protocolVersion", "changeKey", "databaseProjectId",
+                "projectId", "baseCommit", "workspaceBranch", "workspaceIdentity", "workerId",
+            }, {
+                "schemaVersion", "protocolVersion", "changeKey", "databaseProjectId",
+                "projectId", "repository", "repositoryBranch", "baseCommit",
+                "workspaceBranch", "workspaceIdentity", "workerId",
+                "initialSourceFingerprintSha256", "recordSha256",
+            })
+            or record.get("schemaVersion") != 1
+            or record.get("protocolVersion") != "development-change-workspace/v1"
+            or record.get("changeKey") != change_key
+            or record.get("projectId") != "atenea"
+            or record.get("workspaceIdentity") != workspace_identity
+            or record.get("workspaceBranch") != f"atenea/change-{change_key}"
+            or record.get("workerId") != "ax42-01"
+            or not COMMIT_RE.fullmatch(str(record.get("baseCommit", "")))
+        ):
+            reject()
+        try:
+            observed = worktree.lstat()
+        except OSError:
+            reject()
+        if not worktree.is_dir() or worktree.is_symlink() or observed.st_uid != worker_uid:
+            reject()
+        return worktree, None, record["baseCommit"]
+
+    if workspace_identity != f"remote:ax42-01:work-session:{session_id}":
+        reject()
     if not exact_regular_file(CONFIG, 0o644):
         reject()
     config = load_json(CONFIG)
@@ -263,25 +334,64 @@ def resolve_authority(session_id: str) -> tuple[Path, str, int, Path, Path]:
     slot = allocation.get("slot")
     if not isinstance(slot, str) or re.fullmatch(r"slot[1-4]", slot) is None:
         reject()
-    slot_user = f"atenea-{slot}"
+    return worktree, slot_authority(slot), config["commit"]
+
+
+def admission_call(operation: str, session_id: str) -> dict[str, Any]:
+    if operation not in {"acquire-normal", "acquire-heavy", "release-heavy", "release-normal"}:
+        reject()
+    completed = subprocess.run(
+        [
+            "/usr/sbin/runuser", "-u", WORKER_USER, "--",
+            str(RUNTIME_ADMISSION), "--json", operation, session_id,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    if completed.returncode != 0:
+        reject()
     try:
-        account = pwd.getpwnam(slot_user)
-    except KeyError:
+        response = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeError):
         reject()
-    expected_uid = 1100 + int(slot.removeprefix("slot"))
-    slot_home = Path(f"/var/lib/atenea-slots/{slot.removeprefix('slot')}")
-    # The deployed account home is /var/lib/atenea-slots/slotN. Keep accepting
-    # only that exact form; the separate expression above prevents caller input.
-    slot_home = Path(f"/var/lib/atenea-slots/{slot}")
-    if (
-        account.pw_uid != expected_uid
-        or account.pw_gid != expected_uid
-        or Path(account.pw_dir) != slot_home
-    ):
+    if not isinstance(response, dict) or response.get("sessionId") != session_id:
         reject()
-    runtime_dir = Path(f"/run/user/{account.pw_uid}")
-    socket = runtime_dir / "docker.sock"
-    return worktree, slot_user, account.pw_uid, slot_home, socket
+    return response
+
+
+@contextmanager
+def validation_slot(
+    session_id: str,
+    definition: Definition,
+    retained: tuple[str, int, Path, Path] | None,
+) -> Iterator[tuple[str, int, Path, Path]]:
+    if retained is not None:
+        yield retained
+        return
+    normal = admission_call("acquire-normal", session_id)
+    record = normal.get("record")
+    slot = record.get("normal", {}).get("slot") if isinstance(record, dict) else None
+    if not isinstance(slot, str):
+        reject()
+    heavy = definition.runner in {"android", "playwright"}
+    heavy_acquired = False
+    try:
+        if heavy:
+            admission_call("acquire-heavy", session_id)
+            heavy_acquired = True
+        yield slot_authority(slot)
+    finally:
+        if heavy_acquired:
+            try:
+                admission_call("release-heavy", session_id)
+            finally:
+                admission_call("release-normal", session_id)
+        else:
+            admission_call("release-normal", session_id)
 
 
 def sandbox_command(
@@ -847,9 +957,14 @@ def prepare_session_artifacts(session_id: str) -> Path:
 
 
 def execute_validation(arguments: list[str]) -> dict:
-    if os.geteuid() != 0 or len(arguments) != 4:
+    if os.geteuid() != 0 or len(arguments) not in {4, 5}:
         reject()
-    operation, session_id, source_sha, validation_id = arguments
+    if len(arguments) == 4:
+        operation, session_id, source_sha, validation_id = arguments
+        workspace_identity = f"remote:ax42-01:work-session:{session_id}"
+        arguments = [operation, session_id, workspace_identity, source_sha, validation_id]
+    else:
+        operation, session_id, workspace_identity, source_sha, validation_id = arguments
     definition = DEFINITIONS.get(operation)
     if (
         definition is None
@@ -858,12 +973,28 @@ def execute_validation(arguments: list[str]) -> dict:
         or SHA256_RE.fullmatch(source_sha) is None
     ):
         reject()
-    worktree, slot_user, slot_uid, slot_home, socket = resolve_authority(session_id)
+    worktree, retained_slot, expected_commit = resolve_authority(
+        session_id, workspace_identity
+    )
+    with validation_slot(session_id, definition, retained_slot) as slot:
+        return execute_validation_in_slot(
+            arguments, definition, worktree, expected_commit, slot
+        )
+
+
+def execute_validation_in_slot(
+    arguments: list[str],
+    definition: Definition,
+    worktree: Path,
+    expected_commit: str,
+    slot: tuple[str, int, Path, Path],
+) -> dict:
+    operation, session_id, _workspace_identity, source_sha, validation_id = arguments
+    slot_user, slot_uid, slot_home, socket = slot
     expected = command_output(
         git_observation_command(worktree, ["rev-parse", "--verify", "HEAD^{commit}"])
     )
-    config_commit = load_json(CONFIG).get("commit")
-    if expected != config_commit or COMMIT_RE.fullmatch(expected) is None:
+    if expected != expected_commit or COMMIT_RE.fullmatch(expected) is None:
         reject()
     before = command_output(
         git_observation_command(
@@ -1008,20 +1139,32 @@ def durable_unit_name(operation_id: str) -> str:
 
 
 def durable_identity(arguments: list[str]) -> dict[str, str]:
-    if len(arguments) != 4:
+    if len(arguments) not in {4, 5}:
         reject()
-    operation, session_id, source_sha, operation_id = arguments
+    if len(arguments) == 4:
+        operation, session_id, source_sha, operation_id = arguments
+        workspace_identity = f"remote:ax42-01:work-session:{session_id}"
+    else:
+        operation, session_id, workspace_identity, source_sha, operation_id = arguments
     definition = DEFINITIONS.get(operation)
     if (
         definition is None
         or not canonical_uuid(session_id)
         or not canonical_uuid(operation_id)
+        or not (
+            workspace_identity == f"remote:ax42-01:work-session:{session_id}"
+            or (
+                workspace_identity.startswith("remote:ax42-01:change:")
+                and canonical_uuid(workspace_identity.rsplit(":", 1)[-1])
+            )
+        )
         or SHA256_RE.fullmatch(source_sha) is None
     ):
         reject()
     return {
         "operation": operation,
         "sessionId": session_id,
+        "workspaceIdentity": workspace_identity,
         "sourceTreeFingerprintSha256": source_sha,
         "operationId": operation_id,
         "definitionRevision": definition.revision,
@@ -1213,15 +1356,16 @@ def launch_durable_unit(identity: dict[str, str]) -> None:
         "--property",
         "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE",
         "--property",
-        f"ReadWritePaths={ARTIFACT_ROOT.parent} {JOURNAL_ROOT}",
+        f"ReadWritePaths={ARTIFACT_ROOT.parent} {JOURNAL_ROOT} /srv/atenea/worker/runtime-admission-v1",
         "--property",
-        f"ReadOnlyPaths={WORKSPACE_ROOT} {CONFIG.parent} /run/user",
+        f"ReadOnlyPaths={WORKSPACE_ROOT} {CHANGE_WORKSPACE_ROOT} {CONFIG.parent} /run/user {RUNTIME_ADMISSION}",
         "--",
         "/usr/bin/python3",
         str(helper),
         "--durable-execute",
         identity["operation"],
         identity["sessionId"],
+        identity["workspaceIdentity"],
         identity["sourceTreeFingerprintSha256"],
         identity["operationId"],
     ]
@@ -1438,9 +1582,9 @@ def main() -> int:
             return sandbox_exec(sys.argv[2])
         if len(sys.argv) == 3 and sys.argv[1] == "--sandbox-supervise":
             return sandbox_supervise(sys.argv[2])
-        if len(sys.argv) == 6 and sys.argv[1] == "--durable-execute":
+        if len(sys.argv) in {6, 7} and sys.argv[1] == "--durable-execute":
             return execute_durable(sys.argv[2:])
-        if len(sys.argv) == 6 and sys.argv[1] in {"start", "inspect", "cancel"}:
+        if len(sys.argv) in {6, 7} and sys.argv[1] in {"start", "inspect", "cancel"}:
             result = {
                 "start": start_durable,
                 "inspect": inspect_durable,
