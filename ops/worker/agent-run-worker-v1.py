@@ -3059,7 +3059,7 @@ class WorkerState:
                 "source_tree_head_moved",
                 "change source tree HEAD no longer equals its owned base commit",
             )
-        source = self._source_tree_fingerprint(worktree, head)
+        source = self._change_source_tree_fingerprint(worktree, head)
         return {
             "state": "observed",
             "sessionId": session_id,
@@ -3718,6 +3718,72 @@ class WorkerState:
         })
         return {
             "fingerprintSha256": fingerprint,
+            "stagedChangeCount": len(staged),
+            "unstagedChangeCount": len(unstaged),
+            "untrackedChangeCount": len(untracked),
+        }
+
+    def _change_source_tree_fingerprint(self, worktree: Path, head: str) -> dict[str, Any]:
+        # Change-owned validation must use the same bytes as the durable
+        # DevelopmentChange and project-codex-v4 source observations.
+        status = self._draft_git(worktree, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+        diff = self._draft_git(worktree, "diff", "--binary", "--no-ext-diff", "HEAD")
+        untracked_raw = self._draft_git(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+        staged = self._z_entries(self._draft_git(worktree, "diff", "--cached", "--name-only", "-z"))
+        unstaged = self._z_entries(self._draft_git(worktree, "diff", "--name-only", "-z"))
+        untracked = self._z_entries(untracked_raw)
+        if any(len(value) > 64 * 1024 * 1024 for value in (status, diff, untracked_raw)) \
+                or len(untracked) > 4096:
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "source_tree_fingerprint_limit",
+                "change source tree exceeds the bounded fingerprint limit",
+            )
+
+        digest = hashlib.sha256()
+
+        def add(label: bytes, data: bytes) -> None:
+            digest.update(len(label).to_bytes(4, "big"))
+            digest.update(label)
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+
+        add(b"head", head.encode("ascii"))
+        add(b"status", status)
+        add(b"diff", diff)
+        total = 0
+        try:
+            paths = sorted(relative.decode("utf-8") for relative in untracked)
+            for relative in paths:
+                candidate = worktree / relative
+                observed = candidate.lstat()
+                if stat.S_ISLNK(observed.st_mode):
+                    data = os.readlink(candidate).encode("utf-8")
+                elif stat.S_ISREG(observed.st_mode):
+                    total += observed.st_size
+                    if total > 64 * 1024 * 1024:
+                        raise ProtocolError(
+                            HTTPStatus.CONFLICT,
+                            "source_tree_fingerprint_limit",
+                            "change source tree exceeds the bounded fingerprint limit",
+                        )
+                    data = candidate.read_bytes()
+                else:
+                    raise ProtocolError(
+                        HTTPStatus.CONFLICT,
+                        "source_tree_unsafe",
+                        "change source tree contains an unsafe untracked entry",
+                    )
+                add(b"untracked-path", relative.encode("utf-8"))
+                add(b"untracked-content", data)
+        except (OSError, UnicodeError) as error:
+            raise ProtocolError(
+                HTTPStatus.CONFLICT,
+                "source_tree_unavailable",
+                "change source tree is unavailable during fingerprinting",
+            ) from error
+        return {
+            "fingerprintSha256": digest.hexdigest(),
             "stagedChangeCount": len(staged),
             "unstagedChangeCount": len(unstaged),
             "untrackedChangeCount": len(untracked),
