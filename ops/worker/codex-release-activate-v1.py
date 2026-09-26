@@ -186,7 +186,7 @@ def replace_link(link: Path, raw_target: str) -> None:
 
 
 def find_accepted_stage(operations: Path, request: dict[str, str], candidate: dict[str, str], owner_uid: int) -> None:
-    matches = 0
+    accepted: dict[str, Any] | None = None
     for operation_path in operations.glob("*.json"):
         owned_regular(operation_path, owner_uid, "stage operation record")
         try:
@@ -194,10 +194,11 @@ def find_accepted_stage(operations: Path, request: dict[str, str], candidate: di
             result = operation["result"]
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
             raise ActivationError("stage operation record is invalid") from error
-        if (isinstance(result, dict) and result.get("state") == "STAGED"
-                and result.get("planId") == request["planId"]
-                and result.get("candidateId") == request["candidateId"]
-                and result.get("codexVersion") == candidate["codexVersion"]
+        if (not isinstance(result, dict) or result.get("state") != "STAGED"
+                or result.get("planId") != request["planId"]
+                or result.get("candidateId") != request["candidateId"]):
+            continue
+        if not (result.get("codexVersion") == candidate["codexVersion"]
                 and result.get("releaseDigestSha256") == candidate["releaseDigestSha256"]
                 and result.get("catalogRevision") == candidate["catalogRevision"]
                 and result.get("releaseVerification") == "PASS"
@@ -205,9 +206,14 @@ def find_accepted_stage(operations: Path, request: dict[str, str], candidate: di
                 and result.get("retention") == "PASS"
                 and result.get("linksChanged") is False
                 and result.get("valuesExposed") is False):
-            matches += 1
-    if matches != 1:
-        raise ActivationError("exactly one accepted stage operation is required")
+            raise ActivationError("stage operation conflicts with the candidate")
+        normalized = {key: value for key, value in result.items()
+                      if key != "idempotencyKey"}
+        if accepted is not None and normalized != accepted:
+            raise ActivationError("stage operation results conflict")
+        accepted = normalized
+    if accepted is None:
+        raise ActivationError("an accepted stage operation is required")
 
 
 def validate_schemas(release: Path, version: str, owner_uid: int) -> None:
