@@ -146,12 +146,24 @@ class CodexReleaseActivateTest(unittest.TestCase):
         self.assertNotEqual(0, conflict.returncode)
         self.assertEqual(3, len((self.root / "gate-calls").read_text().splitlines()))
 
-    def test_extra_authority_and_ambiguous_stage_fail_before_links(self):
+    def test_extra_authority_and_conflicting_stage_fail_before_links(self):
         before = self._links()
         extra = self._run({**self.request, "service": "foreign.service"})
         self.assertNotEqual(0, extra.returncode)
         self.assertEqual(before, self._links())
         self._write_stage(str(uuid.uuid4()))
+        repeated = self._run()
+        self.assertEqual(0, repeated.returncode, repeated.stderr)
+        self.assertEqual("ACTIVATED", json.loads(repeated.stdout)["state"])
+
+    def test_conflicting_repeated_stage_fails_before_links(self):
+        before = self._links()
+        second_id = str(uuid.uuid4())
+        self._write_stage(second_id)
+        second_path = self.operations / (second_id + ".json")
+        second = json.loads(second_path.read_text(encoding="utf-8"))
+        second["result"]["schemaManifestSha256"] = "a" * 64
+        second_path.write_text(json.dumps(second), encoding="utf-8")
         ambiguous = self._run()
         self.assertNotEqual(0, ambiguous.returncode)
         self.assertEqual(before, self._links())
