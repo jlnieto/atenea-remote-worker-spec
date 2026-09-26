@@ -2,12 +2,15 @@
 
 import importlib.util
 import io
+import os
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -20,6 +23,120 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ClosedValidationSandboxTests(unittest.TestCase):
+    def test_artifact_directory_state_accepts_only_exact_root_owned_forms(self):
+        path = Path("/fixed/artifact-directory")
+
+        def classify(kind, mode, uid, gid):
+            observed = SimpleNamespace(st_mode=kind | mode, st_uid=uid, st_gid=gid)
+            with mock.patch.object(Path, "lstat", return_value=observed):
+                return MODULE.artifact_directory_state(path, 988)[0]
+
+        self.assertEqual("CURRENT", classify(stat.S_IFDIR, 0o750, 0, 0))
+        self.assertEqual("INHERITED", classify(stat.S_IFDIR, 0o2750, 0, 988))
+        for kind, mode, uid, gid in (
+            (stat.S_IFDIR, 0o2770, 0, 988),
+            (stat.S_IFDIR, 0o2750, 999, 988),
+            (stat.S_IFDIR, 0o2750, 0, 987),
+            (stat.S_IFLNK, 0o2750, 0, 988),
+        ):
+            with self.subTest(kind=kind, mode=mode, uid=uid, gid=gid):
+                with self.assertRaises(MODULE.Rejected):
+                    classify(kind, mode, uid, gid)
+
+    def test_artifact_directory_rejects_non_uuid_session(self):
+        with self.assertRaises(MODULE.Rejected):
+            MODULE.prepare_session_artifacts("../foreign")
+
+    @unittest.skipUnless(os.geteuid() == 0, "requires root-owned artifact directory test")
+    def test_artifact_recovery_normalizes_inherited_dirs_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "artifacts"
+            parent.mkdir()
+            os.chown(parent, 99999, 98888)
+            parent.chmod(0o2770)
+            artifact_root = parent / "validations"
+            artifact_root.mkdir(mode=0o750)
+            session_id = str(uuid.uuid4())
+            session_root = artifact_root / session_id
+            session_root.mkdir(mode=0o750)
+            self.assertEqual(0o2750, artifact_root.stat().st_mode & 0o7777)
+            self.assertEqual(98888, session_root.stat().st_gid)
+            original_inodes = (artifact_root.stat().st_ino, session_root.stat().st_ino)
+            worker = SimpleNamespace(pw_uid=99999, pw_gid=98888)
+            with mock.patch.object(MODULE, "ARTIFACT_ROOT", artifact_root), mock.patch.object(
+                MODULE.pwd, "getpwnam", return_value=worker
+            ):
+                self.assertEqual(session_root, MODULE.prepare_session_artifacts(session_id))
+                self.assertEqual(session_root, MODULE.prepare_session_artifacts(session_id))
+            for path, inode in zip((artifact_root, session_root), original_inodes):
+                observed = path.stat()
+                self.assertEqual((0, 0, 0o750, inode), (
+                    observed.st_uid, observed.st_gid, observed.st_mode & 0o7777, observed.st_ino
+                ))
+
+    @unittest.skipUnless(os.geteuid() == 0, "requires root-owned artifact directory test")
+    def test_artifact_recovery_rejects_foreign_session_before_repair(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "artifacts"
+            parent.mkdir()
+            os.chown(parent, 99999, 98888)
+            parent.chmod(0o2770)
+            artifact_root = parent / "validations"
+            artifact_root.mkdir(mode=0o750)
+            session_id = str(uuid.uuid4())
+            session_root = artifact_root / session_id
+            session_root.mkdir(mode=0o750)
+            session_root.chmod(0o2770)
+            worker = SimpleNamespace(pw_uid=99999, pw_gid=98888)
+            with mock.patch.object(MODULE, "ARTIFACT_ROOT", artifact_root), mock.patch.object(
+                MODULE.pwd, "getpwnam", return_value=worker
+            ):
+                with self.assertRaises(MODULE.Rejected):
+                    MODULE.prepare_session_artifacts(session_id)
+            self.assertEqual(0o2750, artifact_root.stat().st_mode & 0o7777)
+            self.assertEqual(0o2770, session_root.stat().st_mode & 0o7777)
+
+    @unittest.skipUnless(os.geteuid() == 0, "requires root-owned artifact directory test")
+    def test_artifact_recovery_rejects_parent_drift_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "artifacts"
+            parent.mkdir()
+            os.chown(parent, 99999, 98888)
+            parent.chmod(0o2775)
+            artifact_root = parent / "validations"
+            artifact_root.mkdir(mode=0o750)
+            session_id = str(uuid.uuid4())
+            session_root = artifact_root / session_id
+            session_root.mkdir(mode=0o750)
+            worker = SimpleNamespace(pw_uid=99999, pw_gid=98888)
+            with mock.patch.object(MODULE, "ARTIFACT_ROOT", artifact_root), mock.patch.object(
+                MODULE.pwd, "getpwnam", return_value=worker
+            ):
+                with self.assertRaises(MODULE.Rejected):
+                    MODULE.prepare_session_artifacts(session_id)
+            self.assertEqual(0o2750, artifact_root.stat().st_mode & 0o7777)
+            self.assertEqual(0o2750, session_root.stat().st_mode & 0o7777)
+
+    @unittest.skipUnless(os.geteuid() == 0, "requires root-owned artifact directory test")
+    def test_artifact_creation_under_setgid_parent_is_canonical_on_first_use(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "artifacts"
+            parent.mkdir()
+            os.chown(parent, 99999, 98888)
+            parent.chmod(0o2770)
+            artifact_root = parent / "validations"
+            session_id = str(uuid.uuid4())
+            worker = SimpleNamespace(pw_uid=99999, pw_gid=98888)
+            with mock.patch.object(MODULE, "ARTIFACT_ROOT", artifact_root), mock.patch.object(
+                MODULE.pwd, "getpwnam", return_value=worker
+            ):
+                session_root = MODULE.prepare_session_artifacts(session_id)
+            for path in (artifact_root, session_root):
+                observed = path.stat()
+                self.assertEqual((0, 0, 0o750), (
+                    observed.st_uid, observed.st_gid, observed.st_mode & 0o7777
+                ))
+
     def test_catalog_retains_only_the_four_symbolic_definitions(self):
         self.assertEqual(
             {

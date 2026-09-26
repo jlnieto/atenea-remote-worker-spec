@@ -944,29 +944,84 @@ def publish_browser_artifacts(stage: Path, destination: Path) -> None:
 
 
 def prepare_session_artifacts(session_id: str) -> Path:
+    if not canonical_uuid(session_id):
+        reject()
     parent = ARTIFACT_ROOT.parent
     try:
-        if not parent.is_dir() or parent.is_symlink() or parent.resolve() != parent:
+        parent_stat = parent.lstat()
+        worker = pwd.getpwnam(WORKER_USER)
+        if (
+            not stat_module.S_ISDIR(parent_stat.st_mode)
+            or parent.resolve() != parent
+            or parent_stat.st_uid != worker.pw_uid
+            or parent_stat.st_gid != worker.pw_gid
+            or parent_stat.st_mode & 0o7777 != 0o2770
+        ):
             reject()
+    except (OSError, KeyError):
+        reject()
+
+    paths = (ARTIFACT_ROOT, ARTIFACT_ROOT / session_id)
+    states = [artifact_directory_state(path, worker.pw_gid) for path in paths]
+    if states[0][0] == "ABSENT" and states[1][0] != "ABSENT":
+        reject()
+    for path, (state, observed) in zip(paths, states):
+        if state == "ABSENT":
+            path.mkdir(mode=0o750)
+            state, observed = artifact_directory_state(path, worker.pw_gid)
+        if state == "INHERITED":
+            normalize_inherited_artifact_directory(path, observed)
+        if artifact_directory_state(path, worker.pw_gid)[0] != "CURRENT":
+            reject()
+    return ARTIFACT_ROOT / session_id
+
+
+def artifact_directory_state(path: Path, inherited_gid: int) -> tuple[str, os.stat_result | None]:
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        return "ABSENT", None
     except OSError:
         reject()
-    for path in (ARTIFACT_ROOT, ARTIFACT_ROOT / session_id):
-        if path.exists() or path.is_symlink():
-            try:
-                stat = path.lstat()
-            except OSError:
-                reject()
+    if not stat_module.S_ISDIR(observed.st_mode) or observed.st_uid != 0:
+        reject()
+    mode = observed.st_mode & 0o7777
+    if observed.st_gid == 0 and mode == 0o750:
+        return "CURRENT", observed
+    # Only the exact root-owned state inherited from the fixed setgid parent
+    # may be adopted. Foreign owners, modes and symlinks remain fail-closed.
+    if observed.st_gid == inherited_gid and mode == 0o2750:
+        return "INHERITED", observed
+    reject()
+
+
+def normalize_inherited_artifact_directory(path: Path, observed: os.stat_result) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
             if (
-                not path.is_dir()
-                or path.is_symlink()
-                or stat.st_uid != 0
-                or stat.st_gid != 0
-                or stat.st_mode & 0o7777 != 0o750
+                (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino)
+                or opened.st_uid != observed.st_uid
+                or opened.st_gid != observed.st_gid
+                or opened.st_mode & 0o7777 != observed.st_mode & 0o7777
             ):
                 reject()
-        else:
-            path.mkdir(mode=0o750)
-    return ARTIFACT_ROOT / session_id
+            os.fchown(descriptor, 0, 0)
+            os.fchmod(descriptor, 0o750)
+            final = os.fstat(descriptor)
+            visible = path.lstat()
+            if (
+                final.st_uid != 0
+                or final.st_gid != 0
+                or final.st_mode & 0o7777 != 0o750
+                or (visible.st_dev, visible.st_ino) != (final.st_dev, final.st_ino)
+            ):
+                reject()
+        finally:
+            os.close(descriptor)
+    except OSError:
+        reject()
 
 
 def execute_validation(arguments: list[str]) -> dict:
