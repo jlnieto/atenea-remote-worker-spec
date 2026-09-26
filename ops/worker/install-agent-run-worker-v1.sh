@@ -14,6 +14,7 @@ DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR="/usr/local/libexec/atenea/development-cha
 PROJECT_RUNNER="/usr/local/libexec/atenea/project-codex-runner-v1.py"
 BEAUTIPS_PROJECT_RUNNER="/usr/local/libexec/atenea/beautips-project-codex-runner-v1.py"
 VALIDATION_MEDIATOR="/usr/local/libexec/atenea/atenea-validation-v1.py"
+RUNTIME_ADMISSION="/usr/local/libexec/atenea/runtime-admission-v1.sh"
 VALIDATION_JOURNAL_ROOT="/srv/atenea/worker/validation-broker-v1"
 PLAYWRIGHT_CHECK="/usr/local/libexec/atenea/atenea-playwright-validation-v1.js"
 ROLE_MEDIATOR="/usr/local/libexec/atenea/atenea-multi-repository-v1.sh"
@@ -248,6 +249,15 @@ verify_validation_sudoers() {
     || fail "validation sudo authority is not exact"
 }
 
+verify_runtime_admission_file() {
+  local path="$1"
+  local owner_group="$2"
+  [[ -f "$path" && ! -L "$path" \
+      && "$(stat -c '%a:%U:%G' "$path")" == "755:$owner_group" \
+      && "$(sha256sum "$path" | cut -d' ' -f1)" == "$RUNTIME_ADMISSION_SHA256" ]] \
+    || fail "validation runtime admission differs from the reviewed source"
+}
+
 recovery_activation_sudoers_content() {
   local uuid_pattern='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
   printf 'atenea-worker ALL=(root) NOPASSWD: %s --prepare\n' \
@@ -342,6 +352,7 @@ validate_inputs() {
   [[ -f "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" ]] \
     || fail "Beautips compatibility runner is missing"
   [[ -f "$SCRIPT_DIR/atenea-validation-v1.py" ]] || fail "validation mediator is missing"
+  [[ -f "$SCRIPT_DIR/runtime-admission-v1.sh" ]] || fail "validation runtime admission is missing"
   [[ -f "$SCRIPT_DIR/atenea-playwright-validation-v1.js" ]] || fail "Playwright check is missing"
   [[ -f "$SCRIPT_DIR/atenea-multi-repository-v1.sh" ]] || fail "repository role mediator is missing"
   [[ -f "$SCRIPT_DIR/atenea-workspace-activation-v1.sh" ]] || fail "workspace activator is missing"
@@ -372,6 +383,9 @@ validate_inputs() {
   [[ "$(sha256sum "$SCRIPT_DIR/atenea-validation-v1.py" | cut -d' ' -f1)" \
       == "$VALIDATION_MEDIATOR_SHA256" ]] \
     || fail "validation mediator fingerprint is stale"
+  [[ "$(sha256sum "$SCRIPT_DIR/runtime-admission-v1.sh" | cut -d' ' -f1)" \
+      == "$RUNTIME_ADMISSION_SHA256" ]] \
+    || fail "validation runtime admission fingerprint is stale"
   [[ "$(sha256sum "$SCRIPT_DIR/atenea-playwright-validation-v1.js" | cut -d' ' -f1)" \
       == "$PLAYWRIGHT_CHECK_SHA256" ]] \
     || fail "Playwright check fingerprint is stale"
@@ -1324,6 +1338,7 @@ apply_install() {
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" "$BEAUTIPS_PROJECT_RUNNER"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-validation-v1.py" "$VALIDATION_MEDIATOR"
+  install -o root -g root -m 0755 "$SCRIPT_DIR/runtime-admission-v1.sh" "$RUNTIME_ADMISSION"
   install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-playwright-validation-v1.js" "$PLAYWRIGHT_CHECK"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-multi-repository-v1.sh" "$ROLE_MEDIATOR"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-stage-v1.py" "$CODEX_UPDATE_MEDIATOR"
@@ -1533,6 +1548,7 @@ verify() {
       && "$(sha256sum "$VALIDATION_MEDIATOR" | cut -d' ' -f1)" \
         == "$VALIDATION_MEDIATOR_SHA256" ]] \
     || fail "validation mediator differs from the reviewed source"
+  verify_runtime_admission_file "$RUNTIME_ADMISSION" root:root
   [[ -f "$PLAYWRIGHT_CHECK" && ! -L "$PLAYWRIGHT_CHECK" \
       && "$(stat -c '%a:%U:%G' "$PLAYWRIGHT_CHECK")" == "644:root:root" \
       && "$(sha256sum "$PLAYWRIGHT_CHECK" | cut -d' ' -f1)" \

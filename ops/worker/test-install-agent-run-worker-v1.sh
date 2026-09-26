@@ -118,6 +118,41 @@ fi
 [[ "$(sha256sum "${SCRIPT_DIR}/runtime-admission-v1.sh" | cut -d' ' -f1)" \
     == "${RUNTIME_ADMISSION_SHA256}" ]] \
   || fail "admission dependency fingerprint is stale"
+[[ "${RUNTIME_ADMISSION}" == "/usr/local/libexec/atenea/runtime-admission-v1.sh" ]] \
+  || fail "validation admission runtime path is not fixed"
+grep -Fq 'RUNTIME_ADMISSION = Path("/usr/local/libexec/atenea/runtime-admission-v1.sh")' \
+  "${SCRIPT_DIR}/atenea-validation-v1.py" \
+  || fail "validation mediator does not use the installed admission runtime"
+grep -Fqx '  install -o root -g root -m 0755 "$SCRIPT_DIR/runtime-admission-v1.sh" "$RUNTIME_ADMISSION"' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" \
+  || fail "installer does not install validation admission at its fixed runtime path"
+grep -Fqx '  verify_runtime_admission_file "$RUNTIME_ADMISSION" root:root' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" \
+  || fail "installer does not verify root-owned validation admission"
+PROMOTED_ADMISSION="${TEST_ROOT}/runtime-admission-v1.sh"
+install -m 0755 "${SCRIPT_DIR}/runtime-admission-v1.sh" "${PROMOTED_ADMISSION}"
+verify_runtime_admission_file "${PROMOTED_ADMISSION}" "$(id -un):$(id -gn)"
+printf '\nforeign admission runtime\n' >>"${PROMOTED_ADMISSION}"
+if ( verify_runtime_admission_file "${PROMOTED_ADMISSION}" "$(id -un):$(id -gn)" ) \
+    >/dev/null 2>&1; then
+  fail "foreign validation admission runtime was accepted"
+fi
+install -m 0755 "${SCRIPT_DIR}/runtime-admission-v1.sh" "${PROMOTED_ADMISSION}"
+chmod 0777 "${PROMOTED_ADMISSION}"
+if ( verify_runtime_admission_file "${PROMOTED_ADMISSION}" "$(id -un):$(id -gn)" ) \
+    >/dev/null 2>&1; then
+  fail "unsafe validation admission runtime mode was accepted"
+fi
+install -m 0755 "${SCRIPT_DIR}/runtime-admission-v1.sh" "${PROMOTED_ADMISSION}"
+ln -s "${PROMOTED_ADMISSION}" "${PROMOTED_ADMISSION}.link"
+if ( verify_runtime_admission_file "${PROMOTED_ADMISSION}.link" "$(id -un):$(id -gn)" ) \
+    >/dev/null 2>&1; then
+  fail "symlinked validation admission runtime was accepted"
+fi
+if ( verify_runtime_admission_file "${PROMOTED_ADMISSION}" foreign:foreign ) \
+    >/dev/null 2>&1; then
+  fail "foreign validation admission runtime owner was accepted"
+fi
 [[ "$(sha256sum "${SCRIPT_DIR}/session-runtime-allocation-v1.sh" | cut -d' ' -f1)" \
     == "${SESSION_ALLOCATION_SHA256}" ]] \
   || fail "allocation dependency fingerprint is stale"
