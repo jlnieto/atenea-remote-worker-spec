@@ -22,6 +22,10 @@ MODULE = SourceFileLoader(
     "agent_run_worker_v1",
     str(Path(__file__).with_name("agent-run-worker-v1.py")),
 ).load_module()
+PROJECT_RUNNER = SourceFileLoader(
+    "project_codex_runner_v1_for_fingerprint",
+    str(Path(__file__).with_name("project-codex-runner-v1.py")),
+).load_module()
 TEST_COMMIT = "1" * 40
 
 
@@ -1313,6 +1317,50 @@ print(json.dumps({"sessionId": session,
         self.assertEqual(identity, observed["workspaceIdentity"])
         self.assertEqual(1, observed["untrackedChangeCount"])
         self.assertNotIn("candidate.txt", json.dumps(observed))
+        expected, dirty = PROJECT_RUNNER.change_source_fingerprint(
+            change_worktree, self.retained_head
+        )
+        self.assertTrue(dirty)
+        self.assertEqual(expected, observed["fingerprintSha256"])
+
+        (change_worktree / "candidate.txt").write_text("changed candidate\n", encoding="utf-8")
+        with mock.patch.object(MODULE, "DEVELOPMENT_CHANGE_WORKSPACE_ROOT", root.parent):
+            changed = self.state.fingerprint_source_tree(request)
+        expected_changed, _ = PROJECT_RUNNER.change_source_fingerprint(
+            change_worktree, self.retained_head
+        )
+        self.assertNotEqual(observed["fingerprintSha256"], changed["fingerprintSha256"])
+        self.assertEqual(expected_changed, changed["fingerprintSha256"])
+
+        (change_worktree / "tracked.txt").write_text("staged\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=change_worktree, check=True)
+        (change_worktree / "tracked.txt").write_text("staged and unstaged\n", encoding="utf-8")
+        with mock.patch.object(MODULE, "DEVELOPMENT_CHANGE_WORKSPACE_ROOT", root.parent):
+            mixed = self.state.fingerprint_source_tree(request)
+        expected_mixed, _ = PROJECT_RUNNER.change_source_fingerprint(
+            change_worktree, self.retained_head
+        )
+        self.assertEqual(expected_mixed, mixed["fingerprintSha256"])
+        self.assertEqual(1, mixed["stagedChangeCount"])
+        self.assertEqual(1, mixed["unstagedChangeCount"])
+        self.assertEqual(1, mixed["untrackedChangeCount"])
+
+        validation = {
+            "schemaVersion": 1,
+            "protocolVersion": MODULE.CLOSED_VALIDATION_CAPABILITY,
+            "operationId": str(uuid.uuid4()),
+            **request,
+            "operation": "BACKEND_TEST",
+            "definitionRevision": MODULE.VALIDATION_DEFINITIONS["BACKEND_TEST"][0],
+            "sourceTreeFingerprintSha256": mixed["fingerprintSha256"],
+        }
+        with mock.patch.object(MODULE, "DEVELOPMENT_CHANGE_WORKSPACE_ROOT", root.parent):
+            stale = {**validation, "sourceTreeFingerprintSha256": observed["fingerprintSha256"]}
+            with self.assertRaisesRegex(MODULE.ProtocolError, "source tree changed"):
+                self.state.start_validation(stale)
+            queued, created = self.state.start_validation(validation)
+        self.assertTrue(created)
+        self.assertEqual("QUEUED", queued["state"])
 
     def validation_request(self, validation_id=None):
         self.state._observe_project_commit = lambda _route: self.retained_head
