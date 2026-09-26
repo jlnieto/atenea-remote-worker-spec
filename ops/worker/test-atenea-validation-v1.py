@@ -77,10 +77,25 @@ class ClosedValidationSandboxTests(unittest.TestCase):
         self.assertIn("--unshare-all", bubblewrap)
         self.assertIn("--share-net", bubblewrap)
         self.assertIn("--sandbox-exec\0BACKEND_TEST", bubblewrap)
+        self.assertIn("--symlink\0work/tmp\0/tmp", bubblewrap)
+        self.assertNotIn("--bind\0/tmp", bubblewrap)
+        self.assertNotIn("--ro-bind\0/tmp", bubblewrap)
         self.assertNotIn("/artifacts", bubblewrap)
         git_command = MODULE.git_observation_command(Path("/owned/worktree"), ["status"])
         self.assertIn("core.hooksPath=/dev/null", git_command)
         self.assertIn("core.fsmonitor=false", git_command)
+
+    def test_private_temporary_directory_is_prepared_for_maven_without_host_tmp(self):
+        with tempfile.TemporaryDirectory() as root:
+            work_root = Path(root)
+            worktree = MODULE.prepare_sandbox_directories(work_root)
+            self.assertEqual(work_root / "repo", worktree)
+            self.assertFalse(worktree.exists())
+            self.assertEqual(0o700, (work_root / "tmp").stat().st_mode & 0o777)
+            self.assertEqual(0o700, (work_root / "home").stat().st_mode & 0o777)
+            self.assertEqual("/work/tmp", MODULE.clean_environment()["TMPDIR"])
+            with self.assertRaises(MODULE.Rejected):
+                MODULE.prepare_sandbox_directories(work_root)
 
     def test_playwright_container_has_no_network_or_host_authority(self):
         prefix = ["runuser", "docker"]
