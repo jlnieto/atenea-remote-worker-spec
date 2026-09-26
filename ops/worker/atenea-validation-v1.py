@@ -547,6 +547,9 @@ def bubblewrap_command(operation: str) -> list[str]:
         "--bind",
         "/work",
         "/work",
+        "--symlink",
+        "work/tmp",
+        "/tmp",
         "--ro-bind",
         str(helper),
         "/runner.py",
@@ -568,6 +571,7 @@ def bubblewrap_command(operation: str) -> list[str]:
 def clean_environment() -> dict[str, str]:
     return {
         "HOME": "/work/home",
+        "TMPDIR": "/work/tmp",
         "USER": str(pwd.getpwuid(os.getuid()).pw_name),
         "LOGNAME": str(pwd.getpwuid(os.getuid()).pw_name),
         "PATH": "/usr/bin:/bin",
@@ -592,11 +596,9 @@ def sandbox_exec(operation: str) -> int:
     if os.geteuid() == 0 or operation not in DEFINITIONS:
         reject()
     source = Path("/source")
-    worktree = Path("/work/repo")
-    home = Path("/work/home")
-    if worktree.exists() or not source.is_dir() or source.is_symlink():
+    if not source.is_dir() or source.is_symlink():
         reject()
-    home.mkdir(mode=0o700)
+    worktree = prepare_sandbox_directories(Path("/work"))
     shutil.copytree(source, worktree, symlinks=True)
     environment = clean_environment()
     command = sandbox_operation_command(operation)
@@ -608,6 +610,17 @@ def sandbox_exec(operation: str) -> int:
         check=False,
     )
     return completed.returncode
+
+
+def prepare_sandbox_directories(work_root: Path) -> Path:
+    worktree = work_root / "repo"
+    home = work_root / "home"
+    temporary = work_root / "tmp"
+    if any(path.exists() or path.is_symlink() for path in (worktree, home, temporary)):
+        reject()
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+    return worktree
 
 
 def sandbox_supervise(operation: str) -> int:
