@@ -214,6 +214,26 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             with self.assertRaises(MODULE.Rejected):
                 MODULE.prepare_sandbox_directories(work_root)
 
+    def test_bubblewrap_mounts_only_fixed_java_config_read_only(self):
+        command = MODULE.bubblewrap_command("BACKEND_TEST")
+        read_only = [
+            (command[index + 1], command[index + 2])
+            for index, value in enumerate(command)
+            if value == "--ro-bind"
+        ]
+        writable = [
+            (command[index + 1], command[index + 2])
+            for index, value in enumerate(command)
+            if value == "--bind"
+        ]
+        self.assertEqual(
+            1,
+            read_only.count(("/etc/java-21-openjdk", "/etc/java-21-openjdk")),
+        )
+        self.assertNotIn(("/etc", "/etc"), read_only)
+        self.assertNotIn(("/etc/java-21-openjdk", "/etc/java-21-openjdk"), writable)
+        self.assertEqual([("/work", "/work")], writable)
+
     def test_playwright_container_has_no_network_or_host_authority(self):
         prefix = ["runuser", "docker"]
         command = MODULE.playwright_docker_command(
