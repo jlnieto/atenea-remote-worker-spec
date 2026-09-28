@@ -411,6 +411,9 @@ def sandbox_command(
         f"/work:rw,nosuid,nodev,size={definition.storage_max},"
         f"mode=0700,uid={slot_uid},gid={slot_uid}"
     )
+    # Do not mask the outer /proc with ProtectKernelTunables/ProtectKernelLogs:
+    # that prevents rootless Bubblewrap from mounting its own PID-namespace /proc.
+    # Candidate code stays inside Bubblewrap, not a bind of the host /proc.
     command = [
         "/usr/bin/systemd-run",
         "--wait",
@@ -451,11 +454,7 @@ def sandbox_command(
         "--property",
         "ProtectHome=yes",
         "--property",
-        "ProtectKernelTunables=yes",
-        "--property",
         "ProtectKernelModules=yes",
-        "--property",
-        "ProtectKernelLogs=yes",
         "--property",
         "ProtectControlGroups=yes",
         "--property",
