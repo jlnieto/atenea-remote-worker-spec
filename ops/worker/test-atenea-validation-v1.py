@@ -3,6 +3,8 @@
 import importlib.util
 import io
 import os
+import pwd
+import shutil
 import stat
 import subprocess
 import sys
@@ -213,6 +215,87 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             self.assertEqual("/work/tmp", MODULE.clean_environment()["TMPDIR"])
             with self.assertRaises(MODULE.Rejected):
                 MODULE.prepare_sandbox_directories(work_root)
+
+    def test_nested_proc_preserves_other_systemd_protections_without_host_proc_bind(self):
+        for operation in ("BACKEND_TEST", "WEB_BUILD", "PLAYWRIGHT_ACCEPTANCE"):
+            with self.subTest(operation=operation):
+                command = MODULE.sandbox_command(
+                    operation,
+                    "11111111-1111-4111-8111-111111111111",
+                    MODULE.DEFINITIONS[operation],
+                    "atenea-slot1",
+                    1101,
+                    Path("/fixed/source"),
+                    Path("/fixed/artifacts"),
+                    Path("/fixed/resolv.conf"),
+                )
+                for required in (
+                    "NoNewPrivileges=yes", "PrivateDevices=yes", "ProtectSystem=strict",
+                    "ProtectHome=yes", "ProtectKernelModules=yes", "ProtectControlGroups=yes",
+                    "RestrictSUIDSGID=yes", "LockPersonality=yes", "RestrictRealtime=yes",
+                    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+                    "IPAddressDeny=127.0.0.0/8", "IPAddressDeny=100.64.0.0/10",
+                ):
+                    self.assertIn(required, command)
+                self.assertNotIn("ProtectKernelTunables=yes", command)
+                self.assertNotIn("ProtectKernelLogs=yes", command)
+                bubblewrap = "\0".join(MODULE.bubblewrap_command(operation))
+                self.assertIn("--unshare-all", bubblewrap)
+                self.assertIn("--proc\0/proc", bubblewrap)
+                self.assertNotIn("--bind\0/proc", bubblewrap)
+                self.assertNotIn("--ro-bind\0/proc", bubblewrap)
+
+    @unittest.skipUnless(
+        os.geteuid() == 0 and os.environ.get("ATENEA_VALIDATION_SANDBOX_SMOKE") == "true",
+        "requires explicit root opt-in for the systemd/Bubblewrap smoke",
+    )
+    def test_opt_in_systemd_bubblewrap_java_startup_and_kernel_access(self):
+        slot = pwd.getpwnam("atenea-slot1")
+        with tempfile.TemporaryDirectory(prefix="atenea-validation-preflight.") as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            source = root / "source"
+            source.mkdir(mode=0o755)
+            artifacts = root / "artifacts"
+            artifacts.mkdir(mode=0o700)
+            os.chown(artifacts, slot.pw_uid, slot.pw_gid)
+            resolv = root / "resolv.conf"
+            resolv.write_text("nameserver 1.1.1.1\n", encoding="ascii")
+            resolv.chmod(0o644)
+            helper = root / "helper.py"
+            shutil.copyfile(MODULE_PATH, helper)
+            helper.chmod(0o644)
+            with mock.patch.object(MODULE, "__file__", str(helper)):
+                command = MODULE.sandbox_command(
+                    "BACKEND_TEST", str(uuid.uuid4()), MODULE.DEFINITIONS["BACKEND_TEST"],
+                    slot.pw_name, slot.pw_uid, source, artifacts, resolv,
+                )
+                bubblewrap = MODULE.bubblewrap_command("BACKEND_TEST")
+            unit_index = command.index("--unit") + 1
+            unit = command[unit_index].replace("-sandbox-", "-preflight-")
+            command[unit_index] = unit
+            # Keep both generated sandbox layers; replace only the candidate
+            # entrypoint with a fixed, non-mutating Java/kernel-access probe.
+            entrypoint = bubblewrap.index("/usr/bin/python3")
+            bubblewrap[entrypoint:] = [
+                "/usr/bin/sh", "-c",
+                "test ! -w /proc/sys/kernel/hostname && "
+                "test ! -r /proc/kmsg && test ! -e /dev/kmsg && "
+                "exec /usr/bin/java -XshowSettings:security -version",
+            ]
+            command[command.index("--") + 1:] = bubblewrap
+            try:
+                completed = subprocess.run(
+                    command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, timeout=30, check=False,
+                )
+                self.assertEqual(0, completed.returncode, completed.stdout)
+                self.assertIn("openjdk version", completed.stdout)
+            finally:
+                subprocess.run(
+                    ["/usr/bin/systemctl", "stop", unit], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=10, check=False,
+                )
 
     def test_bubblewrap_mounts_only_fixed_java_config_read_only(self):
         command = MODULE.bubblewrap_command("BACKEND_TEST")
