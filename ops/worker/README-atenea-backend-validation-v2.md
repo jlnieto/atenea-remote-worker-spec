@@ -1,0 +1,74 @@
+# BACKEND_TEST v2 y diagnóstico durable
+
+La definición backend v2 no reutiliza el sandbox de red compartida de web:
+necesita PostgreSQL y loopback HTTP aislados para los tests del repo Atenea.
+
+El installer instala `atenea-backend-test-v2.Dockerfile` y
+`atenea-backend-test-v2.py` root-owned 0644 y comprueba sus fingerprints. El
+broker hace una construcción rootless desde esos dos archivos y un pom con
+hash autorizado. La construcción no recibe el resto del snapshot candidato.
+
+La ejecución usa la imagen observada por digest, UID 1000/GID 0, network none,
+cap-drop ALL, no-new-privileges, imagen read-only, tmpfs limitado y un único
+mount fuente read-only. El GID 0 es interno al contenedor rootless y permite
+leer el snapshot cuyo grupo host es el slot; no concede autoridad host.
+Los tests que crean repositorios Git usan sólo `/workspace` en tmpfs privado
+(`ATENEA_WORKSPACE_ROOT=/workspace/repos`), sin bind del workspace real. Los
+tmpfs de `/work` (5 GiB), `/workspace` (512 MiB) y `/tmp` (512 MiB) suman el
+límite de 6 GiB. El pool JDBC de test se limita a cinco conexiones y cero
+conexiones ociosas mínimas para no agotar el PostgreSQL efímero al crear
+varios contextos Spring.
+
+La precarga Maven de la imagen usa un mirror fijo con identidad `central` para
+todos los repositorios declarados por POMs transitivos. Así el cache sellado
+puede resolverse después offline: un artefacto descargado bajo otro repository
+ID se considera presente pero no disponible para `central`. Además de los
+plugins, se resuelve explícitamente la clausura de dependencias de test; el
+objetivo `dependency:go-offline` por sí solo no precargó todos los jars del
+classpath real.
+El launcher de JUnit que Surefire solicita al ejecutar tests también queda
+precargado en la versión fijada por el pom autorizado.
+
+El preparador crea una DB PostgreSQL 16 exclusivamente local, copia el cache
+Maven y la fuente a tmpfs. Descarta `.git`, `target/` y cachés/outputs Android
+previos, para que clases antiguas o permisos del checkout no determinen el
+resultado. Después el broker ejecuta la suite completa offline.
+No hay App DEV, bind de DB host, token, clave, socket Docker ni red externa
+durante la ejecución candidata. La retirada usa únicamente las identidades de
+contenedor e imagen creadas/observadas en la operación y falla cerradamente.
+
+Una variación de pom exige actualizar explícitamente la toolchain revisada;
+un cliente no puede elegir una receta, versión o imagen. Mantener revisión v2
+en ambos extremos. Los registros terminales v1 se conservan sólo para
+consulta/replay terminal, nunca ejecución ni satisfacción de evidencia v2.
+
+Cada ejecución completada publica atómicamente un diagnóstico root-only con
+fase, código simbólico, exit, hashes e identidades de clases. No se publica
+stdout candidato, variables o paths. El manifest incluye el hash de ese
+diagnóstico. El broker preserva únicamente resúmenes simbólicos allowlisted.
+El stdout original se descarta; no afirmar que un hash permite recuperarlo.
+
+Tests focales sin servicios reales:
+
+```sh
+python3 ops/worker/test-atenea-backend-test-v2.py
+python3 ops/worker/test-atenea-validation-v1.py
+python3 ops/worker/test-closed-validation-broker-contract-v1.py
+bash ops/worker/test-install-agent-run-worker-v1.sh
+```
+
+La imagen backend se construyó y ejecutó realmente el 2026-09-30. Su DB
+PostgreSQL 16 privada, caché Maven sellada y ejecución offline funcionaron.
+La primera ejecución reveló límites ausentes de `/workspace` y del pool JDBC,
+además de fixtures de test obsoletos. Corregidos esos puntos sin omitir tests,
+el `main` App `4815028` termina **989/989 PASS** y el candidato **993/993
+PASS**, incluido un run desde el checkout directo con el nuevo preparador.
+La preparación limpia también se prueba con un puntero `.git` inválido y
+outputs previos. Los 25 tests del mediador incluyen un smoke root real
+systemd/Bubblewrap opt-in en el dedicado; no se aplicó el installer.
+
+ANDROID_BUILD v2 añade precache cerrado de dependencias; consultar
+`README-atenea-android-validation-v2.md`. La receta Android real y su
+compilación candidata offline también pasan. Ambos extremos deben desplegarse
+coordinadamente antes de declarar operativo el corredor; el PASS local no
+sustituye la evidencia durable y el smoke posterior a rollout.

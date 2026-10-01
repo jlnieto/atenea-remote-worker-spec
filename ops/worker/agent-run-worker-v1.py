@@ -340,9 +340,9 @@ EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
 }
 VALIDATION_DEFINITIONS = {
-    "BACKEND_TEST": ("atenea-backend-test-v1", 960, "NORMAL"),
+    "BACKEND_TEST": ("atenea-backend-test-v2", 960, "NORMAL"),
     "WEB_BUILD": ("atenea-web-build-v1", 660, "NORMAL"),
-    "ANDROID_BUILD": ("atenea-android-build-v1", 1260, "HEAVY"),
+    "ANDROID_BUILD": ("atenea-android-build-v2", 1260, "HEAVY"),
     "PLAYWRIGHT_ACCEPTANCE": ("atenea-playwright-acceptance-v1", 660, "HEAVY"),
 }
 PROJECT_ID = "atenea"
@@ -3614,6 +3614,28 @@ class WorkerState:
             "OWNERSHIP_FAILED": "Closed validation ownership was rejected",
             "CANCELLED": "Closed validation was cancelled",
         }[observation["state"]]
+        # Preserve only the mediator's closed symbolic diagnostics, never
+        # candidate stdout or free-form worker error messages.
+        diagnostic = re.fullmatch(
+            r"(BACKEND_TEST|WEB_BUILD|ANDROID_BUILD|PLAYWRIGHT_ACCEPTANCE)/"
+            r"(TOOLCHAIN|CONTAINER|TEST_DATABASE|DEPENDENCIES|COMPILATION|TESTS|SANDBOX|CLEANUP|"
+            r"BACKEND_TEST|WEB_BUILD|ANDROID_BUILD|PLAYWRIGHT_ACCEPTANCE): ([A-Z_]+)",
+            observation["summary"],
+        )
+        diagnostic_causes = {
+            "RESOURCE_LIMIT": "INFRASTRUCTURE", "SANDBOX_SETUP_FAILED": "INFRASTRUCTURE",
+            "TEST_CACHE_INCOMPLETE": "INFRASTRUCTURE", "INSTALLED_TOOLCHAIN_INVALID": "INFRASTRUCTURE",
+            "TEST_TOOLCHAIN_BUILD_FAILED": "INFRASTRUCTURE", "TEST_IMAGE_INVALID": "INFRASTRUCTURE",
+            "TEST_CONTAINER_CREATE_FAILED": "INFRASTRUCTURE", "TEST_CONTAINER_START_FAILED": "INFRASTRUCTURE",
+            "TEST_DATABASE_SETUP_FAILED": "INFRASTRUCTURE", "TEST_RUNTIME_UNAVAILABLE": "INFRASTRUCTURE",
+            "TEST_RUNTIME_CLEANUP_FAILED": "INFRASTRUCTURE",
+            "UNSUPPORTED_DEPENDENCY_MANIFEST": "POLICY", "COMPILATION_FAILED": "CANDIDATE",
+            "TESTS_FAILED": "CANDIDATE", "EXECUTION_FAILED": "VALIDATION",
+        }
+        if (diagnostic is not None
+                and diagnostic.group(1) == validation["validationDefinition"]
+                and diagnostic_causes.get(diagnostic.group(3)) == observation["terminalCause"]):
+            safe_summary = observation["summary"]
         with self.lock:
             if validation["state"] in VALIDATION_TERMINAL:
                 return

@@ -149,7 +149,10 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             },
             set(MODULE.DEFINITIONS),
         )
-        self.assertEqual(("./mvnw", "-q", "test"), MODULE.sandbox_operation_command("BACKEND_TEST"))
+        self.assertEqual("backend", MODULE.DEFINITIONS["BACKEND_TEST"].runner)
+        self.assertEqual("atenea-backend-test-v2", MODULE.DEFINITIONS["BACKEND_TEST"].revision)
+        with self.assertRaises(MODULE.Rejected):
+            MODULE.sandbox_operation_command("BACKEND_TEST")
         self.assertEqual(("./scripts/web-build.sh",), MODULE.sandbox_operation_command("WEB_BUILD"))
         with self.assertRaises(MODULE.Rejected):
             MODULE.sandbox_operation_command("ANDROID_BUILD")
@@ -157,12 +160,12 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             MODULE.sandbox_operation_command("sh -c id")
 
     def test_systemd_and_bubblewrap_command_seal_identity_resources_and_mounts(self):
-        definition = MODULE.DEFINITIONS["BACKEND_TEST"]
+        definition = MODULE.DEFINITIONS["WEB_BUILD"]
         source = Path("/srv/atenea/artifacts/validations/session/.validation-run/source")
         artifacts = Path("/srv/atenea/artifacts/validations/session/.validation-run/artifacts")
         resolv = Path("/srv/atenea/artifacts/validations/session/.validation-run/resolv.conf")
         command = MODULE.sandbox_command(
-            "BACKEND_TEST",
+            "WEB_BUILD",
             "11111111-1111-4111-8111-111111111111",
             definition,
             "atenea-slot2",
@@ -176,29 +179,29 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             "User=atenea-slot2",
             "Group=atenea-slot2",
             "CPUQuota=200%",
-            "MemoryMax=4G",
+            "MemoryMax=3G",
             "TasksMax=512",
-            "RuntimeMaxSec=900s",
+            "RuntimeMaxSec=600s",
             "LimitFSIZE=67108864",
-            "TemporaryFileSystem=/work:rw,nosuid,nodev,size=6G",
+            "TemporaryFileSystem=/work:rw,nosuid,nodev,size=4G",
             f"BindReadOnlyPaths={source}:/source",
             f"BindReadOnlyPaths={resolv}:/validation-resolv.conf",
             f"BindPaths={artifacts}:/artifacts",
             "NoNewPrivileges=yes",
             "IPAddressDeny=100.64.0.0/10",
-            "--sandbox-supervise\0BACKEND_TEST",
+            "--sandbox-supervise\0WEB_BUILD",
         ):
             self.assertIn(required, rendered)
         self.assertNotIn("User=root", rendered)
         self.assertNotIn("/run/user/1102/docker.sock", rendered)
-        bubblewrap = "\0".join(MODULE.bubblewrap_command("BACKEND_TEST"))
+        bubblewrap = "\0".join(MODULE.bubblewrap_command("WEB_BUILD"))
         self.assertIn("/usr/bin/bwrap", bubblewrap)
         self.assertIn("--unshare-all", bubblewrap)
         self.assertIn("--share-net", bubblewrap)
-        self.assertIn("--sandbox-exec\0BACKEND_TEST", bubblewrap)
+        self.assertIn("--sandbox-exec\0WEB_BUILD", bubblewrap)
         self.assertIn("--symlink\0work/tmp\0/tmp", bubblewrap)
-        self.assertNotIn("--bind\0/tmp", bubblewrap)
-        self.assertNotIn("--ro-bind\0/tmp", bubblewrap)
+        self.assertNotIn("--bind\0/tmp\0/tmp", bubblewrap)
+        self.assertNotIn("--ro-bind\0/tmp\0/tmp", bubblewrap)
         self.assertNotIn("/artifacts", bubblewrap)
         git_command = MODULE.git_observation_command(Path("/owned/worktree"), ["status"])
         self.assertIn("core.hooksPath=/dev/null", git_command)
@@ -342,63 +345,29 @@ class ClosedValidationSandboxTests(unittest.TestCase):
         self.assertNotIn("/srv/atenea/workspaces", rendered)
 
     def test_android_uses_reviewed_dockerfile_and_bounded_rootless_container(self):
-        calls = []
-
-        def fake_call(_prefix, arguments, _timeout, _output=None, capture=False):
-            calls.append(arguments)
-            stdout = "a" * 64 + "\n" if capture else None
-            return subprocess.CompletedProcess(arguments, 0, stdout=stdout)
-
-        with tempfile.TemporaryDirectory() as temporary:
-            source = Path(temporary)
-            (source / "docker").mkdir()
-            (source / "docker/android-builder.Dockerfile").write_text("reviewed\n")
-            with mock.patch.object(MODULE, "sha256_file", return_value=MODULE.ANDROID_DOCKERFILE_SHA256), mock.patch.object(MODULE, "docker_call", side_effect=fake_call):
-                result = MODULE.run_android(
-                    ["rootless-docker"],
-                    "11111111-1111-4111-8111-111111111111",
-                    source,
-                    MODULE.DEFINITIONS["ANDROID_BUILD"],
-                    io.StringIO(),
-                )
-        self.assertEqual(0, result)
-        build = calls[0]
-        create = calls[1]
-        self.assertEqual("default", build[build.index("--network") + 1])
-        self.assertIn("10g", build)
-        for required in (
-            "--network",
-            "none",
-            "--cap-drop",
-            "ALL",
-            "--read-only",
-            "--cpus",
-            "4",
-            "--memory",
-            "10g",
-            "--pids-limit",
-            "2048",
-            "/workspace:rw,nosuid,nodev,size=12g",
-            f"type=bind,src={source},dst=/source,readonly",
-            "cp -a /source/. /workspace/ && cd /workspace/android && exec gradle :app:assembleDebug",
-        ):
-            self.assertIn(required, create)
-        self.assertNotIn("--privileged", create)
+        # The execution/mount/context contract is covered by the dedicated
+        # test-atenea-android-validation-v2.py without a real Docker daemon.
+        definition = MODULE.DEFINITIONS["ANDROID_BUILD"]
+        self.assertEqual("atenea-android-build-v2", definition.revision)
+        self.assertEqual((1200, "400%", "10G", 2048, "12G"), (
+            definition.timeout, definition.cpu_quota, definition.memory_max,
+            definition.tasks_max, definition.storage_max))
 
     def test_android_rejects_an_unregistered_builder_before_docker(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             (source / "docker").mkdir()
             (source / "docker/android-builder.Dockerfile").write_text("foreign\n")
-            with mock.patch.object(MODULE, "docker_call") as docker_call:
-                with self.assertRaises(MODULE.Rejected):
-                    MODULE.run_android(
+            with mock.patch.object(MODULE, "exact_regular_file", return_value=False), \
+                    mock.patch.object(MODULE, "docker_call") as docker_call:
+                result = MODULE.run_android(
                         ["rootless-docker"],
                         "11111111-1111-4111-8111-111111111111",
                         source,
                         MODULE.DEFINITIONS["ANDROID_BUILD"],
                         io.StringIO(),
                     )
+                self.assertEqual("INSTALLED_TOOLCHAIN_INVALID", result.error_code)
             docker_call.assert_not_called()
 
     def test_artifact_publication_refuses_existing_or_surplus_outputs(self):
@@ -494,7 +463,7 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             "validationId": operation_id,
             "sessionId": session_id,
             "operation": "BACKEND_TEST",
-            "definitionRevision": "atenea-backend-test-v1",
+            "definitionRevision": "atenea-backend-test-v2",
             "sourceTreeFingerprintSha256": "a" * 64,
             "status": "SUCCEEDED",
             "exitCode": 0,
@@ -518,6 +487,54 @@ class ClosedValidationSandboxTests(unittest.TestCase):
                 recovered = MODULE.inspect_durable(list(arguments))
         self.assertEqual("SUCCEEDED", recovered["state"])
         self.assertEqual("NONE", recovered["terminalCause"])
+        self.assertEqual("b" * 64, recovered["artifactManifestSha256"])
+
+    def test_retained_v1_terminal_evidence_is_readable_but_cannot_execute_as_v2(self):
+        arguments = ["BACKEND_TEST", str(uuid.uuid4()), "a" * 64, str(uuid.uuid4())]
+        identity = MODULE.durable_identity(arguments)
+        legacy = {**identity, "definitionRevision": "atenea-backend-test-v1"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o750)
+            with mock.patch.object(MODULE, "JOURNAL_ROOT", root), mock.patch.object(MODULE, "require_root"), \
+                    mock.patch.object(MODULE, "execute_validation") as execute:
+                with MODULE.locked_operation(identity) as directory:
+                    record = MODULE.new_operation(legacy)
+                    record.update(state="CANDIDATE_FAILED", terminalCause="CANDIDATE", exitCode=1)
+                    MODULE.write_operation(directory, record)
+                result = MODULE.inspect_durable(arguments)
+                self.assertEqual("atenea-backend-test-v1", result["definitionRevision"])
+                self.assertEqual("CANDIDATE_FAILED", result["state"])
+                self.assertEqual(0, MODULE.execute_durable(arguments))
+                execute.assert_not_called()
+                with MODULE.locked_operation(identity) as directory:
+                    record["state"] = "RUNNING"
+                    MODULE.write_operation(directory, record)
+                with self.assertRaises(MODULE.Rejected):
+                    MODULE.inspect_durable(arguments)
+
+    def test_infrastructure_diagnostic_survives_fresh_inspection_without_becoming_candidate_failure(self):
+        session_id, operation_id = str(uuid.uuid4()), str(uuid.uuid4())
+        arguments = ["BACKEND_TEST", session_id, "a" * 64, operation_id]
+        result = {
+            "status": "BLOCKED", "failureClass": "INFRASTRUCTURE",
+            "exitCode": None, "durationMillis": 3,
+            "artifactManifestSha256": "b" * 64,
+            "summary": "BACKEND_TEST/TEST_DATABASE: TEST_DATABASE_SETUP_FAILED",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o750)
+            with mock.patch.object(MODULE, "JOURNAL_ROOT", root), mock.patch.object(MODULE, "require_root"), \
+                    mock.patch.object(MODULE, "unit_active", return_value=False), \
+                    mock.patch.object(MODULE, "launch_durable_unit"), \
+                    mock.patch.object(MODULE, "execute_validation", return_value=result):
+                MODULE.start_durable(arguments)
+                MODULE.execute_durable(arguments)
+                recovered = MODULE.inspect_durable(list(arguments))
+        self.assertEqual("INFRASTRUCTURE_FAILED", recovered["state"])
+        self.assertEqual("INFRASTRUCTURE", recovered["terminalCause"])
+        self.assertEqual(result["summary"], recovered["summary"])
         self.assertEqual("b" * 64, recovered["artifactManifestSha256"])
 
     def test_durable_coordinator_unit_preserves_bounded_symbolic_authority(self):

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "common": {
+    "docker/android-builder.Dockerfile": "4b61f515954c2062606508ce2c9ccc65a599b1c0582ade4d0708e56f5cb409c2",
+    "android/settings.gradle.kts": "629358338df7f1494269ca061f3920c5be2adf4fcf056791d3944a686193a1e1",
+    "android/build.gradle.kts": "6078defe6e02a0ff57566849bdc94f4d44e182e565b7c87d355a0c5d910cee69",
+    "android/gradle.properties": "227fddd08c706f2fbd8ec825a1b4febe10f786c322fad27fefe115cb098b51e0",
+    "android/gradle/libs.versions.toml": "45811aae62b997f4ac5c15f2bc3defb6c868247ed4f3a951a6ecc3eb00ef5ab6",
+    "android/app/build.gradle.kts": "607f149c4b54497eb68c2813d49178927241098a9454492835d56307d6b882ae",
+    "android/secure/build.gradle.kts": "d841ee9b977f32425776d1dd8550e15232c632af85fff302f6e3d72f22488cc0",
+    "android/core-console/build.gradle.kts": "df2417d740c07bbbf6d917a63939183a16d9c09888e18e6bd975cbd5f5ca9723",
+    "android/voice-runtime/build.gradle.kts": "51af338b46d38021d43e622a61e92a8fbfb9c5f0925e3d8830dfd761a82d0b8b"
+  },
+  "bundles": [
+    {
+      "id": "atenea-android-dependencies-v1",
+      "files": {
+        "android/api/build.gradle.kts": "0f09df0b25fe36480405d93dae9d07cbba7f0b811c0fe35001c98ff479044d37"
+      }
+    },
+    {
+      "id": "atenea-android-session-test-resources-v1",
+      "files": {
+        "android/api/build.gradle.kts": "5282e94b25a1a24ab9f7e8b605e4aafdd3bc7162d349fd4d0a2f54b26b8b51ce"
+      }
+    }
+  ]
+}

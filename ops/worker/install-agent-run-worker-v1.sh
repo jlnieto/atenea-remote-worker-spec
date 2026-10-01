@@ -14,6 +14,11 @@ DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR="/usr/local/libexec/atenea/development-cha
 PROJECT_RUNNER="/usr/local/libexec/atenea/project-codex-runner-v1.py"
 BEAUTIPS_PROJECT_RUNNER="/usr/local/libexec/atenea/beautips-project-codex-runner-v1.py"
 VALIDATION_MEDIATOR="/usr/local/libexec/atenea/atenea-validation-v1.py"
+BACKEND_TEST_DOCKERFILE="/usr/local/libexec/atenea/atenea-backend-test-v2.Dockerfile"
+BACKEND_TEST_PREPARER="/usr/local/libexec/atenea/atenea-backend-test-v2.py"
+ANDROID_VALIDATION_INPUTS="/usr/local/libexec/atenea/atenea-android-inputs-v2.json"
+ANDROID_VALIDATION_FRAGMENT="/usr/local/libexec/atenea/atenea-android-validation-v2.Dockerfile"
+ANDROID_VALIDATION_RUNTIME="/usr/local/libexec/atenea/atenea-android-runtime-v2.py"
 RUNTIME_ADMISSION="/usr/local/libexec/atenea/runtime-admission-v1.sh"
 VALIDATION_JOURNAL_ROOT="/srv/atenea/worker/validation-broker-v1"
 PLAYWRIGHT_CHECK="/usr/local/libexec/atenea/atenea-playwright-validation-v1.js"
@@ -72,8 +77,13 @@ PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="0028eda39a04ee91ecc6a8ca4888e9d26b8a3506c76500b7fe727ab2c2c0bdf7"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="6c5ebdc8e977b6d7b5adac95617dce7eb85747d1582377ca4c2392049b27fc59"
-VALIDATION_MEDIATOR_SHA256="1526cab04f6f88bb8705df892e337957e38f1d27ac83c5881b7717efd6d4691f"
+PROGRAM_SHA256="ddfd74c3201200ea76e03c88e695204d940b3daa1f96481ef79aa283f6bbada6"
+VALIDATION_MEDIATOR_SHA256="69995893456260d9fae8ff20d95696654d8f78dec1c5b1ec75253f42e10d0bb6"
+BACKEND_TEST_DOCKERFILE_SHA256="8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
+BACKEND_TEST_PREPARER_SHA256="0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
+ANDROID_VALIDATION_INPUTS_SHA256="bd78708d54aadda01ecd0961eed742bd7d43838e4952740c9d300cd34fc52729"
+ANDROID_VALIDATION_FRAGMENT_SHA256="60dec6885b030ba5a4f3287b80e58d51a046fcf905cba2db67122bda7b8f4d74"
+ANDROID_VALIDATION_RUNTIME_SHA256="964586ac5953ad5e5e781a917890c68b60d8319b6de6b55552cd14c0a9c0b105"
 PLAYWRIGHT_CHECK_SHA256="4196efbfa306edd95955683f1123cffa96645938441f81717ad9032052d68ed9"
 DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="ab4c48e2c7ad783b433ecd0e0ec89433891f10cc9da079be86d45ef2089be601"
 PROJECT_RUNNER_SHA256="34c18208f978b728a949deb73bf60391f48944778c1502befc86606e9687b5f1"
@@ -352,6 +362,21 @@ validate_inputs() {
   [[ -f "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" ]] \
     || fail "Beautips compatibility runner is missing"
   [[ -f "$SCRIPT_DIR/atenea-validation-v1.py" ]] || fail "validation mediator is missing"
+  [[ -f "$SCRIPT_DIR/atenea-backend-test-v2.Dockerfile" && ! -L "$SCRIPT_DIR/atenea-backend-test-v2.Dockerfile" \
+      && "$(sha256sum "$SCRIPT_DIR/atenea-backend-test-v2.Dockerfile" | cut -d' ' -f1)" == "$BACKEND_TEST_DOCKERFILE_SHA256" ]] \
+    || fail "backend test Dockerfile differs from the reviewed source"
+  [[ -f "$SCRIPT_DIR/atenea-backend-test-v2.py" && ! -L "$SCRIPT_DIR/atenea-backend-test-v2.py" \
+      && "$(sha256sum "$SCRIPT_DIR/atenea-backend-test-v2.py" | cut -d' ' -f1)" == "$BACKEND_TEST_PREPARER_SHA256" ]] \
+    || fail "backend test preparer differs from the reviewed source"
+  [[ -f "$SCRIPT_DIR/atenea-android-inputs-v2.json" && ! -L "$SCRIPT_DIR/atenea-android-inputs-v2.json" \
+      && "$(sha256sum "$SCRIPT_DIR/atenea-android-inputs-v2.json" | cut -d' ' -f1)" == "$ANDROID_VALIDATION_INPUTS_SHA256" ]] \
+    || fail "Android validation manifest differs from the reviewed source"
+  [[ -f "$SCRIPT_DIR/atenea-android-validation-v2.Dockerfile" && ! -L "$SCRIPT_DIR/atenea-android-validation-v2.Dockerfile" \
+      && "$(sha256sum "$SCRIPT_DIR/atenea-android-validation-v2.Dockerfile" | cut -d' ' -f1)" == "$ANDROID_VALIDATION_FRAGMENT_SHA256" ]] \
+    || fail "Android validation recipe differs from the reviewed source"
+  [[ -f "$SCRIPT_DIR/atenea-android-runtime-v2.py" && ! -L "$SCRIPT_DIR/atenea-android-runtime-v2.py" \
+      && "$(sha256sum "$SCRIPT_DIR/atenea-android-runtime-v2.py" | cut -d' ' -f1)" == "$ANDROID_VALIDATION_RUNTIME_SHA256" ]] \
+    || fail "Android validation preparer differs from the reviewed source"
   [[ -f "$SCRIPT_DIR/runtime-admission-v1.sh" ]] || fail "validation runtime admission is missing"
   [[ -f "$SCRIPT_DIR/atenea-playwright-validation-v1.js" ]] || fail "Playwright check is missing"
   [[ -f "$SCRIPT_DIR/atenea-multi-repository-v1.sh" ]] || fail "repository role mediator is missing"
@@ -1338,6 +1363,11 @@ apply_install() {
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/beautips-project-codex-runner-v1.py" "$BEAUTIPS_PROJECT_RUNNER"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-validation-v1.py" "$VALIDATION_MEDIATOR"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-backend-test-v2.Dockerfile" "$BACKEND_TEST_DOCKERFILE"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-backend-test-v2.py" "$BACKEND_TEST_PREPARER"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-android-inputs-v2.json" "$ANDROID_VALIDATION_INPUTS"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-android-validation-v2.Dockerfile" "$ANDROID_VALIDATION_FRAGMENT"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-android-runtime-v2.py" "$ANDROID_VALIDATION_RUNTIME"
   install -o root -g root -m 0755 "$SCRIPT_DIR/runtime-admission-v1.sh" "$RUNTIME_ADMISSION"
   install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-playwright-validation-v1.js" "$PLAYWRIGHT_CHECK"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-multi-repository-v1.sh" "$ROLE_MEDIATOR"
@@ -1549,6 +1579,26 @@ verify() {
         == "$VALIDATION_MEDIATOR_SHA256" ]] \
     || fail "validation mediator differs from the reviewed source"
   verify_runtime_admission_file "$RUNTIME_ADMISSION" root:root
+  [[ -f "$BACKEND_TEST_DOCKERFILE" && ! -L "$BACKEND_TEST_DOCKERFILE" \
+      && "$(stat -c '%a:%U:%G' "$BACKEND_TEST_DOCKERFILE")" == "644:root:root" \
+      && "$(sha256sum "$BACKEND_TEST_DOCKERFILE" | cut -d' ' -f1)" == "$BACKEND_TEST_DOCKERFILE_SHA256" ]] \
+    || fail "installed backend test Dockerfile differs from the reviewed source"
+  [[ -f "$BACKEND_TEST_PREPARER" && ! -L "$BACKEND_TEST_PREPARER" \
+      && "$(stat -c '%a:%U:%G' "$BACKEND_TEST_PREPARER")" == "644:root:root" \
+      && "$(sha256sum "$BACKEND_TEST_PREPARER" | cut -d' ' -f1)" == "$BACKEND_TEST_PREPARER_SHA256" ]] \
+    || fail "installed backend test preparer differs from the reviewed source"
+  [[ -f "$ANDROID_VALIDATION_INPUTS" && ! -L "$ANDROID_VALIDATION_INPUTS" \
+      && "$(stat -c '%a:%U:%G' "$ANDROID_VALIDATION_INPUTS")" == "644:root:root" \
+      && "$(sha256sum "$ANDROID_VALIDATION_INPUTS" | cut -d' ' -f1)" == "$ANDROID_VALIDATION_INPUTS_SHA256" ]] \
+    || fail "installed Android validation manifest differs from the reviewed source"
+  [[ -f "$ANDROID_VALIDATION_FRAGMENT" && ! -L "$ANDROID_VALIDATION_FRAGMENT" \
+      && "$(stat -c '%a:%U:%G' "$ANDROID_VALIDATION_FRAGMENT")" == "644:root:root" \
+      && "$(sha256sum "$ANDROID_VALIDATION_FRAGMENT" | cut -d' ' -f1)" == "$ANDROID_VALIDATION_FRAGMENT_SHA256" ]] \
+    || fail "installed Android validation recipe differs from the reviewed source"
+  [[ -f "$ANDROID_VALIDATION_RUNTIME" && ! -L "$ANDROID_VALIDATION_RUNTIME" \
+      && "$(stat -c '%a:%U:%G' "$ANDROID_VALIDATION_RUNTIME")" == "644:root:root" \
+      && "$(sha256sum "$ANDROID_VALIDATION_RUNTIME" | cut -d' ' -f1)" == "$ANDROID_VALIDATION_RUNTIME_SHA256" ]] \
+    || fail "installed Android validation preparer differs from the reviewed source"
   [[ -f "$PLAYWRIGHT_CHECK" && ! -L "$PLAYWRIGHT_CHECK" \
       && "$(stat -c '%a:%U:%G' "$PLAYWRIGHT_CHECK")" == "644:root:root" \
       && "$(sha256sum "$PLAYWRIGHT_CHECK" | cut -d' ' -f1)" \

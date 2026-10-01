@@ -48,7 +48,7 @@ class ClosedValidationBrokerContractTest(unittest.TestCase):
             "commit": "a" * 40,
             "manifestSha256": "b" * 64,
             "operation": "BACKEND_TEST",
-            "definitionRevision": "atenea-backend-test-v1",
+            "definitionRevision": "atenea-backend-test-v2",
             "sourceTreeFingerprintSha256": "c" * 64,
         }
         self.operation = {
@@ -56,7 +56,7 @@ class ClosedValidationBrokerContractTest(unittest.TestCase):
             "sourceRevision": "a" * 40,
             "sourceTreeFingerprintSha256": "c" * 64,
             "validationDefinition": "BACKEND_TEST",
-            "definitionRevision": "atenea-backend-test-v1",
+            "definitionRevision": "atenea-backend-test-v2",
             "state": "RECONCILING",
             "terminalCause": "NONE",
             "transportState": "UNCERTAIN",
@@ -87,9 +87,9 @@ class ClosedValidationBrokerContractTest(unittest.TestCase):
 
     def test_four_symbolic_definitions_remain_exact(self):
         revisions = {
-            "BACKEND_TEST": "atenea-backend-test-v1",
+            "BACKEND_TEST": "atenea-backend-test-v2",
             "WEB_BUILD": "atenea-web-build-v1",
-            "ANDROID_BUILD": "atenea-android-build-v1",
+            "ANDROID_BUILD": "atenea-android-build-v2",
             "PLAYWRIGHT_ACCEPTANCE": "atenea-playwright-acceptance-v1",
         }
         for operation, revision in revisions.items():
@@ -126,6 +126,22 @@ class ClosedValidationBrokerContractTest(unittest.TestCase):
             '"credential"', '"environment"',
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_legacy_terminal_receipt_remains_valid_but_new_start_requires_v2(self):
+        legacy = {**self.operation, "definitionRevision": "atenea-backend-test-v1",
+                  "state": "CANDIDATE_FAILED", "terminalCause": "CANDIDATE", "exitCode": 1}
+        self.validate("closed-validation-operation-v1.schema.json", legacy)
+        validator = Draft202012Validator(self.schemas["closed-validation-start-v1.request.schema.json"])
+        self.assertFalse(validator.is_valid({**self.start, "definitionRevision": "atenea-backend-test-v1"}))
+
+    def test_android_v1_receipt_is_retained_but_only_v2_can_start(self):
+        legacy = {**self.operation, "validationDefinition": "ANDROID_BUILD",
+                  "definitionRevision": "atenea-android-build-v1",
+                  "state": "INFRASTRUCTURE_FAILED", "terminalCause": "INFRASTRUCTURE"}
+        self.validate("closed-validation-operation-v1.schema.json", legacy)
+        validator = Draft202012Validator(self.schemas["closed-validation-start-v1.request.schema.json"])
+        self.assertFalse(validator.is_valid({**self.start, "operation": "ANDROID_BUILD",
+                                           "definitionRevision": "atenea-android-build-v1"}))
 
 
 if __name__ == "__main__":
