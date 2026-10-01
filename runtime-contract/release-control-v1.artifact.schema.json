@@ -1,0 +1,21 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/release-control-v1.artifact.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["protocol","target","sourceCommit","payloadSha256","versionCode","versionName","flywayVersion"],
+  "properties":{
+    "protocol":{"const":"atenea-release/v1"},
+    "target":{"enum":["APP_PROD","AX42_PLATFORM","ANDROID_STABLE"]},
+    "sourceCommit":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "payloadSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "versionCode":{"type":["integer","null"],"minimum":1},
+    "versionName":{"type":["string","null"],"pattern":"^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "flywayVersion":{"type":["integer","null"],"minimum":1}
+  },
+  "allOf":[{"if":{"properties":{"target":{"const":"ANDROID_STABLE"}}},
+    "then":{"properties":{"versionCode":{"type":"integer"},"versionName":{"type":"string"}}},
+    "else":{"properties":{"versionCode":{"type":"null"},"versionName":{"type":"null"}}}},
+    {"if":{"properties":{"target":{"const":"APP_PROD"}}},
+    "then":{"properties":{"flywayVersion":{"type":"integer"}}},
+    "else":{"properties":{"flywayVersion":{"type":"null"}}}}]
+}

@@ -1,0 +1,24 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/release-control-v1.response.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["protocol","planId","target","sourceCommit","artifactSha256","predecessorCommit","planSha256","state","errorCode","operationId","versionCode","versionName","createdAt","expiresAt","finishedAt","effectiveSourceCommit","resultSha256"],
+  "properties":{
+    "protocol":{"const":"atenea-release/v1"},
+    "planId":{"$ref":"#/$defs/id"}, "operationId":{"anyOf":[{"$ref":"#/$defs/id"},{"type":"null"}]},
+    "target":{"enum":["APP_PROD","AX42_PLATFORM","ANDROID_STABLE"]},
+    "sourceCommit":{"$ref":"#/$defs/commit"},"predecessorCommit":{"anyOf":[{"$ref":"#/$defs/commit"},{"type":"null"}]},
+    "effectiveSourceCommit":{"anyOf":[{"$ref":"#/$defs/commit"},{"type":"null"}]},"resultSha256":{"$ref":"#/$defs/hash"},
+    "artifactSha256":{"$ref":"#/$defs/hash"},"planSha256":{"$ref":"#/$defs/hash"},
+    "state":{"enum":["PREPARING","READY","ACCEPTED","APPLYING","ROLLING_BACK","SUCCEEDED","ROLLED_BACK","FAILED","BLOCKED","ROLLBACK_FAILED"]},
+    "errorCode":{"type":["string","null"],"pattern":"^[A-Z][A-Z0-9_]{2,79}$"},
+    "versionCode":{"type":["integer","null"],"minimum":1},"versionName":{"type":["string","null"]},
+    "createdAt":{"type":"integer","minimum":1},"expiresAt":{"type":["integer","null"],"minimum":1},
+    "finishedAt":{"type":["integer","null"],"minimum":1}
+  },
+  "$defs":{
+    "id":{"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "hash":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"}
+  }
+}

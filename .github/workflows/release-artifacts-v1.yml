@@ -1,0 +1,42 @@
+name: Atenea Platform immutable release artifacts v1
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  platform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Focal protocol and release tests
+        run: |
+          python3 -m pip install jsonschema==4.23.0
+          python3 ops/release/test-release-control-v1.py
+          python3 ops/release/test-release-admission-v1.py
+          python3 ops/release/test-release-targets-v1.py
+          python3 ops/release/test-release-artifacts-v1.py
+          python3 ops/release/test-install-release-control-v1.py
+          bash ops/worker/test-install-agent-run-worker-v1.sh
+          bash -n ops/release/install-release-control-v1.sh
+          bash -n ops/worker/install-agent-run-worker-v1.sh
+          git diff --check
+      - name: Package reviewed fixed installer tree (no credentials)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p target/release-platform
+          git archive --format=tar HEAD ops runtime-contract AGENTS.md > target/release-platform/platform.tar
+          python3 ops/release/release-artifact-v1.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: atenea-release-ax42_platform-${{ github.sha }}
+          path: target/release-platform/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
