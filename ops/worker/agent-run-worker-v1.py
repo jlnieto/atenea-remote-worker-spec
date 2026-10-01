@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+from functools import wraps
 import hashlib
 import hmac
 import json
@@ -26,6 +27,8 @@ from typing import Any, Iterator
 from urllib.parse import urlparse
 
 PROTOCOL = "agent-run-worker/v1"
+RELEASE_ADMISSION_FILE = Path("/run/atenea/release-v1/admission.lock")
+RELEASE_INSTALLED_MARKER = Path("/etc/atenea-worker/release-control-v1.installed")
 SYNTHETIC_CAPABILITY = "synthetic-routing-v1"
 PROJECT_CAPABILITY = "project-codex-v1"
 PROJECT_V2_CAPABILITY = "project-codex-v2"
@@ -893,6 +896,14 @@ class ProtocolError(Exception):
         )
 
 
+def release_admitted(function):
+    @wraps(function)
+    def admitted(self, *args, **kwargs):
+        with self._release_admission():
+            return function(self, *args, **kwargs)
+    return admitted
+
+
 class WorkerState:
     def __init__(
         self,
@@ -1316,6 +1327,7 @@ class WorkerState:
                 "serverTime": utc_now(),
             }
 
+    @release_admitted
     def execute_development_change_workspace(
         self, request: dict[str, Any], operation: str
     ) -> dict[str, Any]:
@@ -1454,6 +1466,7 @@ class WorkerState:
             )
         return response
 
+    @release_admitted
     def publish_development_change_branch(
         self, request: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1583,6 +1596,7 @@ class WorkerState:
             "models": json.loads(json.dumps(CODEX_MODELS)),
         }
 
+    @release_admitted
     def stage_codex_update(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != CODEX_UPDATE_STAGE_KEYS:
             raise ProtocolError(
@@ -1674,6 +1688,7 @@ class WorkerState:
                 "Codex update stage result is incomplete or conflicting")
         return result
 
+    @release_admitted
     def reconcile_installed_codex_releases(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != CODEX_UPDATE_RECONCILE_KEYS:
             raise ProtocolError(
@@ -1834,6 +1849,7 @@ class WorkerState:
                                 "closed recovery activation result is conflicting")
         return result
 
+    @release_admitted
     def activate_reconciled_codex_releases(self, request: dict[str, Any]) -> dict[str, Any]:
         if (not isinstance(request, dict)
                 or set(request) != {"operation", "idempotencyKey"}
@@ -1882,6 +1898,7 @@ class WorkerState:
                                 "recovery activation idempotency differs")
         return result
 
+    @release_admitted
     def activate_codex_update(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != CODEX_UPDATE_ACTIVATE_KEYS:
             raise ProtocolError(
@@ -1974,6 +1991,7 @@ class WorkerState:
             with self.lock:
                 self.codex_update_in_progress = False
 
+    @release_admitted
     def rollback_codex_update(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != CODEX_UPDATE_ROLLBACK_KEYS:
             raise ProtocolError(
@@ -2107,7 +2125,45 @@ class WorkerState:
                 continue
             self._append_progress(execution, category, message)
 
+    @contextmanager
+    def _release_admission(self):
+        # The separately installed release executor holds an exclusive lock
+        # across preflight/install/verify. No AgentRun owns deployment authority.
+        try:
+            marker = os.open(RELEASE_INSTALLED_MARKER, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            yield
+            return
+        except OSError:
+            raise ProtocolError(HTTPStatus.CONFLICT, "release_admission_unsafe", "Release admission is unavailable") from None
+        else:
+            try:
+                observed = os.fstat(marker)
+                if not stat.S_ISREG(observed.st_mode) or observed.st_uid != 0 or stat.S_IMODE(observed.st_mode) != 0o644:
+                    raise ProtocolError(HTTPStatus.CONFLICT, "release_admission_unsafe", "Release admission is unavailable")
+            finally:
+                os.close(marker)
+        try:
+            descriptor = os.open(RELEASE_ADMISSION_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            raise ProtocolError(HTTPStatus.CONFLICT, "release_admission_unsafe", "Release admission is unavailable") from None
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_uid != 0 or stat.S_IMODE(observed.st_mode) != 0o640:
+                raise ProtocolError(HTTPStatus.CONFLICT, "release_admission_unsafe", "Release admission is unavailable")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ProtocolError(HTTPStatus.CONFLICT, "release_in_progress", "A platform release is in progress") from None
+            yield
+        finally:
+            os.close(descriptor)
+
     def create(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        with self._release_admission():
+            return self._create_admitted(request)
+
+    def _create_admitted(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         workload = self._validate_dispatch_envelope(request)
         change_aware = workload.get("kind") == PROJECT_V4_CAPABILITY
         if not change_aware:
@@ -2226,6 +2282,7 @@ class WorkerState:
         self._validate_profiled_project(request, workload)
         return canonical_hash(request)
 
+    @release_admitted
     def ensure_workspace(self, request: dict[str, Any]) -> dict[str, Any]:
         with self.workspace_lifecycle_lock():
             return self._ensure_workspace_locked(request)
@@ -2257,6 +2314,7 @@ class WorkerState:
                 raise ProtocolError(HTTPStatus.CONFLICT, "workspace_release_execution_live",
                                     "workspace release requires terminal change executions")
 
+    @release_admitted
     def release_workspace(self, request: dict[str, Any]) -> dict[str, Any]:
         exact_request = validate_workspace_release_request(request)
         with self.workspace_lifecycle_lock():
@@ -2321,6 +2379,7 @@ class WorkerState:
                 exact_request, self.worker_id, receipt
             )
 
+    @release_admitted
     def release_unactivated_workspace(self, request: dict[str, Any]) -> dict[str, Any]:
         if not self.unactivated_release_enabled:
             raise ProtocolError(
@@ -3071,6 +3130,12 @@ class WorkerState:
         }
 
     def start_validation(
+        self, request: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        with self._release_admission():
+            return self._start_validation_admitted(request)
+
+    def _start_validation_admitted(
         self, request: dict[str, Any]
     ) -> tuple[dict[str, Any], bool]:
         self._validate_validation_start_shape(request)

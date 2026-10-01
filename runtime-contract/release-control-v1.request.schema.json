@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.yudri.es/contracts/release-control-v1.request.schema.json",
+  "title": "Atenea fixed-target release request v1",
+  "oneOf": [
+    {"type":"object","additionalProperties":false,"required":["operation","planId","target","sourceCommit"],
+     "properties":{"operation":{"const":"PLAN"},"planId":{"$ref":"#/$defs/id"},
+       "target":{"enum":["APP_PROD","AX42_PLATFORM","ANDROID_STABLE"]},"sourceCommit":{"$ref":"#/$defs/commit"}}},
+    {"type":"object","additionalProperties":false,"required":["operation","planId"],
+     "properties":{"operation":{"const":"INSPECT"},"planId":{"$ref":"#/$defs/id"}}},
+    {"type":"object","additionalProperties":false,"required":["operation","planId","planSha256","operationId"],
+     "properties":{"operation":{"const":"EXECUTE"},"planId":{"$ref":"#/$defs/id"},
+       "operationId":{"$ref":"#/$defs/id"},"planSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}
+  ],
+  "$defs": {
+    "id":{"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "commit":{"type":"string","pattern":"^[0-9a-f]{40}$"}
+  }
+}
