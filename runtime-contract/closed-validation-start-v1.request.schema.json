@@ -26,8 +26,8 @@
     },
     "definitionRevision": {
       "enum": [
-        "atenea-backend-test-v1", "atenea-web-build-v1",
-        "atenea-android-build-v1", "atenea-playwright-acceptance-v1"
+        "atenea-backend-test-v2", "atenea-web-build-v1",
+        "atenea-android-build-v2", "atenea-playwright-acceptance-v1"
       ]
     },
     "sourceTreeFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
@@ -35,7 +35,7 @@
   "allOf": [
     {
       "if": {"properties": {"operation": {"const": "BACKEND_TEST"}}},
-      "then": {"properties": {"definitionRevision": {"const": "atenea-backend-test-v1"}}}
+      "then": {"properties": {"definitionRevision": {"const": "atenea-backend-test-v2"}}}
     },
     {
       "if": {"properties": {"operation": {"const": "WEB_BUILD"}}},
@@ -43,7 +43,7 @@
     },
     {
       "if": {"properties": {"operation": {"const": "ANDROID_BUILD"}}},
-      "then": {"properties": {"definitionRevision": {"const": "atenea-android-build-v1"}}}
+      "then": {"properties": {"definitionRevision": {"const": "atenea-android-build-v2"}}}
     },
     {
       "if": {"properties": {"operation": {"const": "PLAYWRIGHT_ACCEPTANCE"}}},

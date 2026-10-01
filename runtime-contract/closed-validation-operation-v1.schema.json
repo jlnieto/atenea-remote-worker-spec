@@ -27,8 +27,8 @@
     },
     "definitionRevision": {
       "enum": [
-        "atenea-backend-test-v1", "atenea-web-build-v1",
-        "atenea-android-build-v1", "atenea-playwright-acceptance-v1"
+        "atenea-backend-test-v1", "atenea-backend-test-v2", "atenea-web-build-v1",
+        "atenea-android-build-v1", "atenea-android-build-v2", "atenea-playwright-acceptance-v1"
       ]
     },
     "state": {

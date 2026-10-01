@@ -39,7 +39,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "6c5ebdc8e977b6d7b5adac95617dce7eb85747d1582377ca4c2392049b27fc59" ]] \
+    == "ddfd74c3201200ea76e03c88e695204d940b3daa1f96481ef79aa283f6bbada6" ]] \
   || fail "worker validation admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
@@ -61,6 +61,16 @@ fi
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-validation-v1.py" | cut -d' ' -f1)" \
     == "${VALIDATION_MEDIATOR_SHA256}" ]] \
   || fail "validation mediator fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-backend-test-v2.Dockerfile" | cut -d' ' -f1)" \
+    == "${BACKEND_TEST_DOCKERFILE_SHA256}" ]] || fail "backend test recipe fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-backend-test-v2.py" | cut -d' ' -f1)" \
+    == "${BACKEND_TEST_PREPARER_SHA256}" ]] || fail "backend test preparer fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-android-inputs-v2.json" | cut -d' ' -f1)" \
+    == "${ANDROID_VALIDATION_INPUTS_SHA256}" ]] || fail "Android validation manifest fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-android-validation-v2.Dockerfile" | cut -d' ' -f1)" \
+    == "${ANDROID_VALIDATION_FRAGMENT_SHA256}" ]] || fail "Android validation recipe fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-android-runtime-v2.py" | cut -d' ' -f1)" \
+    == "${ANDROID_VALIDATION_RUNTIME_SHA256}" ]] || fail "Android validation runtime fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-playwright-validation-v1.js" | cut -d' ' -f1)" \
     == "${PLAYWRIGHT_CHECK_SHA256}" ]] \
   || fail "Playwright check fingerprint is stale"

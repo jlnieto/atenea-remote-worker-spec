@@ -41,6 +41,17 @@ PLAYWRIGHT_CHECK_SHA256 = (
 ANDROID_DOCKERFILE_SHA256 = (
     "4b61f515954c2062606508ce2c9ccc65a599b1c0582ade4d0708e56f5cb409c2"
 )
+ANDROID_INPUTS = Path("/usr/local/libexec/atenea/atenea-android-inputs-v2.json")
+ANDROID_FRAGMENT = Path("/usr/local/libexec/atenea/atenea-android-validation-v2.Dockerfile")
+ANDROID_RUNTIME = Path("/usr/local/libexec/atenea/atenea-android-runtime-v2.py")
+ANDROID_INPUTS_SHA256 = "bd78708d54aadda01ecd0961eed742bd7d43838e4952740c9d300cd34fc52729"
+ANDROID_FRAGMENT_SHA256 = "60dec6885b030ba5a4f3287b80e58d51a046fcf905cba2db67122bda7b8f4d74"
+ANDROID_RUNTIME_SHA256 = "964586ac5953ad5e5e781a917890c68b60d8319b6de6b55552cd14c0a9c0b105"
+BACKEND_DOCKERFILE = Path("/usr/local/libexec/atenea/atenea-backend-test-v2.Dockerfile")
+BACKEND_PREPARER = Path("/usr/local/libexec/atenea/atenea-backend-test-v2.py")
+BACKEND_DOCKERFILE_SHA256 = "8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
+BACKEND_PREPARER_SHA256 = "0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
+BACKEND_POM_SHA256 = "948f346ea55fa1a3b124a7a742b52cb1fdb037c4a3efd0b4aee6ff7b01556a6f"
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -70,13 +81,13 @@ class Definition:
 # or resource bound is accepted from the worker client.
 DEFINITIONS = {
     "BACKEND_TEST": Definition(
-        "atenea-backend-test-v1", 900, "200%", "4G", 512, "6G", "sandbox"
+        "atenea-backend-test-v2", 900, "200%", "4G", 512, "6G", "backend"
     ),
     "WEB_BUILD": Definition(
         "atenea-web-build-v1", 600, "200%", "3G", 512, "4G", "sandbox"
     ),
     "ANDROID_BUILD": Definition(
-        "atenea-android-build-v1", 1200, "400%", "10G", 2048, "12G", "android"
+        "atenea-android-build-v2", 1200, "400%", "10G", 2048, "12G", "android"
     ),
     "PLAYWRIGHT_ACCEPTANCE": Definition(
         "atenea-playwright-acceptance-v1",
@@ -585,13 +596,63 @@ def clean_environment() -> dict[str, str]:
 
 def sandbox_operation_command(operation: str) -> tuple[str, ...]:
     command = {
-        "BACKEND_TEST": ("./mvnw", "-q", "test"),
         "WEB_BUILD": ("./scripts/web-build.sh",),
         "PLAYWRIGHT_ACCEPTANCE": ("./scripts/web-build.sh",),
     }.get(operation)
     if command is None or DEFINITIONS[operation].runner not in {"sandbox", "playwright"}:
         reject()
     return command
+
+
+@dataclasses.dataclass(frozen=True)
+class RunOutcome:
+    exit_code: int
+    phase: str
+    error_code: str
+    failure_class: str
+
+
+class RuntimeFailure(RuntimeError):
+    def __init__(self, outcome: RunOutcome):
+        super().__init__(outcome.error_code)
+        self.outcome = outcome
+
+
+def bounded_output(path: Path) -> str:
+    with path.open("rb") as stream:
+        stream.seek(max(0, path.stat().st_size - 65536))
+        return stream.read(65536).decode("utf-8", errors="replace")
+
+
+def classify_execution(exit_code: int, output: str, phase: str) -> RunOutcome:
+    if exit_code == 0:
+        return RunOutcome(0, phase, "NONE", "NONE")
+    if exit_code in {124, 137}:
+        return RunOutcome(exit_code, phase, "RESOURCE_LIMIT", "INFRASTRUCTURE")
+    if re.search(r"(?m)^(?:bwrap:|Failed to (?:start|mount)|Error occurred during initialization of VM)", output):
+        return RunOutcome(exit_code, "SANDBOX", "SANDBOX_SETUP_FAILED", "INFRASTRUCTURE")
+    if phase == "ANDROID_BUILD" and any(marker in output for marker in (
+        "No cached version of", "No cached resource available for offline mode",
+        "Could not resolve plugin artifact", "was not found in any of the following sources",
+    )):
+        return RunOutcome(exit_code, "DEPENDENCIES", "TEST_CACHE_INCOMPLETE", "INFRASTRUCTURE")
+    if phase == "ANDROID_BUILD":
+        if "Compilation error" in output or "Compilation failed" in output:
+            return RunOutcome(exit_code, "COMPILATION", "COMPILATION_FAILED", "CANDIDATE")
+        if "There were failing tests" in output:
+            return RunOutcome(exit_code, "TESTS", "TESTS_FAILED", "CANDIDATE")
+    if phase == "BACKEND_TEST":
+        if any(marker in output for marker in (
+            "Could not resolve dependencies", "has not been downloaded",
+            "Cannot access central", "could not be resolved",
+        )):
+            return RunOutcome(exit_code, "DEPENDENCIES", "TEST_CACHE_INCOMPLETE", "INFRASTRUCTURE")
+        if "COMPILATION ERROR" in output:
+            return RunOutcome(exit_code, "COMPILATION", "COMPILATION_FAILED", "CANDIDATE")
+        if "There are test failures" in output or re.search(r"Failures: [1-9]|Errors: [1-9]", output):
+            return RunOutcome(exit_code, "TESTS", "TESTS_FAILED", "CANDIDATE")
+    # An unexplained nonzero exit is not evidence of a candidate defect.
+    return RunOutcome(exit_code, phase, "EXECUTION_FAILED", "VALIDATION")
 
 
 def sandbox_exec(operation: str) -> int:
@@ -686,13 +747,10 @@ def docker_call(
     )
 
 
-def run_android(
-    prefix: list[str],
-    validation_id: str,
-    source_root: Path,
-    definition: Definition,
-    output: IO[str],
-) -> int:
+def run_backend(
+    prefix: list[str], validation_id: str, source_root: Path,
+    definition: Definition, output: IO[str],
+) -> RunOutcome:
     deadline = time.monotonic() + definition.timeout
 
     def remaining(cap: int) -> float:
@@ -701,22 +759,193 @@ def run_android(
             raise subprocess.TimeoutExpired(prefix, definition.timeout)
         return value
 
-    dockerfile = source_root / "docker/android-builder.Dockerfile"
-    if sha256_file(dockerfile) != ANDROID_DOCKERFILE_SHA256:
-        reject()
-    # Only the reviewed builder definition can create the validation-specific
-    # rootless image. Candidate code is not allowed to choose build options.
+    for path, digest in (
+        (BACKEND_DOCKERFILE, BACKEND_DOCKERFILE_SHA256),
+        (BACKEND_PREPARER, BACKEND_PREPARER_SHA256),
+    ):
+        if not exact_regular_file(path, 0o644) or sha256_file(path) != digest:
+            return RunOutcome(70, "TOOLCHAIN", "INSTALLED_TOOLCHAIN_INVALID", "INFRASTRUCTURE")
+    pom = source_root / "pom.xml"
+    if pom.is_symlink() or not pom.is_file() or sha256_file(pom) != BACKEND_POM_SHA256:
+        return RunOutcome(64, "TOOLCHAIN", "UNSUPPORTED_DEPENDENCY_MANIFEST", "POLICY")
+    if any((source_root / ".mvn" / name).exists() or (source_root / ".mvn" / name).is_symlink()
+           for name in ("maven.config", "jvm.config", "extensions.xml")):
+        return RunOutcome(64, "TOOLCHAIN", "UNSUPPORTED_DEPENDENCY_MANIFEST", "POLICY")
+
+    context = source_root.parent / "backend-build"
+    context.mkdir(mode=0o700)
+    for source, name in ((BACKEND_DOCKERFILE, "Dockerfile"),
+                         (BACKEND_PREPARER, "atenea-backend-test-v2.py"), (pom, "pom.xml")):
+        shutil.copyfile(source, context / name)
+    slot_user = prefix[prefix.index("-u") + 1]
+    make_slot_readable(context, pwd.getpwnam(slot_user).pw_gid)
+    image = f"atenea-backend-validation:{validation_id}"
+    built = docker_call(prefix, ["build", "--network", "default", "--memory", "4g",
+                        "--cpu-quota", "200000", "--tag", image,
+                        "--label", f"com.atenea.validation-id={validation_id}", str(context)],
+                        remaining(definition.timeout), output)
+    if built.returncode != 0:
+        return RunOutcome(built.returncode, "TOOLCHAIN", "TEST_TOOLCHAIN_BUILD_FAILED", "INFRASTRUCTURE")
+    container_id = None
+    image_id = None
+    try:
+        inspected = docker_call(prefix, ["image", "inspect", "--format", "{{.Id}}", image],
+                                remaining(30), capture=True)
+        image_id = str(inspected.stdout).strip()
+        if inspected.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            return RunOutcome(70, "TOOLCHAIN", "TEST_IMAGE_INVALID", "INFRASTRUCTURE")
+        created = docker_call(prefix, [
+            "create", "--name", "atenea-backend-" + validation_id.replace("-", ""),
+            "--label", f"com.atenea.validation-id={validation_id}",
+            "--label", "com.atenea.validation=backend-v2",
+            "--network", "none", "--user", "1000:0", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--read-only",
+            "--cpus", "2", "--memory", definition.memory_max.lower(),
+            "--pids-limit", str(definition.tasks_max),
+            "--tmpfs", "/work:rw,nosuid,nodev,size=5g,uid=1000,gid=0,mode=0700",
+            "--tmpfs", "/workspace:rw,nosuid,nodev,size=512m,uid=1000,gid=0,mode=0700",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,uid=1000,gid=0,mode=0700",
+            "--mount", f"type=bind,src={source_root},dst=/source,readonly",
+            "--env", "SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:5432/atenea_test",
+            "--env", "SPRING_DATASOURCE_USERNAME=atenea",
+            "--env", "SPRING_DATASOURCE_PASSWORD=atenea",
+            "--env", "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE=0",
+            "--env", "SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=5",
+            "--env", "ATENEA_WORKSPACE_ROOT=/workspace/repos",
+            image_id, "/bin/sleep", "infinity",
+        ], remaining(30), capture=True)
+        candidate_id = str(created.stdout).strip()
+        if created.returncode != 0 or re.fullmatch(r"[0-9a-f]{64}", candidate_id) is None:
+            return RunOutcome(70, "CONTAINER", "TEST_CONTAINER_CREATE_FAILED", "INFRASTRUCTURE")
+        container_id = candidate_id
+        started = docker_call(prefix, ["start", container_id], remaining(30), output)
+        if started.returncode != 0:
+            return RunOutcome(started.returncode, "CONTAINER", "TEST_CONTAINER_START_FAILED", "INFRASTRUCTURE")
+        prepared = docker_call(prefix, ["exec", container_id, "/usr/bin/python3",
+                              "/opt/atenea-backend-test-v2.py", "--prepare"], remaining(120), output)
+        if prepared.returncode != 0:
+            return RunOutcome(prepared.returncode, "TEST_DATABASE", "TEST_DATABASE_SETUP_FAILED", "INFRASTRUCTURE")
+        tested = docker_call(prefix, ["exec", "--workdir", "/work/repo", container_id,
+                            "/usr/share/maven/bin/mvn", "--offline", "-B", "-q",
+                            "-Dmaven.repo.local=/work/m2", "test"], remaining(definition.timeout), output)
+        output.flush()
+        return classify_execution(tested.returncode, bounded_output(Path(output.name)), "BACKEND_TEST")
+    finally:
+        cleanup_failed = False
+        try:
+            if container_id is not None:
+                cleanup_failed = docker_call(prefix, ["rm", "--force", container_id], 60).returncode != 0
+            # A tag may move. Delete only the immutable image identity observed
+            # for this operation, never a foreign or unverified tag.
+            if image_id is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                cleanup_failed |= docker_call(prefix, ["image", "rm", image_id], 60).returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            cleanup_failed = True
+        if cleanup_failed:
+            raise RuntimeFailure(RunOutcome(70, "CLEANUP", "TEST_RUNTIME_CLEANUP_FAILED", "INFRASTRUCTURE"))
+
+
+def normalized_android_application(value: bytes) -> bytes | None:
+    # APK labels are not toolchain versions. Only plain numeric literals may
+    # vary; all executable Gradle structure remains hash-locked. The trusted
+    # prefetch build always receives these fixed synthetic labels.
+    patterns = (
+        (rb"(?m)^        versionCode = [1-9][0-9]{0,8}$", b"        versionCode = 1"),
+        (rb'(?m)^        versionName = "[0-9]{1,4}\.[0-9]{1,6}\.[0-9]{1,6}"$',
+         b'        versionName = "0.0.0"'),
+    )
+    for pattern, replacement in patterns:
+        value, count = re.subn(pattern, replacement, value)
+        if count != 1:
+            return None
+    return value
+
+
+def android_build_inputs(source_root: Path) -> dict[str, bytes] | None:
+    # Groovy alternatives/buildSrc can override a reviewed .kts graph. Lock
+    # all automatically adopted build authority, not merely the primary files.
+    roots = ("android", "android/app", "android/api", "android/secure",
+             "android/core-console", "android/voice-runtime")
+    forbidden = [source_root / root / name for root in roots for name in (
+        "build.gradle", "settings.gradle", "buildSrc", "gradle.lockfile")]
+    forbidden += [source_root / "android/gradle" / name for name in (
+        "verification-metadata.xml", "dependency-locks")]
+    if any(path.exists() or path.is_symlink() for path in forbidden):
+        return None
+    manifest = load_json(ANDROID_INPUTS)
+    common = manifest["common"]
+    for bundle in manifest["bundles"]:
+        expected = {**common, **bundle["files"]}
+        observed = {}
+        for name, digest in expected.items():
+            # The root-owned, hash-locked manifest is the authority. Never
+            # follow a candidate link, including links in parent components.
+            current = source_root
+            valid = True
+            for part in Path(name).parts:
+                current = current / part
+                if current.is_symlink():
+                    valid = False
+                    break
+            if not valid or not current.is_file() or current.stat().st_size > 256 * 1024:
+                break
+            value = current.read_bytes()
+            if name == "android/app/build.gradle.kts":
+                value = normalized_android_application(value)
+                if value is None:
+                    break
+            if hashlib.sha256(value).hexdigest() != digest:
+                break
+            observed[name] = value
+        if len(observed) == len(expected):
+            return observed
+    return None
+
+
+def run_android(
+    prefix: list[str],
+    validation_id: str,
+    source_root: Path,
+    definition: Definition,
+    output: IO[str],
+) -> RunOutcome:
+    deadline = time.monotonic() + definition.timeout
+
+    def remaining(cap: int) -> float:
+        value = min(float(cap), deadline - time.monotonic())
+        if value <= 0:
+            raise subprocess.TimeoutExpired(prefix, definition.timeout)
+        return value
+
+    for path, digest in ((ANDROID_INPUTS, ANDROID_INPUTS_SHA256),
+                         (ANDROID_FRAGMENT, ANDROID_FRAGMENT_SHA256),
+                         (ANDROID_RUNTIME, ANDROID_RUNTIME_SHA256)):
+        if not exact_regular_file(path, 0o644) or sha256_file(path) != digest:
+            return RunOutcome(70, "TOOLCHAIN", "INSTALLED_TOOLCHAIN_INVALID", "INFRASTRUCTURE")
+    inputs = android_build_inputs(source_root)
+    if inputs is None:
+        return RunOutcome(64, "TOOLCHAIN", "UNSUPPORTED_DEPENDENCY_MANIFEST", "POLICY")
+    context = source_root.parent / "android-build"
+    context.mkdir(mode=0o700)
+    for name, value in inputs.items():
+        if name == "docker/android-builder.Dockerfile":
+            continue
+        destination = context / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(value)
+    (context / "Dockerfile").write_bytes(
+        inputs["docker/android-builder.Dockerfile"] + b"\n" + ANDROID_FRAGMENT.read_bytes())
+    shutil.copyfile(ANDROID_RUNTIME, context / "atenea-android-runtime-v2.py")
+    slot_user = prefix[prefix.index("-u") + 1]
+    make_slot_readable(context, pwd.getpwnam(slot_user).pw_gid)
+    # Only these reviewed configurations and synthetic trusted probes execute
+    # with network. Source, buildSrc, init scripts and secrets are not inputs.
     image = f"atenea-android-validation:{validation_id}"
     build = docker_call(
         prefix,
         [
             "build",
-            "--file",
-            str(dockerfile),
             "--network",
-            # The reviewed builder needs its fixed public downloads. Rootless
-            # Docker's isolated default network is explicit; candidate Gradle
-            # code runs later with no network at all.
             "default",
             "--memory",
             definition.memory_max.lower(),
@@ -727,76 +956,66 @@ def run_android(
             "--tag",
             image,
             "--label",
-            "com.atenea.validation=android-builder-v1",
-            str(source_root),
+            "com.atenea.validation=android-builder-v2",
+            "--label",
+            f"com.atenea.validation-id={validation_id}",
+            str(context),
         ],
         remaining(definition.timeout),
         output,
     )
     if build.returncode != 0:
-        return build.returncode
-    name = "atenea-android-" + validation_id.replace("-", "")
-    create = docker_call(
-        prefix,
-        [
-            "create",
-            "--name",
-            name,
-            "--label",
-            "com.atenea.validation=android-v1",
-            "--label",
-            f"com.atenea.validation-id={validation_id}",
-            "--network",
-            "none",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--read-only",
-            "--cpus",
-            "4",
-            "--memory",
-            definition.memory_max.lower(),
-            "--pids-limit",
-            str(definition.tasks_max),
-            "--tmpfs",
-            f"/workspace:rw,nosuid,nodev,size={definition.storage_max.lower()}",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=512m",
-            "--tmpfs",
-            "/root/.gradle:rw,nosuid,nodev,size=3g",
-            "--tmpfs",
-            "/root/.android:rw,nosuid,nodev,size=64m",
-            "--mount",
-            f"type=bind,src={source_root},dst=/source,readonly",
-            "--workdir",
-            "/workspace",
-            image,
-            "/bin/sh",
-            "-c",
-            "cp -a /source/. /workspace/ && cd /workspace/android && exec gradle :app:assembleDebug",
-        ],
-        remaining(60),
-        capture=True,
-    )
-    if create.returncode != 0:
-        docker_call(prefix, ["image", "rm", image], 60)
-        return create.returncode
-    container_id = str(create.stdout).strip()
-    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
-        docker_call(prefix, ["image", "rm", image], 60)
-        reject()
+        return RunOutcome(build.returncode, "TOOLCHAIN", "TEST_TOOLCHAIN_BUILD_FAILED", "INFRASTRUCTURE")
+    container_id = None
+    image_id = None
     try:
-        started = docker_call(
-            prefix,
-            ["start", "--attach", container_id],
-            remaining(definition.timeout),
-            output,
-        )
-        return started.returncode
+        inspected = docker_call(prefix, ["image", "inspect", "--format", "{{.Id}}", image],
+                                remaining(30), capture=True)
+        image_id = str(inspected.stdout).strip()
+        if inspected.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            return RunOutcome(70, "TOOLCHAIN", "TEST_IMAGE_INVALID", "INFRASTRUCTURE")
+        created = docker_call(prefix, [
+            "create", "--name", "atenea-android-" + validation_id.replace("-", ""),
+            "--label", "com.atenea.validation=android-v2",
+            "--label", f"com.atenea.validation-id={validation_id}",
+            "--network", "none", "--user", "1000:0", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--read-only",
+            "--cpus", "4", "--memory", definition.memory_max.lower(),
+            "--pids-limit", str(definition.tasks_max),
+            "--tmpfs", f"/work:rw,exec,nosuid,nodev,size={definition.storage_max.lower()},uid=1000,gid=0,mode=0700",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=512m,uid=1000,gid=0,mode=0700",
+            "--mount", f"type=bind,src={source_root},dst=/source,readonly",
+            image_id, "/bin/sleep", "infinity",
+        ], remaining(30), capture=True)
+        candidate_id = str(created.stdout).strip()
+        if created.returncode != 0 or re.fullmatch(r"[0-9a-f]{64}", candidate_id) is None:
+            return RunOutcome(70, "CONTAINER", "TEST_CONTAINER_CREATE_FAILED", "INFRASTRUCTURE")
+        container_id = candidate_id
+        started = docker_call(prefix, ["start", container_id], remaining(30), output)
+        if started.returncode != 0:
+            return RunOutcome(started.returncode, "CONTAINER", "TEST_CONTAINER_START_FAILED", "INFRASTRUCTURE")
+        prepared = docker_call(prefix, ["exec", container_id, "/usr/bin/python3",
+                              "/opt/atenea-android-runtime-v2.py", "--prepare"], remaining(180), output)
+        if prepared.returncode != 0:
+            return RunOutcome(prepared.returncode, "DEPENDENCIES", "TEST_CACHE_INCOMPLETE", "INFRASTRUCTURE")
+        tested = docker_call(prefix, ["exec", "--workdir", "/work/repo/android", container_id,
+                            "/opt/gradle/bin/gradle", "--offline", "--no-daemon", "--console", "plain",
+                            "-Pkotlin.compiler.execution.strategy=in-process",
+                            ":app:assembleDebug", "testDebugUnitTest"],
+                            remaining(definition.timeout), output)
+        output.flush()
+        return classify_execution(tested.returncode, bounded_output(Path(output.name)), "ANDROID_BUILD")
     finally:
-        docker_call(prefix, ["rm", "--force", container_id], 60)
-        docker_call(prefix, ["image", "rm", image], 60)
+        cleanup_failed = False
+        try:
+            if container_id is not None:
+                cleanup_failed = docker_call(prefix, ["rm", "--force", container_id], 60).returncode != 0
+            if image_id is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                cleanup_failed |= docker_call(prefix, ["image", "rm", image_id], 60).returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            cleanup_failed = True
+        if cleanup_failed:
+            raise RuntimeFailure(RunOutcome(70, "CLEANUP", "TEST_RUNTIME_CLEANUP_FAILED", "INFRASTRUCTURE"))
 
 
 def playwright_docker_command(
@@ -1026,6 +1245,56 @@ def normalize_inherited_artifact_directory(path: Path, observed: os.stat_result)
         reject()
 
 
+def persist_diagnostic(
+    parent: Path, arguments: list[str], definition: Definition,
+    outcome: RunOutcome, output_path: Path, duration: int,
+) -> str:
+    operation, session_id, _identity, source_sha, validation_id = arguments
+    output = bounded_output(output_path)
+    # Never persist candidate stdout, environment, command arguments or host
+    # paths. Only bounded symbolic facts and test class identities survive.
+    failures = sorted(set(re.findall(
+        r"\bcom\.atenea\.[A-Za-z0-9_.]{1,160}(?:Test|Tests)\b", output
+    )))[:8]
+    diagnostic = {
+        "schemaVersion": 1, "operationId": validation_id, "sessionId": session_id,
+        "operation": operation, "definitionRevision": definition.revision,
+        "sourceTreeFingerprintSha256": source_sha,
+        "phase": outcome.phase, "errorCode": outcome.error_code,
+        "failureClass": outcome.failure_class, "exitCode": outcome.exit_code,
+        "durationMillis": duration, "outputSha256": sha256_file(output_path),
+        "testClasses": failures, "valuesExposed": False,
+    }
+    encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    destination = parent / (validation_id + "-diagnostic-v1.json")
+    if destination.exists() or destination.is_symlink():
+        if not exact_regular_file(destination, 0o600) or destination.read_bytes() != encoded:
+            reject()
+        return hashlib.sha256(encoded).hexdigest()
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".diagnostic.", dir=parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Publish without replacing an existing receipt, even under a race.
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError:
+            if not exact_regular_file(destination, 0o600) or destination.read_bytes() != encoded:
+                reject()
+        parent_fd = os.open(parent, os.O_DIRECTORY | os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def execute_validation(arguments: list[str]) -> dict:
     if os.geteuid() != 0 or len(arguments) not in {4, 5}:
         reject()
@@ -1097,6 +1366,7 @@ def execute_validation_in_slot(
         artifact_stage.mkdir(mode=0o700)
         os.chown(artifact_stage, slot_uid, slot_uid)
         started = time.monotonic()
+        outcome = None
         with output_path.open("x", encoding="utf-8") as output:
             try:
                 if definition.runner in {"sandbox", "playwright"}:
@@ -1125,11 +1395,16 @@ def execute_validation_in_slot(
                     exit_code = completed.returncode
                 else:
                     if not socket.is_socket():
-                        reject()
-                    prefix = docker_slot_prefix(slot_user, slot_uid, socket)
-                    exit_code = run_android(
-                        prefix, validation_id, source_root, definition, output
-                    )
+                        outcome = RunOutcome(70, "CONTAINER", "TEST_RUNTIME_UNAVAILABLE", "INFRASTRUCTURE")
+                        exit_code = outcome.exit_code
+                    else:
+                        prefix = docker_slot_prefix(slot_user, slot_uid, socket)
+                        if definition.runner == "backend":
+                            outcome = run_backend(prefix, validation_id, source_root, definition, output)
+                            exit_code = outcome.exit_code
+                        else:
+                            outcome = run_android(prefix, validation_id, source_root, definition, output)
+                            exit_code = outcome.exit_code
                 if exit_code == 0 and definition.runner == "playwright":
                     prefix = docker_slot_prefix(slot_user, slot_uid, socket)
                     remaining = max(
@@ -1147,6 +1422,9 @@ def execute_validation_in_slot(
             except subprocess.TimeoutExpired:
                 exit_code = 124
                 output.write("validation timed out\n")
+            except RuntimeFailure as error:
+                outcome = error.outcome
+                exit_code = outcome.exit_code
         duration = int((time.monotonic() - started) * 1000)
         after = command_output(
             git_observation_command(
@@ -1158,6 +1436,11 @@ def execute_validation_in_slot(
         if exit_code == 0 and definition.runner == "playwright":
             publish_browser_artifacts(artifact_stage / "browser", published_artifacts)
         output_sha = sha256_file(output_path)
+        if outcome is None:
+            outcome = classify_execution(exit_code, bounded_output(output_path), operation)
+        diagnostic_sha = persist_diagnostic(
+            session_artifacts, arguments, definition, outcome, output_path, duration
+        )
         manifest = hashlib.sha256(
             "\0".join(
                 (
@@ -1167,19 +1450,16 @@ def execute_validation_in_slot(
                     str(exit_code),
                     str(duration),
                     output_sha,
+                    diagnostic_sha,
                 )
             ).encode("ascii")
         ).hexdigest()
         if exit_code == 0:
             status, summary, public_exit = "SUCCEEDED", "Closed validation passed", 0
-        elif exit_code in {124, 137}:
-            status, summary, public_exit = (
-                "BLOCKED",
-                "Closed validation exceeded its finite timeout",
-                None,
-            )
+        elif outcome.failure_class != "CANDIDATE":
+            status, summary, public_exit = "BLOCKED", f"{operation}/{outcome.phase}: {outcome.error_code}", None
         else:
-            status, summary, public_exit = "FAILED", "Closed validation failed", exit_code
+            status, summary, public_exit = "FAILED", f"{operation}/{outcome.phase}: {outcome.error_code}", exit_code
         return {
             "validationId": validation_id,
             "sessionId": session_id,
@@ -1192,13 +1472,16 @@ def execute_validation_in_slot(
             "artifactManifestSha256": manifest,
             "summary": summary,
             "valuesExposed": False,
+            "failureClass": outcome.failure_class,
         }
     finally:
         shutil.rmtree(run_root, ignore_errors=True)
 
 
 def run_validation(arguments: list[str]) -> int:
-    print(json.dumps(execute_validation(arguments), separators=(",", ":")))
+    result = execute_validation(arguments)
+    result.pop("failureClass", None)
+    print(json.dumps(result, separators=(",", ":")))
     return 0
 
 
@@ -1313,10 +1596,19 @@ def load_operation(directory: Path, identity: dict[str, str]) -> dict[str, Any] 
     ):
         reject()
     record = load_json(path)
+    retained_identity = identity
+    legacy_revision = {"BACKEND_TEST": "atenea-backend-test-v1",
+                       "ANDROID_BUILD": "atenea-android-build-v1"}.get(identity["operation"])
+    if (legacy_revision is not None
+            and record.get("definitionRevision") == legacy_revision
+            and record.get("state") in DURABLE_TERMINAL):
+        # Historical v1 receipts remain inspectable with their original
+        # fingerprint. They are never adopted as executable v2 operations.
+        retained_identity = {**identity, "definitionRevision": legacy_revision}
     if (
         record.get("protocolVersion") != DURABLE_PROTOCOL
-        or record.get("requestFingerprintSha256") != durable_fingerprint(identity)
-        or any(record.get(key) != value for key, value in identity.items())
+        or record.get("requestFingerprintSha256") != durable_fingerprint(retained_identity)
+        or any(record.get(key) != value for key, value in retained_identity.items())
         or record.get("state") not in DURABLE_NON_TERMINAL | DURABLE_TERMINAL
         or not isinstance(record.get("cancelRequested"), bool)
     ):
@@ -1578,6 +1870,8 @@ def execute_durable(arguments: list[str]) -> int:
         record = load_operation(directory, identity)
         if record is None:
             reject()
+        if record["state"] in DURABLE_TERMINAL:
+            return 0
         if record["cancelRequested"]:
             record.update(
                 state="CANCELLED", terminalCause="CANCELLED",
@@ -1595,22 +1889,25 @@ def execute_durable(arguments: list[str]) -> int:
             "FAILED": "CANDIDATE_FAILED",
             "BLOCKED": "INFRASTRUCTURE_FAILED",
         }[result["status"]]
+        if result["status"] != "SUCCEEDED":
+            state = {
+                "CANDIDATE": "CANDIDATE_FAILED", "INFRASTRUCTURE": "INFRASTRUCTURE_FAILED",
+                "POLICY": "POLICY_FAILED", "VALIDATION": "VALIDATION_FAILED",
+            }.get(result.get("failureClass"), state)
         cause = {
             "SUCCEEDED": "NONE",
             "CANDIDATE_FAILED": "CANDIDATE",
             "INFRASTRUCTURE_FAILED": "INFRASTRUCTURE",
+            "POLICY_FAILED": "POLICY",
+            "VALIDATION_FAILED": "VALIDATION",
         }[state]
         terminal = {
             "state": state,
             "terminalCause": cause,
-            "exitCode": result["exitCode"],
+            "exitCode": result["exitCode"] if state in {"SUCCEEDED", "CANDIDATE_FAILED"} else None,
             "durationMillis": result["durationMillis"],
             "artifactManifestSha256": result["artifactManifestSha256"],
-            "summary": {
-                "SUCCEEDED": "Closed validation passed",
-                "CANDIDATE_FAILED": "Closed validation failed",
-                "INFRASTRUCTURE_FAILED": "Closed validation failed in infrastructure",
-            }[state],
+            "summary": result["summary"],
         }
     except Rejected:
         terminal = {

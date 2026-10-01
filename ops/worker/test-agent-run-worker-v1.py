@@ -1089,9 +1089,9 @@ calls = pathlib.Path(__file__).with_name("validation-calls")
 if action == "start":
     calls.write_text(calls.read_text() + "call\\n" if calls.exists() else "call\\n")
 definitions = {
-    "BACKEND_TEST": "atenea-backend-test-v1",
+    "BACKEND_TEST": "atenea-backend-test-v2",
     "WEB_BUILD": "atenea-web-build-v1",
-    "ANDROID_BUILD": "atenea-android-build-v1",
+    "ANDROID_BUILD": "atenea-android-build-v2",
     "PLAYWRIGHT_ACCEPTANCE": "atenea-playwright-acceptance-v1",
 }
 print(json.dumps({
@@ -1378,7 +1378,7 @@ print(json.dumps({"sessionId": session,
             **source_request,
             "validationId": validation_id or str(uuid.uuid4()),
             "operation": "BACKEND_TEST",
-            "definitionRevision": "atenea-backend-test-v1",
+            "definitionRevision": "atenea-backend-test-v2",
             "sourceTreeFingerprintSha256": source["fingerprintSha256"],
         }
 
@@ -1645,9 +1645,9 @@ print(json.dumps({"sessionId": session,
 
     def test_terminal_causes_and_four_symbolic_definitions_are_preserved(self):
         expected = {
-            "BACKEND_TEST": "atenea-backend-test-v1",
+            "BACKEND_TEST": "atenea-backend-test-v2",
             "WEB_BUILD": "atenea-web-build-v1",
-            "ANDROID_BUILD": "atenea-android-build-v1",
+            "ANDROID_BUILD": "atenea-android-build-v2",
             "PLAYWRIGHT_ACCEPTANCE": "atenea-playwright-acceptance-v1",
         }
         for operation, revision in expected.items():
@@ -1683,6 +1683,25 @@ print(json.dumps({"sessionId": session,
                 "terminalCause"
             ],
         )
+
+    def test_symbolic_infrastructure_diagnostic_reaches_public_state_without_raw_output(self):
+        request = self.durable_validation_request()
+        self.state.start_validation(request)
+        observation = self.mediator_observation(request, "INFRASTRUCTURE_FAILED", "INFRASTRUCTURE")
+        observation["summary"] = "BACKEND_TEST/TEST_DATABASE: TEST_DATABASE_SETUP_FAILED"
+        with self.state.lock:
+            self.state._apply_validation_observation(self.state.validations[request["operationId"]], observation)
+        recovered = self.state.inspect_validation(self.exact_validation(request))
+        self.assertEqual(observation["summary"], recovered["summary"])
+        self.assertEqual("INFRASTRUCTURE", recovered["terminalCause"])
+
+        foreign = self.durable_validation_request()
+        self.state.start_validation(foreign)
+        raw = self.mediator_observation(foreign, "INFRASTRUCTURE_FAILED", "INFRASTRUCTURE")
+        raw["summary"] = "password=secret /srv/private"
+        with self.state.lock:
+            self.state._apply_validation_observation(self.state.validations[foreign["operationId"]], raw)
+        self.assertNotIn("secret", self.state.inspect_validation(self.exact_validation(foreign))["summary"])
 
     def test_closed_validation_is_sanitized_idempotent_and_durable(self):
         request = self.validation_request()
