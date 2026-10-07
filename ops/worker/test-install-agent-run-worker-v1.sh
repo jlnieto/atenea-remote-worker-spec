@@ -32,6 +32,46 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(stat -c '%a' "${MODE_FIXTURE}/release")" == 750 ]] \
   || fail "exact directory mode retained a setgid parent bit"
 
+# Only the fixed scratch root is new; private artifact/journal permissions do not change.
+[[ "$VALIDATION_RUNTIME_ROOT" == /srv/atenea/validation-runtime-v1 ]] \
+  || fail "validation runtime root is not fixed"
+(
+  VALIDATION_RUNTIME_ROOT="${TEST_ROOT}/runtime-fixture"
+  verify_validation_runtime_root allow-absent
+  if ( verify_validation_runtime_root ) >/dev/null 2>&1; then
+    fail "absent runtime root was accepted by verify"
+  fi
+  mkdir -m 0711 "$VALIDATION_RUNTIME_ROOT"
+  # Ordinary-user test fixture: simulate only root identity, retain real mode checks.
+  stat() {
+    if [[ "$1" == -c && "$2" == '%u:%g:%a' && "$3" == "$VALIDATION_RUNTIME_ROOT" ]]; then
+      printf '0:0:%s\n' "$(command stat -c '%a' "$3")"
+    else
+      command stat "$@"
+    fi
+  }
+  verify_validation_runtime_root
+  if command -v setfacl >/dev/null; then
+    setfacl -m u:1102:--x "$VALIDATION_RUNTIME_ROOT"
+    if ( verify_validation_runtime_root ) >/dev/null 2>&1; then
+      fail "unexpected runtime ACL was accepted"
+    fi
+    setfacl -b "$VALIDATION_RUNTIME_ROOT"
+  fi
+  chmod 0711 "$VALIDATION_RUNTIME_ROOT"
+  chmod 0777 "$VALIDATION_RUNTIME_ROOT"
+  if ( verify_validation_runtime_root allow-absent ) >/dev/null 2>&1; then
+    fail "foreign writable runtime root was accepted"
+  fi
+  [[ "$(command stat -c '%a' "$VALIDATION_RUNTIME_ROOT")" == 777 ]] \
+    || fail "preflight mutated foreign runtime permissions"
+  VALIDATION_RUNTIME_ROOT="${TEST_ROOT}/runtime-alias"
+  ln -s "${TEST_ROOT}/runtime-fixture" "$VALIDATION_RUNTIME_ROOT"
+  if ( verify_validation_runtime_root allow-absent ) >/dev/null 2>&1; then
+    fail "runtime symlink was accepted"
+  fi
+)
+
 [[ "$(sha256sum "${SCRIPT_DIR}/templates/atenea-agent-run-worker-v1.service" | cut -d' ' -f1)" \
     == "${SERVICE_TEMPLATE_SHA256}" ]] || fail "service template fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/codex-platform-instructions-v1.md" | cut -d' ' -f1)" \

@@ -25,6 +25,7 @@ from typing import IO, Any, Iterator, NoReturn
 
 CONFIG = Path("/etc/atenea-worker/project-codex-v1.json")
 ARTIFACT_ROOT = Path("/srv/atenea/artifacts/validations")
+RUNTIME_ROOT = Path("/srv/atenea/validation-runtime-v1")
 JOURNAL_ROOT = Path("/srv/atenea/worker/validation-broker-v1")
 WORKSPACE_ROOT = Path("/srv/atenea/workspaces/sessions")
 CHANGE_WORKSPACE_ROOT = Path("/srv/atenea/workspaces/changes")
@@ -704,16 +705,19 @@ def sandbox_supervise(operation: str) -> int:
     return completed.returncode
 
 
-def docker_slot_prefix(slot_user: str, slot_uid: int, socket: Path) -> list[str]:
+def docker_slot_prefix(slot_user: str, slot_uid: int, socket: Path, client_config: Path) -> list[str]:
     return [
         "/usr/sbin/runuser",
         "-u",
         slot_user,
         "--",
         "/usr/bin/env",
+        "-i",
+        "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
         f"HOME=/var/lib/atenea-slots/slot{slot_uid - 1100}",
         f"XDG_RUNTIME_DIR=/run/user/{slot_uid}",
         f"DOCKER_HOST=unix://{socket}",
+        f"DOCKER_CONFIG={client_config}",
         "/usr/bin/docker",
     ]
 
@@ -1135,8 +1139,31 @@ def make_slot_readable(root: Path, slot_gid: int) -> None:
                 continue
             stat = path.stat()
             os.chown(path, 0, slot_gid)
-            user = (stat.st_mode & 0o700) >> 6
-            os.chmod(path, (stat.st_mode & 0o700) | (user << 3))
+            # The slot may read/traverse, never write the root-owned snapshot/recipe.
+            os.chmod(path, (stat.st_mode & 0o700) | ((stat.st_mode & 0o500) >> 3))
+
+
+def prepare_validation_runtime(validation_id: str, slot_uid: int) -> Path:
+    """Private per-operation scratch, separate from root-only durable evidence."""
+    if not canonical_uuid(validation_id) or slot_uid not in range(1101, 1105):
+        reject()
+    try:
+        observed = RUNTIME_ROOT.lstat()
+        if (not stat_module.S_ISDIR(observed.st_mode) or RUNTIME_ROOT.resolve() != RUNTIME_ROOT
+                or (observed.st_uid, observed.st_gid, observed.st_mode & 0o7777) != (0, 0, 0o711)
+                or {"system.posix_acl_access", "system.posix_acl_default"}.intersection(os.listxattr(RUNTIME_ROOT))):
+            reject()
+        # No adoption/reuse of an existing scratch directory, including after a crash.
+        root = RUNTIME_ROOT / validation_id
+        root.mkdir(mode=0o700)
+        os.chown(root, 0, slot_uid)
+        root.chmod(0o710)
+        client = root / "docker-client"
+        client.mkdir(mode=0o700)
+        os.chown(client, slot_uid, slot_uid)
+        return root
+    except OSError:
+        reject()
 
 
 def publish_browser_artifacts(stage: Path, destination: Path) -> None:
@@ -1348,7 +1375,7 @@ def execute_validation_in_slot(
         and (published_artifacts.exists() or published_artifacts.is_symlink())
     ):
         reject()
-    run_root = Path(tempfile.mkdtemp(prefix=".validation-run.", dir=session_artifacts))
+    run_root = prepare_validation_runtime(validation_id, slot_uid)
     source_root = run_root / "source"
     artifact_stage = run_root / "artifacts"
     output_path = run_root / "output"
@@ -1398,7 +1425,7 @@ def execute_validation_in_slot(
                         outcome = RunOutcome(70, "CONTAINER", "TEST_RUNTIME_UNAVAILABLE", "INFRASTRUCTURE")
                         exit_code = outcome.exit_code
                     else:
-                        prefix = docker_slot_prefix(slot_user, slot_uid, socket)
+                        prefix = docker_slot_prefix(slot_user, slot_uid, socket, run_root / "docker-client")
                         if definition.runner == "backend":
                             outcome = run_backend(prefix, validation_id, source_root, definition, output)
                             exit_code = outcome.exit_code
@@ -1406,7 +1433,7 @@ def execute_validation_in_slot(
                             outcome = run_android(prefix, validation_id, source_root, definition, output)
                             exit_code = outcome.exit_code
                 if exit_code == 0 and definition.runner == "playwright":
-                    prefix = docker_slot_prefix(slot_user, slot_uid, socket)
+                    prefix = docker_slot_prefix(slot_user, slot_uid, socket, run_root / "docker-client")
                     remaining = max(
                         1, definition.timeout - int(time.monotonic() - started)
                     )
@@ -1718,7 +1745,7 @@ def launch_durable_unit(identity: dict[str, str]) -> None:
         "--property",
         "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE",
         "--property",
-        f"ReadWritePaths={ARTIFACT_ROOT.parent} {JOURNAL_ROOT} /srv/atenea/worker/runtime-admission-v1",
+        f"ReadWritePaths={ARTIFACT_ROOT.parent} {JOURNAL_ROOT} /srv/atenea/worker/runtime-admission-v1 {RUNTIME_ROOT}",
         "--property",
         f"ReadOnlyPaths={WORKSPACE_ROOT} {CHANGE_WORKSPACE_ROOT} {CONFIG.parent} /run/user {RUNTIME_ADMISSION}",
         "--",

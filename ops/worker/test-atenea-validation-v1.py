@@ -559,7 +559,7 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             f"ReadOnlyPaths={MODULE.WORKSPACE_ROOT} {MODULE.CHANGE_WORKSPACE_ROOT} "
             f"{MODULE.CONFIG.parent} /run/user {MODULE.RUNTIME_ADMISSION}",
             "ReadWritePaths=/srv/atenea/artifacts /srv/atenea/worker/validation-broker-v1 "
-            "/srv/atenea/worker/runtime-admission-v1",
+            "/srv/atenea/worker/runtime-admission-v1 /srv/atenea/validation-runtime-v1",
             "--durable-execute\0ANDROID_BUILD",
         ):
             self.assertIn(required, rendered)
