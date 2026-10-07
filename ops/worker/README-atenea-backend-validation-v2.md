@@ -8,6 +8,13 @@ El installer instala `atenea-backend-test-v2.Dockerfile` y
 broker hace una construcción rootless desde esos dos archivos y un pom con
 hash autorizado. La construcción no recibe el resto del snapshot candidato.
 
+Sólo los coordinadores backend/Android permiten `AF_UNIX AF_INET AF_INET6`:
+el proveedor de tokens de registro de BuildKit se ejecuta en el cliente y
+necesita DNS/HTTPS para preparar la receta confiable. Permitir sólo Unix
+bloqueaba la descarga antes de los tests. No se añade `AF_NETLINK`, no cambia
+la política de otros coordinadores y los contenedores candidatos conservan
+`--network none`, Maven/Gradle offline y la ausencia de sockets/secretos host.
+
 La ejecución usa la imagen observada por digest, UID 1000/GID 0, network none,
 cap-drop ALL, no-new-privileges, imagen read-only, tmpfs limitado y un único
 mount fuente read-only. El GID 0 es interno al contenedor rootless y permite
@@ -79,6 +86,21 @@ root permite comprobar DAC con los usuarios de slot existentes, sin crearlos,
 modificar el runtime instalado ni iniciar una validación/AgentRun. Incluye el
 rechazo de ACLs adicionales/default, symlinks, propietarios, modos y UUIDs
 ajenos, y conserva los permisos privados de la evidencia.
+
+Smoke de operador opt-in (requiere autorización de efectos en AX42):
+
+```sh
+sudo env ATENEA_TOOLCHAIN_NETWORK_SMOKE=1 PYTHONDONTWRITEBYTECODE=1 \
+  python3 ops/worker/test-validation-toolchain-network-v1.py
+```
+
+Reutiliza las propiedades exactas del coordinador durable, prepara la receta
+backend real y ejecuta sólo un test sintético offline con PostgreSQL privado.
+Verifica ausencia de ruta de red externa y de autoridad host en el contenedor.
+No ejecuta el ticket ni crea WorkSessions/AgentRuns/evidencia de validación App;
+exige cero operaciones activas, mantiene el gate exclusivo de operador y retira
+scratch/contenedor/imagen mediante las identidades observadas. Los caches Docker
+de dependencias revisadas pueden persistir; no se hace prune global.
 
 La imagen backend se construyó y ejecutó realmente el 2026-09-30. Su DB
 PostgreSQL 16 privada, caché Maven sellada y ejecución offline funcionaron.

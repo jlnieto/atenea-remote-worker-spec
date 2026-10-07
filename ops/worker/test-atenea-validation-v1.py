@@ -555,7 +555,7 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             "RuntimeMaxSec=1320s",
             "KillMode=control-group",
             "ProtectSystem=strict",
-            "RestrictAddressFamilies=AF_UNIX",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
             f"ReadOnlyPaths={MODULE.WORKSPACE_ROOT} {MODULE.CHANGE_WORKSPACE_ROOT} "
             f"{MODULE.CONFIG.parent} /run/user {MODULE.RUNTIME_ADMISSION}",
             "ReadWritePaths=/srv/atenea/artifacts /srv/atenea/worker/validation-broker-v1 "
@@ -565,6 +565,22 @@ class ClosedValidationSandboxTests(unittest.TestCase):
             self.assertIn(required, rendered)
         self.assertNotIn("--shell", rendered)
         self.assertNotIn("--privileged", rendered)
+
+    def test_only_hash_locked_toolchain_coordinators_can_contact_registries(self):
+        for operation in MODULE.DEFINITIONS:
+            with self.subTest(operation=operation):
+                identity = MODULE.durable_identity([
+                    operation, "11111111-1111-4111-8111-111111111111",
+                    "a" * 64, "22222222-2222-4222-8222-222222222222",
+                ])
+                command = MODULE.durable_unit_command(identity)
+                families = [value for value in command if value.startswith("RestrictAddressFamilies=")]
+                expected = "AF_UNIX AF_INET AF_INET6" if operation in {"BACKEND_TEST", "ANDROID_BUILD"} else "AF_UNIX"
+                self.assertEqual(["RestrictAddressFamilies=" + expected], families)
+                for protection in ("ProtectSystem=strict", "ProtectHome=read-only",
+                                   "PrivateDevices=yes", "RestrictSUIDSGID=yes"):
+                    self.assertIn(protection, command)
+                self.assertNotIn("AF_NETLINK", " ".join(command))
 
     def test_change_identity_is_exact_and_ephemeral_slot_is_released(self):
         session_id = "11111111-1111-4111-8111-111111111111"
