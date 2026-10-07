@@ -21,6 +21,7 @@ ANDROID_VALIDATION_FRAGMENT="/usr/local/libexec/atenea/atenea-android-validation
 ANDROID_VALIDATION_RUNTIME="/usr/local/libexec/atenea/atenea-android-runtime-v2.py"
 RUNTIME_ADMISSION="/usr/local/libexec/atenea/runtime-admission-v1.sh"
 VALIDATION_JOURNAL_ROOT="/srv/atenea/worker/validation-broker-v1"
+VALIDATION_RUNTIME_ROOT="/srv/atenea/validation-runtime-v1"
 PLAYWRIGHT_CHECK="/usr/local/libexec/atenea/atenea-playwright-validation-v1.js"
 ROLE_MEDIATOR="/usr/local/libexec/atenea/atenea-multi-repository-v1.sh"
 WORKSPACE_ACTIVATOR="/usr/local/libexec/atenea/atenea-workspace-activation-v1.sh"
@@ -78,7 +79,7 @@ PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="0028eda39a04ee91ecc6a8ca4888e9d26b8a3506c76500b7fe727ab2c2c0bdf7"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
 PROGRAM_SHA256="d0984168086eb15c00d694e56839c37b64259f92e7fc405bf5c58778215024fc"
-VALIDATION_MEDIATOR_SHA256="69995893456260d9fae8ff20d95696654d8f78dec1c5b1ec75253f42e10d0bb6"
+VALIDATION_MEDIATOR_SHA256="374af1868fc5a92b69a150a3b5a31941eedfae8508756329ef2dd5af6b9b5f21"
 BACKEND_TEST_DOCKERFILE_SHA256="8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
 BACKEND_TEST_PREPARER_SHA256="0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
 ANDROID_VALIDATION_INPUTS_SHA256="bd78708d54aadda01ecd0961eed742bd7d43838e4952740c9d300cd34fc52729"
@@ -100,6 +101,23 @@ SESSION_ALLOCATION_SHA256="2efceeaaba78b349f1d6aa79bfba5d908d397a9e3a480cfa3b100
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+verify_validation_runtime_root() {
+  if [[ ! -e "$VALIDATION_RUNTIME_ROOT" && ! -L "$VALIDATION_RUNTIME_ROOT" ]]; then
+    [[ "${1:-}" == allow-absent ]] || fail "validation runtime root is absent"
+    return
+  fi
+  [[ -d "$VALIDATION_RUNTIME_ROOT" && ! -L "$VALIDATION_RUNTIME_ROOT" ]] \
+    || fail "validation runtime root is foreign"
+  [[ "$(readlink -f "$VALIDATION_RUNTIME_ROOT")" == "$VALIDATION_RUNTIME_ROOT" ]] \
+    || fail "validation runtime parent is a symlink"
+  [[ "$(stat -c '%u:%g:%a' "$VALIDATION_RUNTIME_ROOT")" == "0:0:711" ]] \
+    || fail "validation runtime authority is foreign"
+  /usr/bin/python3 -I -c \
+    'import os,sys; sys.exit(bool({"system.posix_acl_access","system.posix_acl_default"}.intersection(os.listxattr(sys.argv[1]))))' \
+    "$VALIDATION_RUNTIME_ROOT" \
+    || fail "validation runtime ACL is foreign"
 }
 
 require_root() {
@@ -352,6 +370,7 @@ tailscale_ipv4() {
 }
 
 validate_inputs() {
+  verify_validation_runtime_root allow-absent
   [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT >= 1024 && PORT <= 65535)) \
     || fail "worker port must be an unprivileged TCP port"
   [[ "$WORKER_ID" =~ ^[a-zA-Z0-9._-]{1,80}$ ]] || fail "worker id is invalid"
@@ -1353,6 +1372,9 @@ apply_install() {
   verify_workspace_activation_dependency
   systemctl stop "$SERVICE"
 
+  verify_validation_runtime_root allow-absent
+  install_exact_directory root root 0711 "$VALIDATION_RUNTIME_ROOT"
+  verify_validation_runtime_root
   install -d -o root -g root -m 0755 /usr/local/libexec/atenea
   install -d -o root -g root -m 0755 /usr/local/share/atenea
   install -o root -g root -m 0755 "$SCRIPT_DIR/agent-run-worker-v1.py" "$PROGRAM"
@@ -1479,6 +1501,7 @@ verify() {
     || fail "state directory ownership or mode is invalid"
   [[ "$(stat -c '%a:%U:%G' "$VALIDATION_JOURNAL_ROOT")" == "750:root:atenea" ]] \
     || fail "validation journal ownership or mode is invalid"
+  verify_validation_runtime_root
   verify_development_change_workspace_root
   verify_project_mirror_shared_permissions
   verify_attachment_root

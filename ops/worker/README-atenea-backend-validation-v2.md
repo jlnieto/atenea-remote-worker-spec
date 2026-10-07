@@ -48,14 +48,37 @@ stdout candidato, variables o paths. El manifest incluye el hash de ese
 diagnóstico. El broker preserva únicamente resúmenes simbólicos allowlisted.
 El stdout original se descarta; no afirmar que un hash permite recuperarlo.
 
+Los registros durables continúan en los directorios privados originales. Los
+snapshots/contextos temporales van exclusivamente a
+`/srv/atenea/validation-runtime-v1` (root:root 0711), con un directorio por
+operation UUID root:slot 0710. Sólo el slot admitido puede atravesarlo; la
+fuente y las recetas son root-owned y group-read/execute, nunca group-write.
+No se abren permisos ni ACLs en `/srv/atenea/artifacts`. Poner un contexto
+group-readable debajo de esos padres privados no lo hacía accesible al CLI
+ni al daemon rootless: el intento del 2026-10-07 falló antes de los tests.
+
+Cada operación usa además su propio `DOCKER_CONFIG` slot-owned 0700 en ese
+scratch. El cliente recibe un entorno cerrado y el socket rootless fijo; no
+importa contextos, credenciales, plugins de usuario ni variables Docker del
+coordinador. Buildx puede escribir sus metadatos ahí sin abrir el HOME que la
+unidad durable mantiene read-only. El scratch se retira al terminar; los
+diagnósticos permanecen root-only en su ubicación durable anterior.
+
 Tests focales sin servicios reales:
 
 ```sh
 python3 ops/worker/test-atenea-backend-test-v2.py
+python3 ops/worker/test-validation-slot-staging-v1.py
 python3 ops/worker/test-atenea-validation-v1.py
 python3 ops/worker/test-closed-validation-broker-contract-v1.py
 bash ops/worker/test-install-agent-run-worker-v1.sh
 ```
+
+La regresión de permisos usa únicamente fixtures temporales. Ejecutarla como
+root permite comprobar DAC con los usuarios de slot existentes, sin crearlos,
+modificar el runtime instalado ni iniciar una validación/AgentRun. Incluye el
+rechazo de ACLs adicionales/default, symlinks, propietarios, modos y UUIDs
+ajenos, y conserva los permisos privados de la evidencia.
 
 La imagen backend se construyó y ejecutó realmente el 2026-09-30. Su DB
 PostgreSQL 16 privada, caché Maven sellada y ejecución offline funcionaron.
