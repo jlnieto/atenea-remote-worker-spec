@@ -39,6 +39,26 @@ class InstallerTest(unittest.TestCase):
             self.assertNotIn("Root operator installation", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
 
+    def test_netlink_is_allowed_only_for_the_ax42_fixed_installer(self):
+        for mode, expected in (
+            ("VPS", "AF_UNIX AF_INET AF_INET6"),
+            ("AX42", "AF_UNIX AF_INET AF_INET6 AF_NETLINK"),
+        ):
+            with self.subTest(mode=mode):
+                unit = subprocess.check_output([
+                    "/bin/bash", "-c", 'source "$1"; unit_content "$2"',
+                    "unit-test", str(SCRIPT), mode,
+                ], text=True)
+                restrictions = [line for line in unit.splitlines()
+                                if line.startswith("RestrictAddressFamilies=")]
+                self.assertEqual([f"RestrictAddressFamilies={expected}"], restrictions)
+                for protection in (
+                    "PrivateTmp=true", "ProtectHome=read-only", "ProtectSystem=strict",
+                    "ProtectKernelTunables=true", "ProtectKernelModules=true",
+                    "ProtectControlGroups=true", "UMask=0077",
+                ):
+                    self.assertIn(protection + "\n", unit)
+
     def test_bootstrap_only_adopts_and_never_installs_or_restarts_worker(self):
         source = SCRIPT.read_text()
         bootstrap = source.split("    bootstrap-platform)", 1)[1].split("      ;;", 1)[0]
