@@ -6,10 +6,14 @@ PROGRAM=/usr/local/libexec/atenea/release-control-v1.py
 SERVICE=/etc/systemd/system/atenea-release-control-v1.service
 
 unit_content() {
-  local writable
+  local writable families='AF_UNIX AF_INET AF_INET6'
   case "${1:-VPS}" in
     VPS) writable='/srv/atenea /run/atenea' ;;
-    AX42) writable='/srv/atenea /usr/local/libexec/atenea /usr/local/share/atenea /etc/atenea-worker /etc/systemd/system /etc/sudoers.d /run/atenea' ;;
+    AX42)
+      writable='/srv/atenea /usr/local/libexec/atenea /usr/local/share/atenea /etc/atenea-worker /etc/systemd/system /etc/sudoers.d /run/atenea'
+      # The fixed worker installer uses ip/ss for tailnet/listener checks.
+      families+=' AF_NETLINK'
+      ;;
     *) return 2 ;;
   esac
   printf '%s\n' \
@@ -22,7 +26,7 @@ unit_content() {
     'UMask=0077' 'PrivateTmp=true' 'ProtectHome=read-only' 'ProtectSystem=strict' \
     'ProtectKernelTunables=true' 'ProtectKernelModules=true' 'ProtectControlGroups=true' \
     "ReadWritePaths=${writable}" \
-    'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' \
+    "RestrictAddressFamilies=${families}" \
     '[Install]' 'WantedBy=multi-user.target'
 }
 

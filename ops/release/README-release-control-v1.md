@@ -158,6 +158,11 @@ del estado Codex/configuración retenida. No activa ni cambia versiones
 Codex. Una transición de configuración/protocolo que no pueda preservar esa
 evidencia requiere su propio procedimiento cerrado y revisión.
 
+Sólo la unidad AX42 permite además `AF_NETLINK`: el installer fijo consulta
+la dirección Tailscale y sus listeners mediante `ip`/`ss`. Sin esta familia,
+el preflight rechaza incluso un baseline sano antes de crear el plan. La
+unidad VPS conserva su allowlist anterior y las demás protecciones no cambian.
+
 Android exige versionCode mayor, package existente y certificado compatible.
 Publica generaciones inmutables y sustituye sólo el manifiesto público.
 Rollback restaura el canal anterior, **no desinstala** la actualización que
