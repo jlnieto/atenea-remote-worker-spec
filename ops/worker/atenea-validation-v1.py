@@ -1707,8 +1707,12 @@ def unit_active(operation_id: str) -> bool:
     reject()
 
 
-def launch_durable_unit(identity: dict[str, str]) -> None:
+def durable_unit_command(identity: dict[str, str]) -> list[str]:
     definition = DEFINITIONS[identity["operation"]]
+    # BuildKit's trusted registry-token provider runs in the client process.
+    # It needs DNS/HTTPS for the hash-locked backend/Android recipes, not just
+    # the Unix daemon socket. Candidate containers remain --network=none.
+    families = "AF_UNIX AF_INET AF_INET6" if definition.runner in {"backend", "android"} else "AF_UNIX"
     helper = Path(__file__).resolve()
     command = [
         "/usr/bin/systemd-run",
@@ -1741,7 +1745,7 @@ def launch_durable_unit(identity: dict[str, str]) -> None:
         "--property",
         "LockPersonality=yes",
         "--property",
-        "RestrictAddressFamilies=AF_UNIX",
+        f"RestrictAddressFamilies={families}",
         "--property",
         "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE",
         "--property",
@@ -1758,8 +1762,12 @@ def launch_durable_unit(identity: dict[str, str]) -> None:
         identity["sourceTreeFingerprintSha256"],
         identity["operationId"],
     ]
+    return command
+
+
+def launch_durable_unit(identity: dict[str, str]) -> None:
     completed = subprocess.run(
-        command,
+        durable_unit_command(identity),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
