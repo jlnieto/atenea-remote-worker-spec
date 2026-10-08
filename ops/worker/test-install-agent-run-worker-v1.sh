@@ -79,7 +79,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "d0984168086eb15c00d694e56839c37b64259f92e7fc405bf5c58778215024fc" ]] \
+    == "74a8c1d97e0a0cd6c0925c06a468cea97e357b43fe9a1782c9fdfed2e243373c" ]] \
   || fail "worker validation admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
@@ -289,9 +289,17 @@ grep -F -- '--development-change-workspace-mediator /usr/local/libexec/atenea/de
   || fail "development-change workspace mediator boundary is not explicit"
 [[ "$(grep -Fc '/srv/atenea/workspaces/changes' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "development-change workspace write boundary is not exact"
-grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $validation_capability]' \
+grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $validation_capability]' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "installer plan does not advertise the durable worker capabilities"
+[[ "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR" == /usr/local/libexec/atenea/development-change-workspace-v1.py ]] \
+  || fail "source update mediator authority is not fixed"
+grep -F -- '--arg development_change_source_update_capability "development-change-source-update/v1"' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
+  || fail "source update capability is not versioned"
+[[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
+    == "cca8438116825314f83ccc226bb88f5e92cce5f212fcc94384b37ccc4eab7275" ]] \
+  || fail "source update mediator provenance is not exact"
 
 SESSION_ID=11111111-1111-4111-8111-111111111111
 WORKSPACE_IDENTITY="remote:ax42-01:work-session:${SESSION_ID}"

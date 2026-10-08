@@ -80,7 +80,7 @@ PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="0028eda39a04ee91ecc6a8ca4888e9d26b8a3506c76500b7fe727ab2c2c0bdf7"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="d0984168086eb15c00d694e56839c37b64259f92e7fc405bf5c58778215024fc"
+PROGRAM_SHA256="74a8c1d97e0a0cd6c0925c06a468cea97e357b43fe9a1782c9fdfed2e243373c"
 VALIDATION_MEDIATOR_SHA256="9c036a403137cdb4eac122c8c1bc33d11ec215ca902e5b74478f1ef79c06175c"
 BACKEND_TEST_DOCKERFILE_SHA256="8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
 BACKEND_TEST_PREPARER_SHA256="0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
@@ -90,7 +90,7 @@ ANDROID_VALIDATION_INPUTS_SHA256="bd78708d54aadda01ecd0961eed742bd7d43838e495274
 ANDROID_VALIDATION_FRAGMENT_SHA256="60dec6885b030ba5a4f3287b80e58d51a046fcf905cba2db67122bda7b8f4d74"
 ANDROID_VALIDATION_RUNTIME_SHA256="964586ac5953ad5e5e781a917890c68b60d8319b6de6b55552cd14c0a9c0b105"
 PLAYWRIGHT_CHECK_SHA256="92ebd40e97fb805b0950f0a50eb49dff727a9dd4df794c1236f503016d4a3824"
-DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="ab4c48e2c7ad783b433ecd0e0ec89433891f10cc9da079be86d45ef2089be601"
+DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="cca8438116825314f83ccc226bb88f5e92cce5f212fcc94384b37ccc4eab7275"
 PROJECT_RUNNER_SHA256="34c18208f978b728a949deb73bf60391f48944778c1502befc86606e9687b5f1"
 BEAUTIPS_PROJECT_RUNNER_SHA256="c5299c501f5e810ae0fde94303d9387735788d6baa22b0ef7ed9209eea735c89"
 BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a413b4feee5a59ce8152954d97b983"
@@ -466,6 +466,7 @@ plan() {
     --arg synthetic_capability "synthetic-routing-v1" \
     --arg development_change_capability "development-change-workspace/v1" \
     --arg development_change_publication_capability "development-change-branch-publication/v1" \
+    --arg development_change_source_update_capability "development-change-source-update/v1" \
     --arg validation_capability "closed-validation-broker/v1" \
     --arg project_capability "project-codex-v1" \
     '{
@@ -475,7 +476,7 @@ plan() {
       port: $port,
       controlPlaneIp: (if $control_plane_ip == "" then null else $control_plane_ip end),
       protocol: $protocol,
-      capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $validation_capability],
+      capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $validation_capability],
       availableDisabledCapabilities: [$project_capability],
       normalCapacity: 4,
       heavyCapacity: 2,

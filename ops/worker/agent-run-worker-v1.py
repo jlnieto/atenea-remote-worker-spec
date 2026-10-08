@@ -51,6 +51,8 @@ DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
 DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
 DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publication/v1"
 DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
+DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY = "development-change-source-update/v1"
+DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX = "/v1/development-changes/source-updates/"
 CLOSED_VALIDATION_CAPABILITY = "closed-validation-broker/v1"
 CLOSED_VALIDATION_PATH_PREFIX = "/v1/project-workspaces/validations/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
@@ -106,6 +108,12 @@ REVIEWED_MEDIATOR_ERRORS = {
     "DEVELOPMENT_CHANGE_WORKSPACE_REJECTED": (
         "OWNERSHIP", False, "CONTACT_PLATFORM_ADMINISTRATOR",
     ),
+    "SOURCE_UPDATE_REJECTED": ("OWNERSHIP", False, "CONTACT_PLATFORM_ADMINISTRATOR"),
+    "SOURCE_UPDATE_REF_MOVED": ("OWNERSHIP", False, "REQUEST_RECONCILIATION"),
+    "SOURCE_UPDATE_DIRTY_WORKSPACE": ("OWNERSHIP", False, "REQUEST_RECONCILIATION"),
+    "SOURCE_UPDATE_LATER_EDIT": ("OWNERSHIP", False, "REQUEST_RECONCILIATION"),
+    "SOURCE_UPDATE_EXECUTION_ACTIVE": ("CAPACITY", True, "WAIT"),
+    "SOURCE_UPDATE_IDENTITY_CONFLICT": ("OWNERSHIP", False, "CONTACT_PLATFORM_ADMINISTRATOR"),
 }
 PROGRESS_CATEGORIES = {
     "ACCEPTED", "QUEUED", "PREPARING_WORKSPACE", "CODEX_STARTED",
@@ -338,6 +346,13 @@ DEVELOPMENT_CHANGE_PUBLICATION_RESPONSE_KEYS = {
     "sourceFingerprintSha256", "publishedHeadSha",
     "remoteDisposition", "requestFingerprintSha256",
     "publicationReceiptSha256", "valuesExposed",
+}
+DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS = DEVELOPMENT_CHANGE_PUBLICATION_REQUEST_KEYS | {
+    "targetMainCommit", "publicationReceiptSha256",
+}
+DEVELOPMENT_CHANGE_SOURCE_UPDATE_RESPONSE_KEYS = DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS | {
+    "state", "preparedTreeSha", "conflictFiles", "preparedFingerprintSha256",
+    "receiptSha256", "valuesExposed",
 }
 EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
@@ -1286,6 +1301,7 @@ class WorkerState:
             if change_workspace_available:
                 capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY)
+                capabilities.append(DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY)
                 route = self._project_route(PROJECT_ID)
                 if route is not None and self._project_execution_enabled(route, False):
                     capabilities.append(PROJECT_V4_CAPABILITY)
@@ -1585,6 +1601,101 @@ class WorkerState:
                 "development change branch publication response is not exact",
             )
         return response
+
+    @release_admitted
+    def update_development_change_source(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
+        operation = operation.upper()
+        if (not isinstance(request, dict)
+                or set(request) != DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS
+                or request.get("schemaVersion") != 1
+                or isinstance(request.get("schemaVersion"), bool)
+                or request.get("protocolVersion") != DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY
+                or request.get("workerId") != self.worker_id
+                or operation not in {"PREPARE", "INSPECT", "RECONCILE"}
+                or request.get("operation") != operation):
+            raise ProtocolError(HTTPStatus.UNPROCESSABLE_ENTITY,
+                                "source_update_request_invalid", "Source update request is invalid")
+        mediator = self.development_change_workspace_mediator
+        if mediator is None or not mediator.is_file() or mediator.is_symlink() or not os.access(mediator, os.X_OK):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE,
+                                "source_update_unavailable", "Source update capability is unavailable")
+        # The same RLock as create/validation admission prevents a new run being
+        # admitted between the durable zero-active check and the worktree effect.
+        # Lock order matches v4 ownership inspection: state -> lifecycle.
+        try:
+            with self.lock, self.workspace_lifecycle_lock():
+                if operation != "INSPECT" and (
+                        any(item.get("status") not in TERMINAL for item in self.executions.values())
+                        or any(item.get("state") not in VALIDATION_TERMINAL for item in self.validations.values())
+                        or self.codex_update_in_progress or self._recovery_activation_pending()):
+                    raise ProtocolError(HTTPStatus.CONFLICT, "source_update_execution_active",
+                                        "Source update requires zero non-terminal executions",
+                                        worker_error_envelope("SOURCE_UPDATE_EXECUTION_ACTIVE", "CAPACITY", True, "WAIT"))
+                completed = self._invoke_source_update_mediator(mediator, request, operation)
+        except subprocess.TimeoutExpired as error:
+            raise ProtocolError(HTTPStatus.GATEWAY_TIMEOUT, "source_update_timeout",
+                                "Source update outcome needs read-only inspection") from error
+        except OSError as error:
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "source_update_unavailable",
+                                "Source update mediator is unavailable") from error
+        if completed.returncode != 0:
+            try:
+                safe = reviewed_mediator_stderr_envelope(completed.stderr)
+            except ValueError as error:
+                raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_update_response_invalid",
+                                    "Source update failure is invalid") from error
+            raise ProtocolError(HTTPStatus.CONFLICT, "source_update_rejected", "Source update rejected", safe)
+        try:
+            response = strict_json_object(completed.stdout)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_update_response_invalid",
+                                "Source update response is invalid") from error
+        absent = response.get("state") == "ABSENT"
+        conflicts = response.get("conflictFiles")
+        if (set(response) != DEVELOPMENT_CHANGE_SOURCE_UPDATE_RESPONSE_KEYS
+                or canonical_hash({key: response[key] for key in request}) != canonical_hash(request)
+                or response.get("valuesExposed") is not False
+                or response.get("state") not in {"ABSENT", "PREPARED", "NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+                or not isinstance(conflicts, list)
+                or (isinstance(conflicts, list) and len(set(map(str, conflicts))) != len(conflicts))
+                or any(not isinstance(name, str) or not name or name.startswith("/")
+                       or "\\" in name or any(part in {"", ".", ".."} or part.lower() == ".git"
+                                               for part in name.split("/")) for name in conflicts)
+                or (absent and (conflicts or any(response[key] is not None for key in (
+                    "preparedTreeSha", "preparedFingerprintSha256", "receiptSha256"))))
+                or (absent and operation == "PREPARE")
+                or (not absent and (re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", str(response.get("preparedTreeSha"))) is None
+                                    or re.fullmatch(r"[0-9a-f]{64}", str(response.get("receiptSha256"))) is None))
+                or (response.get("preparedFingerprintSha256") is not None
+                    and re.fullmatch(r"[0-9a-f]{64}", str(response["preparedFingerprintSha256"])) is None)
+                or (response.get("state") == "PREPARED" and response.get("preparedFingerprintSha256") is not None)
+                or (response.get("state") == "NEEDS_RESOLUTION"
+                    and (not conflicts or response.get("preparedFingerprintSha256") is None))
+                or (response.get("state") == "READY_TO_FINALIZE" and conflicts)):
+            raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_update_response_invalid",
+                                "Source update response is not exact")
+        return response
+
+    def _invoke_source_update_mediator(self, mediator: Path, request: dict[str, Any],
+                                        operation: str) -> subprocess.CompletedProcess[str]:
+        command = [str(mediator), f"{operation.lower()}-update"]
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, start_new_session=True,
+                              env=subprocess_environment(systemd_credentials=True)) as process:
+            try:
+                output, errors = process.communicate(
+                    json.dumps(request, sort_keys=True, separators=(",", ":")),
+                    timeout=self.development_change_workspace_timeout)
+            except subprocess.TimeoutExpired:
+                # Git children must not outlive the lifecycle/admission locks.
+                # Keep the durable PREPARED evidence; recovery never guesses.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+            return subprocess.CompletedProcess(command, process.returncode, output, errors)
 
     def codex_catalog(self) -> dict[str, Any]:
         return {
@@ -5258,6 +5369,12 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     self.server.state.publish_development_change_branch(body),
                 )
+                return
+            if path.startswith(DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX):
+                operation = path.removeprefix(DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX)
+                if operation not in {"prepare", "inspect", "reconcile"}:
+                    raise ProtocolError(HTTPStatus.NOT_FOUND, "not_found", "route does not exist")
+                self._write(HTTPStatus.OK, self.server.state.update_development_change_source(body, operation))
                 return
             if path == "/v1/project-workspaces/ensure":
                 self._write(HTTPStatus.OK, self.server.state.ensure_workspace(body))

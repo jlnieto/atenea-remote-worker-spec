@@ -293,6 +293,55 @@ only after the control plane no longer dispatches legacy WorkSession-owned
 identities; this change does not set a retirement date or weaken their current
 behavior.
 
+### Prepare the same change for a pinned main
+
+`development-change-source-update/v1` is additive to the existing mediator.
+The authenticated control plane calls
+`POST /v1/development-changes/source-updates/{prepare,inspect,reconcile}`.
+The exact request and response schemas live in `runtime-contract/`.
+Neither mobile clients nor AgentRuns select this request: App must derive the
+retained main, published predecessor, source revision and publication receipt
+from its own authorized observations. No commands, paths or credentials are
+request fields. The repository, main ref and change branch remain closed.
+
+Preparation requires an exact owned, clean worktree, its immutable creation
+base and durable PUBLISHED receipt, the pinned main in the canonical mirror,
+matching GitHub main/change refs, and zero non-terminal executions or
+validations. Worker admission holds its state and lifecycle locks through the
+effect; a mediator timeout kills its private process group before unlocking.
+The installer continues to install the same fixed mediator with exact source
+fingerprints. No additional sudoers or systemd authority is introduced.
+
+The private `source-update-v1.json` journal retains the request, immutable
+intent hash, original owner-record hash, prepared tree, conflict files and
+sealed receipt. Its states are PREPARED before materialization, then
+NEEDS_RESOLUTION or READY_TO_FINALIZE. A private server-derived
+`refs/atenea/source-updates/<changeKey>/<operationId>` ref retains the tree and
+conflict blobs against Git garbage collection, without changing any branch.
+INSPECT never prepares or resumes.
+RECONCILE resumes only that same operation, key, predecessor and target;
+it cannot adopt a different request or reset later edits. Partial files must
+match either the retained predecessor or prepared tree. Unexpected files,
+symlinks, submodules, external merge/filter drivers or ambiguous ownership
+fail closed. A retained Git lock of unknown ownership also blocks recovery;
+no lock or file is forcibly removed.
+
+The prepared tree and index use ordinary editable files, including conflict
+markers, without MERGE_HEAD or an unmerged index. HEAD, the remote branch,
+creation base, workspace identity and original publication receipt do not
+change. Replay of a completed preparation leaves subsequent resolver edits
+untouched. The pinned main remains separate evidence, never a new creation
+base. Completion of this operation is not resolution, a merge commit,
+publication or validation. App orchestration of the resolver and a new source
+revision, followed by authorized merge-commit publication to the same PR,
+remain separate implementation units.
+
+Run the isolated preparation/recovery suite with:
+
+```bash
+python3 -B ./test-development-change-source-update-v1.py
+```
+
 ## Session runtime allocation
 
 `session-runtime-allocation-v1.sh` implements task 3.2 without starting a
