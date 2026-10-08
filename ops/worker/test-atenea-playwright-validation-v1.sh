@@ -44,6 +44,22 @@ cat >"$STATIC/index.html" <<'HTML'
     <p>Data persisted, DOM visible and visual evidence retained.</p>
     <code>remote:ax42-01:work-session:11111111-1111-4111-8111-111111111111</code>
   </main>
+  <script>
+    // Reproduce the real cookie bootstrap. A fake HTML/200 refresh must fail
+    // this acceptance instead of making a session whose operator is undefined.
+    document.querySelector('main').hidden = true;
+    fetch('/api/web/auth/refresh', { method: 'POST', credentials: 'include' })
+      .then(async (response) => {
+        if (response.status !== 401 || !response.headers.get('content-type').includes('application/json')) {
+          throw new Error('Anonymous bootstrap contract rejected');
+        }
+        const payload = await response.json();
+        if (payload.operator || payload.accessToken || payload.refreshToken) {
+          throw new Error('Fabricated session rejected');
+        }
+        document.querySelector('main').hidden = false;
+      });
+  </script>
 </body>
 </html>
 HTML
