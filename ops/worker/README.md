@@ -342,6 +342,52 @@ Run the isolated preparation/recovery suite with:
 python3 -B ./test-development-change-source-update-v1.py
 ```
 
+### Finalize a validated pinned update on the same branch
+
+`development-change-source-finalization/v1` adds authenticated
+`POST /v1/development-changes/source-finalizations/{finalize,inspect}`.
+App, not a mobile client or AgentRun, authorizes FINALIZE after the four
+current-definition checks pass for the new source revision. Its immutable
+intent contains the preparation operation and sealed receipt, predecessor
+publication receipt, pinned main, exact source fingerprint and validation
+projection. Protocol hashes are audit bindings, not substitutes for App's
+authorization or successful validation.
+
+The mediator rejects changed source, unresolved markers, unmerged entries,
+unsafe paths/types, moved retained refs, or active runs/validations. It creates
+a deterministic commit with exactly two parents: the previously published
+head and retained main. A private candidate ref protects the commit against
+GC before the sealed PREPARED journal and before any branch effect. It moves
+only the owned branch through local compare-and-swap and a normal `--no-force`
+fast-forward push. It neither pushes main nor rewrites history. Git's receive
+transaction checks its advertised old branch ref; remote and local heads are
+verified again before sealing PUBLISHED.
+
+The `source-finalization-v1.json` receipt links the predecessor, expected tree,
+new head and validation projection. The original owner, preparation and first
+publication records are retained unchanged. INSPECT is read-only; a lost reply
+or interrupted branch/index/push resumes the same candidate, never overwrites
+a later edit or repairs a moved remote ref. A completed receipt cannot authorize
+a second publication of another source.
+
+Worker fingerprinting and the privileged validator read the same root-installed
+workspace mediator's `approved_validation_commit` authority. The immutable
+creation base remains sealed in `workspace-v1.json`; only an exact, sealed
+NEEDS_RESOLUTION/READY_TO_FINALIZE preparation with its matching PUBLISHED
+predecessor authorizes validation at a different local head. No preparation
+means the original validation rule; an invalid preparation rejects rather than
+falling back. App records this source observation and queries the existing
+fingerprint API for clean source, without duplicating worker hash algorithms.
+
+App's new durable finalization receipt and publication outbox retain the same
+WorkSession, branch and PR URL. GitHub/UFD must validate the new head before
+integration. There is no automatic merge, release, deployment or second PR.
+This development unit is not an installed capability or mobile acceptance.
+
+```bash
+python3 -B ./test-development-change-source-finalization-v1.py
+```
+
 ## Session runtime allocation
 
 `session-runtime-allocation-v1.sh` implements task 3.2 without starting a

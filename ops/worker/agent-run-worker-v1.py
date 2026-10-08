@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import re
+import runpy
 import signal
 import stat
 import subprocess
@@ -53,6 +54,9 @@ DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publicati
 DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY = "development-change-source-update/v1"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX = "/v1/development-changes/source-updates/"
+DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY = "development-change-source-finalization/v1"
+DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX = "/v1/development-changes/source-finalizations/"
+SOURCE_AUTHORITY_MEDIATOR = Path("/usr/local/libexec/atenea/development-change-workspace-v1.py")
 CLOSED_VALIDATION_CAPABILITY = "closed-validation-broker/v1"
 CLOSED_VALIDATION_PATH_PREFIX = "/v1/project-workspaces/validations/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
@@ -354,6 +358,12 @@ DEVELOPMENT_CHANGE_SOURCE_UPDATE_RESPONSE_KEYS = DEVELOPMENT_CHANGE_SOURCE_UPDAT
     "state", "preparedTreeSha", "conflictFiles", "preparedFingerprintSha256",
     "receiptSha256", "valuesExposed",
 }
+DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_REQUEST_KEYS = DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS | {
+    "preparationOperationId", "preparationReceiptSha256", "validationProjectionSha256",
+}
+DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_RESPONSE_KEYS = DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_REQUEST_KEYS | {
+    "state", "publishedHeadSha", "expectedTreeSha", "finalizationReceiptSha256", "valuesExposed",
+}
 EXACT_EXECUTION_OPERATION_KEYS = {
     "executionId", "sessionId", "workspaceIdentity", "leaseGeneration",
 }
@@ -394,6 +404,14 @@ def utc_now() -> str:
 def canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def load_source_authority() -> dict[str, Any]:
+    observed = SOURCE_AUTHORITY_MEDIATOR.lstat()
+    if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != 0 or observed.st_gid != 0
+            or stat.S_IMODE(observed.st_mode) != 0o755 or observed.st_nlink != 1):
+        raise ValueError("source authority mediator is not root-managed")
+    return runpy.run_path(str(SOURCE_AUTHORITY_MEDIATOR))
 
 
 def canonical_uuid(value: Any) -> str | None:
@@ -1302,6 +1320,7 @@ class WorkerState:
                 capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY)
+                capabilities.append(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY)
                 route = self._project_route(PROJECT_ID)
                 if route is not None and self._project_execution_enabled(route, False):
                     capabilities.append(PROJECT_V4_CAPABILITY)
@@ -1677,8 +1696,8 @@ class WorkerState:
         return response
 
     def _invoke_source_update_mediator(self, mediator: Path, request: dict[str, Any],
-                                        operation: str) -> subprocess.CompletedProcess[str]:
-        command = [str(mediator), f"{operation.lower()}-update"]
+                                        operation: str, *, finalization: bool = False) -> subprocess.CompletedProcess[str]:
+        command = [str(mediator), f"{operation.lower()}-{'source' if finalization else 'update'}"]
         with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, start_new_session=True,
                               env=subprocess_environment(systemd_credentials=True)) as process:
@@ -1696,6 +1715,64 @@ class WorkerState:
                 process.communicate()
                 raise
             return subprocess.CompletedProcess(command, process.returncode, output, errors)
+
+    @release_admitted
+    def finalize_development_change_source(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
+        operation = operation.upper()
+        if (not isinstance(request, dict) or set(request) != DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_REQUEST_KEYS
+                or request.get("schemaVersion") != 1 or isinstance(request.get("schemaVersion"), bool)
+                or request.get("protocolVersion") != DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY
+                or request.get("workerId") != self.worker_id or operation not in {"FINALIZE", "INSPECT"}
+                or request.get("operation") != operation
+                or request.get("effect") != ("FINALIZE_VALIDATED_SOURCE" if operation == "FINALIZE" else "OBSERVE_ONLY")):
+            raise ProtocolError(HTTPStatus.UNPROCESSABLE_ENTITY, "source_finalization_request_invalid",
+                                "Source finalization request is invalid")
+        mediator = self.development_change_workspace_mediator
+        if mediator is None or not mediator.is_file() or mediator.is_symlink() or not os.access(mediator, os.X_OK):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "source_finalization_unavailable",
+                                "Source finalization capability is unavailable")
+        try:
+            with self.lock, self.workspace_lifecycle_lock():
+                if operation != "INSPECT" and (
+                        any(item.get("status") not in TERMINAL for item in self.executions.values())
+                        or any(item.get("state") not in VALIDATION_TERMINAL for item in self.validations.values())
+                        or self.codex_update_in_progress or self._recovery_activation_pending()):
+                    raise ProtocolError(HTTPStatus.CONFLICT, "source_finalization_execution_active",
+                        "Source finalization requires zero non-terminal executions",
+                        worker_error_envelope("SOURCE_UPDATE_EXECUTION_ACTIVE", "CAPACITY", True, "WAIT"))
+                completed = self._invoke_source_update_mediator(mediator, request, operation, finalization=True)
+        except subprocess.TimeoutExpired as error:
+            raise ProtocolError(HTTPStatus.GATEWAY_TIMEOUT, "source_finalization_timeout",
+                                "Source finalization outcome needs inspection") from error
+        except OSError as error:
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "source_finalization_unavailable",
+                                "Source finalization mediator is unavailable") from error
+        if completed.returncode != 0:
+            try:
+                safe = reviewed_mediator_stderr_envelope(completed.stderr)
+            except ValueError as error:
+                raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_finalization_response_invalid",
+                                    "Source finalization failure is invalid") from error
+            raise ProtocolError(HTTPStatus.CONFLICT, "source_finalization_rejected", "Source finalization rejected", safe)
+        try:
+            response = strict_json_object(completed.stdout)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_finalization_response_invalid",
+                                "Source finalization response is invalid") from error
+        state = response.get("state")
+        hashes = ("publishedHeadSha", "expectedTreeSha", "finalizationReceiptSha256")
+        if (set(response) != DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_RESPONSE_KEYS
+                or canonical_hash({key: response.get(key) for key in request}) != canonical_hash(request)
+                or response.get("valuesExposed") is not False or state not in {"ABSENT", "PREPARED", "PUBLISHED"}
+                or (state == "ABSENT" and (operation != "INSPECT" or any(response.get(key) is not None for key in hashes)))
+                or (state != "ABSENT" and any(re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                     str(response.get(key))) is None for key in hashes[:2]))
+                or (state == "PREPARED" and response.get("finalizationReceiptSha256") is not None)
+                or (state == "PUBLISHED" and re.fullmatch(r"[0-9a-f]{64}", str(response.get(hashes[2]))) is None)
+                or (operation == "FINALIZE" and state != "PUBLISHED")):
+            raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_finalization_response_invalid",
+                                "Source finalization response is not exact")
+        return response
 
     def codex_catalog(self) -> dict[str, Any]:
         return {
@@ -3198,6 +3275,13 @@ class WorkerState:
             "repository", "repositoryBranch", "initialSourceFingerprintSha256", "recordSha256",
         }
         commit = request.get("commit")
+        try:
+            approved_commit = record["baseCommit"]
+            if (root / "source-update-v1.json").exists() or (root / "source-update-v1.json").is_symlink():
+                approved_commit = load_source_authority()["approved_validation_commit"](root, record, os.geteuid(), os.getegid())
+        except Exception as error:
+            raise ProtocolError(HTTPStatus.FORBIDDEN, "source_tree_ownership_conflict",
+                                "change source preparation authority is invalid") from error
         if (
             record_path.is_symlink()
             or not record_path.is_file()
@@ -3211,7 +3295,7 @@ class WorkerState:
             or record.get("workspaceIdentity") != exact["workspaceIdentity"]
             or record.get("workspaceBranch") != f"atenea/change-{change_key}"
             or record.get("workerId") != self.worker_id
-            or record.get("baseCommit") != commit
+            or approved_commit != commit
             or not isinstance(commit, str)
             or COMMIT_PATTERN.fullmatch(commit) is None
             or not worktree.is_dir()
@@ -5375,6 +5459,12 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                 if operation not in {"prepare", "inspect", "reconcile"}:
                     raise ProtocolError(HTTPStatus.NOT_FOUND, "not_found", "route does not exist")
                 self._write(HTTPStatus.OK, self.server.state.update_development_change_source(body, operation))
+                return
+            if path.startswith(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX):
+                operation = path.removeprefix(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX)
+                if operation not in {"finalize", "inspect"}:
+                    raise ProtocolError(HTTPStatus.NOT_FOUND, "not_found", "route does not exist")
+                self._write(HTTPStatus.OK, self.server.state.finalize_development_change_source(body, operation))
                 return
             if path == "/v1/project-workspaces/ensure":
                 self._write(HTTPStatus.OK, self.server.state.ensure_workspace(body))
