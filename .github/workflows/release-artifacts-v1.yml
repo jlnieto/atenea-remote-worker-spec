@@ -22,6 +22,7 @@ jobs:
           python3 ops/release/test-release-targets-v1.py
           python3 ops/release/test-release-artifacts-v1.py
           python3 ops/release/test-install-release-control-v1.py
+          node --test ops/worker/test-atenea-playwright-http-v1.js
           bash ops/worker/test-install-agent-run-worker-v1.sh
           bash -n ops/release/install-release-control-v1.sh
           bash -n ops/worker/install-agent-run-worker-v1.sh

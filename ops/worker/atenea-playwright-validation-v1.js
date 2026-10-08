@@ -4,7 +4,6 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
-const { chromium } = require("playwright");
 
 const testMode = process.env.ATENEA_PLAYWRIGHT_TEST_MODE === "1";
 const staticRoot = testMode ? process.env.ATENEA_PLAYWRIGHT_STATIC_ROOT : "/work/static";
@@ -34,16 +33,42 @@ function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-async function main() {
-  server = http.createServer((request, response) => {
-    const requested = request.url === "/" ? "/index.html" : request.url.split("?")[0];
+function handleRequest(request, response) {
+    const pathname = (request.url || "/").split("?")[0];
+    const jsonError = (status, code, allow) => {
+      const headers = { "content-type": "application/json", "cache-control": "no-store" };
+      if (allow) headers.allow = allow;
+      response.writeHead(status, headers);
+      response.end(request.method === "HEAD" ? undefined : JSON.stringify({ code }));
+    };
+    // This is a static, anonymous acceptance boundary, not an App backend.
+    // Returning index.html/200 here fabricated a truthy authentication session.
+    // Never mint operators/tokens/cookies or contact PROD to render the login.
+    if (pathname === "/api/web/auth/refresh") {
+      jsonError(request.method === "POST" ? 401 : 405, "NO_SESSION", "POST");
+      return;
+    }
+    if (pathname === "/api" || pathname.startsWith("/api/")) {
+      jsonError(404, "API_NOT_AVAILABLE");
+      return;
+    }
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      jsonError(405, "METHOD_NOT_ALLOWED", "GET, HEAD");
+      return;
+    }
+    const requested = pathname === "/" ? "/index.html" : pathname;
     let file = path.resolve(staticRoot, `.${requested}`);
     if (!file.startsWith(`${staticRoot}/`) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       file = path.join(staticRoot, "index.html");
     }
     response.writeHead(200, { "content-type": mime[path.extname(file)] || "application/octet-stream" });
-    fs.createReadStream(file).pipe(response);
-  });
+    if (request.method === "HEAD") response.end();
+    else fs.createReadStream(file).pipe(response);
+}
+
+async function main() {
+  const { chromium } = require("playwright");
+  server = http.createServer(handleRequest);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -96,7 +121,9 @@ async function main() {
   }));
 }
 
-main().catch((error) => {
+module.exports = { handleRequest };
+
+if (require.main === module) main().catch((error) => {
   process.stderr.write(`closed Playwright acceptance failed: ${error.name}\n`);
   process.exitCode = 1;
 }).finally(async () => {
