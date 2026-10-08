@@ -88,6 +88,59 @@ class SourceFinalizationTest(unittest.TestCase):
         self.assertEqual(first["finalizationReceiptSha256"], inspected["finalizationReceiptSha256"])
         self.assert_history()
 
+    def test_preparation_interruption_then_resolution_and_lost_publication_response_are_one_chain(self):
+        preparation_request=self.prepare_fixture()
+        with mock.patch.object(self.mediator,"_resume_source_update",side_effect=module.ContractError("synthetic preparation interruption")):
+            with self.assertRaises(module.ContractError):
+                self.mediator.update_source(preparation_request,"PREPARE")
+        retained=self.path.read_bytes()
+        inspect_preparation=self.exact(preparation_request,operation="INSPECT",effect="OBSERVE_ONLY")
+        self.assertEqual("PREPARED",self.mediator.update_source(inspect_preparation,"INSPECT")["state"])
+        self.assertEqual(retained,self.path.read_bytes())
+        prepared=self.mediator.update_source(self.exact(preparation_request,operation="RECONCILE",effect="OBSERVE_OR_RESUME_EXACT"),"RECONCILE")
+        self.assertEqual("NEEDS_RESOLUTION",prepared["state"])
+        (self.worktree / "README.md").write_text("ticket and main resolved\n")
+        observed=self.mediator.execute(self.request("INSPECT"),"INSPECT")
+        request=self.exact({**preparation_request,"protocolVersion":module.SOURCE_FINALIZATION_PROTOCOL,
+            "operation":"FINALIZE","effect":"FINALIZE_VALIDATED_SOURCE","operationId":str(uuid.uuid4()),"idempotencyKey":str(uuid.uuid4()),
+            "sourceRevision":preparation_request["sourceRevision"]+2,"sourceFingerprintSha256":observed["sourceFingerprintSha256"],
+            "preparationOperationId":preparation_request["operationId"],"preparationReceiptSha256":prepared["receiptSha256"],
+            "validationProjectionSha256":"f"*64})
+        self.final_path=self.path.parent / "source-finalization-v1.json"
+        self.preparation_bytes=self.path.read_bytes()
+        original_save=self.mediator._save_source_update
+        def lose_terminal_reply(path,record):
+            if path==self.final_path and record["state"]=="PUBLISHED":
+                raise module.ContractError("synthetic lost publication response")
+            return original_save(path,record)
+        with mock.patch.object(self.mediator,"_save_source_update",side_effect=lose_terminal_reply):
+            with self.assertRaises(module.ContractError):
+                self.mediator.finalize_source(request,"FINALIZE")
+        already_pushed=self._git(f"--git-dir={self.remote}","rev-parse",request["workspaceBranch"],capture=True).strip()
+        with mock.patch.object(self.mediator,"_safe_update_git",wraps=self.mediator._safe_update_git) as calls:
+            self.assertEqual("PREPARED",self.mediator.finalize_source(self.inspect(request),"INSPECT")["state"])
+            result=self.mediator.finalize_source(request,"FINALIZE")
+            self.assertEqual(already_pushed,result["publishedHeadSha"])
+            self.assertEqual(result,self.mediator.finalize_source(request,"FINALIZE"))
+        self.assertFalse(any(call.args[0]=="push" for call in calls.call_args_list))
+        self.assert_history()
+
+    def test_main_moves_between_preparation_and_publication_without_reset_or_new_target(self):
+        request=self.fixture()
+        before=(self.worktree / "README.md").read_bytes()
+        (self.source / "later-main.txt").write_text("later main\n")
+        self._git("-C",str(self.source),"add",".");self._git("-C",str(self.source),"commit","-m","later main")
+        later=self._git("-C",str(self.source),"rev-parse","HEAD",capture=True).strip()
+        self._git("-C",str(self.source),"push",str(self.remote),"main:main")
+        self._git(f"--git-dir={self.mirror}","fetch",str(self.remote),"main:refs/remotes/origin/main")
+        with self.assertRaisesRegex(module.ContractError,"moved"):
+            self.mediator.finalize_source(request,"FINALIZE")
+        self.assertFalse(self.final_path.exists())
+        self.assertEqual(before,(self.worktree / "README.md").read_bytes())
+        self.assertEqual(self.head,self._git("-C",str(self.worktree),"rev-parse","HEAD",capture=True).strip())
+        self.assertEqual(self.preparation_bytes,self.path.read_bytes())
+        self.assertEqual(later,self._git(f"--git-dir={self.remote}","rev-parse","main",capture=True).strip())
+
     def test_inspect_absent_never_creates_candidate_or_publishes(self):
         request = self.fixture()
         self.assertEqual("ABSENT", self.mediator.finalize_source(self.inspect(request), "INSPECT")["state"])
