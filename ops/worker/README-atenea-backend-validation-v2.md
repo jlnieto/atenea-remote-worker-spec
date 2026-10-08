@@ -1,19 +1,42 @@
 # BACKEND_TEST v2 y diagnóstico durable
 
-La definición backend v2 no reutiliza el sandbox de red compartida de web:
-necesita PostgreSQL y loopback HTTP aislados para los tests del repo Atenea.
+La definición backend v2 necesita PostgreSQL y loopback HTTP aislados para
+los tests del repo Atenea.
 
 El installer instala `atenea-backend-test-v2.Dockerfile` y
 `atenea-backend-test-v2.py` root-owned 0644 y comprueba sus fingerprints. El
 broker hace una construcción rootless desde esos dos archivos y un pom con
 hash autorizado. La construcción no recibe el resto del snapshot candidato.
 
-Sólo los coordinadores backend/Android permiten `AF_UNIX AF_INET AF_INET6`:
+Los coordinadores de preparación backend/Android/web/Playwright permiten `AF_UNIX AF_INET AF_INET6`:
 el proveedor de tokens de registro de BuildKit se ejecuta en el cliente y
 necesita DNS/HTTPS para preparar la receta confiable. Permitir sólo Unix
 bloqueaba la descarga antes de los tests. No se añade `AF_NETLINK`, no cambia
-la política de otros coordinadores y los contenedores candidatos conservan
-`--network none`, Maven/Gradle offline y la ausencia de sockets/secretos host.
+los límites del sandbox y los contenedores candidatos conservan
+`--network none`, Maven/Gradle/npm offline y la ausencia de sockets/secretos host.
+
+## Preparación web cerrada
+
+`WEB_BUILD` conserva su revisión `atenea-web-build-v1`, pero ya no depende de
+Node/npm instalados en el directorio personal del operador. Su imagen rootless
+usa Node 22 fijado por digest, la receta `atenea-web-validation-v1.Dockerfile`
+y el preparador `atenea-web-runtime-v1.py`, ambos root-owned y verificados por
+el installer y el broker. Sólo dos manifiestos npm con hashes autorizados
+entran en la preparación con red: [npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci/)
+se ejecuta con `--ignore-scripts`, sin configuración ni fuentes candidatas.
+
+La compilación real usa `scripts/web-build.sh` autorizado, UID 1000/GID 0,
+imagen read-only, red deshabilitada y tmpfs privados. Se descartan outputs,
+`node_modules`, `.npmrc`, `.env*` y cachés de compilador candidatos. La
+configuración npm de usuario/global es vacía y usa rutas distintas. Cambiar
+manifiestos, la receta o el script exige revisión explícita; no hay rutas,
+comandos ni versiones seleccionables por el cliente.
+
+La fase de build previa a Playwright usa esta misma preparación, sin ampliar
+los mounts del navegador. El HTML/assets se transfieren como una proyección
+acotada y validada antes de escribir en el scratch: sin tar candidato,
+symlinks, traversal ni colisiones archivo/directorio. El resultado backend
+ya aprobado no se invalida por desplegar esta corrección Platform.
 
 La ejecución usa la imagen observada por digest, UID 1000/GID 0, network none,
 cap-drop ALL, no-new-privileges, imagen read-only, tmpfs limitado y un único

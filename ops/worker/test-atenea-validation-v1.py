@@ -153,7 +153,9 @@ class ClosedValidationSandboxTests(unittest.TestCase):
         self.assertEqual("atenea-backend-test-v2", MODULE.DEFINITIONS["BACKEND_TEST"].revision)
         with self.assertRaises(MODULE.Rejected):
             MODULE.sandbox_operation_command("BACKEND_TEST")
-        self.assertEqual(("./scripts/web-build.sh",), MODULE.sandbox_operation_command("WEB_BUILD"))
+        self.assertEqual("web", MODULE.DEFINITIONS["WEB_BUILD"].runner)
+        with self.assertRaises(MODULE.Rejected):
+            MODULE.sandbox_operation_command("WEB_BUILD")
         with self.assertRaises(MODULE.Rejected):
             MODULE.sandbox_operation_command("ANDROID_BUILD")
         with self.assertRaises(MODULE.Rejected):
@@ -575,7 +577,7 @@ class ClosedValidationSandboxTests(unittest.TestCase):
                 ])
                 command = MODULE.durable_unit_command(identity)
                 families = [value for value in command if value.startswith("RestrictAddressFamilies=")]
-                expected = "AF_UNIX AF_INET AF_INET6" if operation in {"BACKEND_TEST", "ANDROID_BUILD"} else "AF_UNIX"
+                expected = "AF_UNIX AF_INET AF_INET6"
                 self.assertEqual(["RestrictAddressFamilies=" + expected], families)
                 for protection in ("ProtectSystem=strict", "ProtectHome=read-only",
                                    "PrivateDevices=yes", "RestrictSUIDSGID=yes"):

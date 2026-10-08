@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import fcntl
 import hashlib
@@ -53,6 +54,15 @@ BACKEND_PREPARER = Path("/usr/local/libexec/atenea/atenea-backend-test-v2.py")
 BACKEND_DOCKERFILE_SHA256 = "8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
 BACKEND_PREPARER_SHA256 = "0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
 BACKEND_POM_SHA256 = "948f346ea55fa1a3b124a7a742b52cb1fdb037c4a3efd0b4aee6ff7b01556a6f"
+WEB_DOCKERFILE = Path("/usr/local/libexec/atenea/atenea-web-validation-v1.Dockerfile")
+WEB_RUNTIME = Path("/usr/local/libexec/atenea/atenea-web-runtime-v1.py")
+WEB_DOCKERFILE_SHA256 = "e8d0a10e39aea1ecf49869cc7596717bf54cdf472d19dd28a8f725d2f6d9c34f"
+WEB_RUNTIME_SHA256 = "ccd154a0ccc7a87a91d4a1a36dbd863fcc8f9f45fd355fd00bfe8a2aaab2126f"
+WEB_INPUTS = {
+    "web/package.json": "6dff9531573c26f3143cfbf8849308dded874d13362a686517c7dd2f9383a5f3",
+    "web/package-lock.json": "62ea4d444da58e7e27bd83cb53ebcf49bcc9bf27dd5641e3d12ed8dd86ff21bc",
+    "scripts/web-build.sh": "afaa847d2171e7ba5a7258384e2501d63945138a21e186fa755c835215ba8f7b",
+}
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -85,7 +95,7 @@ DEFINITIONS = {
         "atenea-backend-test-v2", 900, "200%", "4G", 512, "6G", "backend"
     ),
     "WEB_BUILD": Definition(
-        "atenea-web-build-v1", 600, "200%", "3G", 512, "4G", "sandbox"
+        "atenea-web-build-v1", 600, "200%", "3G", 512, "4G", "web"
     ),
     "ANDROID_BUILD": Definition(
         "atenea-android-build-v2", 1200, "400%", "10G", 2048, "12G", "android"
@@ -630,6 +640,11 @@ def classify_execution(exit_code: int, output: str, phase: str) -> RunOutcome:
         return RunOutcome(0, phase, "NONE", "NONE")
     if exit_code in {124, 137}:
         return RunOutcome(exit_code, phase, "RESOURCE_LIMIT", "INFRASTRUCTURE")
+    if phase == "WEB_BUILD":
+        if exit_code == 127:
+            return RunOutcome(exit_code, "TOOLCHAIN", "TEST_TOOLCHAIN_UNAVAILABLE", "INFRASTRUCTURE")
+        if re.search(r"error TS[0-9]+:|error during build:", output):
+            return RunOutcome(exit_code, "COMPILATION", "COMPILATION_FAILED", "CANDIDATE")
     if re.search(r"(?m)^(?:bwrap:|Failed to (?:start|mount)|Error occurred during initialization of VM)", output):
         return RunOutcome(exit_code, "SANDBOX", "SANDBOX_SETUP_FAILED", "INFRASTRUCTURE")
     if phase == "ANDROID_BUILD" and any(marker in output for marker in (
@@ -841,6 +856,157 @@ def run_backend(
                 cleanup_failed = docker_call(prefix, ["rm", "--force", container_id], 60).returncode != 0
             # A tag may move. Delete only the immutable image identity observed
             # for this operation, never a foreign or unverified tag.
+            if image_id is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                cleanup_failed |= docker_call(prefix, ["image", "rm", image_id], 60).returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            cleanup_failed = True
+        if cleanup_failed:
+            raise RuntimeFailure(RunOutcome(70, "CLEANUP", "TEST_RUNTIME_CLEANUP_FAILED", "INFRASTRUCTURE"))
+
+
+def web_build_inputs(source_root: Path) -> dict[str, bytes] | None:
+    # npm config/shrinkwrap cannot override the reviewed lock or registry.
+    if any((source_root / name).exists() or (source_root / name).is_symlink()
+           for name in (".npmrc", "web/.npmrc", "web/npm-shrinkwrap.json")):
+        return None
+    result = {}
+    for name, digest in WEB_INPUTS.items():
+        path = source_root
+        for part in Path(name).parts:
+            path = path / part
+            if path.is_symlink():
+                return None
+        if not path.is_file() or path.stat().st_size > 256 * 1024:
+            return None
+        value = path.read_bytes()
+        if hashlib.sha256(value).hexdigest() != digest:
+            return None
+        result[name] = value
+    return result
+
+
+def receive_web_static(value: str, stage: Path, slot_gid: int) -> bool:
+    # Never extract a candidate tar or follow candidate links on the host.
+    # Validate the complete bounded projection before materializing files in
+    # one server-owned scratch subtree; clients do not select output paths.
+    if len(value) > 24 * 1024 * 1024:
+        return False
+    try:
+        projection = json.loads(value)
+        if set(projection) != {"schemaVersion", "files"} or projection["schemaVersion"] != 1:
+            return False
+        files = projection["files"]
+        if not isinstance(files, dict) or not files.get("index.html") or len(files) > 512:
+            return False
+        decoded = {}
+        total = 0
+        for name, encoded in files.items():
+            if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", name) is None:
+                return False
+            if any(part in {"", ".", ".."} for part in name.split("/")):
+                return False
+            data = base64.b64decode(encoded, validate=True)
+            total += len(data)
+            if total > 16 * 1024 * 1024:
+                return False
+            decoded[name] = data
+        if any(parent.as_posix() in decoded for name in decoded for parent in Path(name).parents
+               if parent != Path(".")):
+            return False
+    except (ValueError, TypeError, KeyError):
+        return False
+    destination = stage / "static"
+    if destination.exists() or destination.is_symlink():
+        return False
+    destination.mkdir(mode=0o700)
+    for name, data in decoded.items():
+        path = destination / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    make_slot_readable(destination, slot_gid)
+    return True
+
+
+def run_web(
+    prefix: list[str], validation_id: str, source_root: Path,
+    definition: Definition, stage: Path, output: IO[str],
+) -> RunOutcome:
+    deadline = time.monotonic() + definition.timeout
+    def remaining(cap: int) -> float:
+        value = min(float(cap), deadline - time.monotonic())
+        if value <= 0:
+            raise subprocess.TimeoutExpired(prefix, definition.timeout)
+        return value
+    for path, digest in ((WEB_DOCKERFILE, WEB_DOCKERFILE_SHA256), (WEB_RUNTIME, WEB_RUNTIME_SHA256)):
+        if not exact_regular_file(path, 0o644) or sha256_file(path) != digest:
+            return RunOutcome(70, "TOOLCHAIN", "INSTALLED_TOOLCHAIN_INVALID", "INFRASTRUCTURE")
+    inputs = web_build_inputs(source_root)
+    if inputs is None:
+        return RunOutcome(64, "TOOLCHAIN", "UNSUPPORTED_DEPENDENCY_MANIFEST", "POLICY")
+    context = source_root.parent / "web-build"
+    context.mkdir(mode=0o700)
+    # Only npm manifests and root-owned recipes cross the network boundary.
+    for name in ("package.json", "package-lock.json"):
+        (context / name).write_bytes(inputs["web/" + name])
+    shutil.copyfile(WEB_DOCKERFILE, context / "Dockerfile")
+    shutil.copyfile(WEB_RUNTIME, context / "atenea-web-runtime-v1.py")
+    slot_user = prefix[prefix.index("-u") + 1]
+    slot_gid = pwd.getpwnam(slot_user).pw_gid
+    make_slot_readable(context, slot_gid)
+    image = "atenea-web-validation:" + validation_id
+    built = docker_call(prefix, ["build", "--network", "default", "--memory", "3g",
+                        "--cpu-quota", "200000", "--tag", image,
+                        "--label", f"com.atenea.validation-id={validation_id}", str(context)],
+                        remaining(definition.timeout), output)
+    if built.returncode != 0:
+        return RunOutcome(built.returncode, "TOOLCHAIN", "TEST_TOOLCHAIN_BUILD_FAILED", "INFRASTRUCTURE")
+    container_id = None
+    image_id = None
+    try:
+        inspected = docker_call(prefix, ["image", "inspect", "--format", "{{.Id}}", image], remaining(30), capture=True)
+        image_id = str(inspected.stdout).strip()
+        if inspected.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            return RunOutcome(70, "TOOLCHAIN", "TEST_IMAGE_INVALID", "INFRASTRUCTURE")
+        created = docker_call(prefix, [
+            "create", "--name", "atenea-web-" + validation_id.replace("-", ""),
+            "--label", f"com.atenea.validation-id={validation_id}",
+            "--label", "com.atenea.validation=web-v1",
+            "--network", "none", "--user", "1000:0", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--read-only",
+            "--cpus", "2", "--memory", definition.memory_max.lower(),
+            "--pids-limit", str(definition.tasks_max),
+            "--tmpfs", "/work:rw,exec,nosuid,nodev,size=4g,uid=1000,gid=0,mode=0700",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=256m,uid=1000,gid=0,mode=0700",
+            "--mount", f"type=bind,src={source_root},dst=/source,readonly",
+            image_id, "/bin/sleep", "infinity",
+        ], remaining(30), capture=True)
+        candidate_id = str(created.stdout).strip()
+        if created.returncode != 0 or re.fullmatch(r"[0-9a-f]{64}", candidate_id) is None:
+            return RunOutcome(70, "CONTAINER", "TEST_CONTAINER_CREATE_FAILED", "INFRASTRUCTURE")
+        container_id = candidate_id
+        started = docker_call(prefix, ["start", container_id], remaining(30), output)
+        if started.returncode != 0:
+            return RunOutcome(started.returncode, "CONTAINER", "TEST_CONTAINER_START_FAILED", "INFRASTRUCTURE")
+        prepared = docker_call(prefix, ["exec", container_id, "/usr/bin/python3",
+                              "/opt/atenea-web-runtime-v1.py", "--prepare"], remaining(120), output)
+        if prepared.returncode != 0:
+            return RunOutcome(prepared.returncode, "DEPENDENCIES", "TEST_CACHE_INCOMPLETE", "INFRASTRUCTURE")
+        tested = docker_call(prefix, ["exec", "--workdir", "/work/repo", container_id,
+                            "/bin/bash", "./scripts/web-build.sh"], remaining(definition.timeout), output)
+        output.flush()
+        outcome = classify_execution(tested.returncode, bounded_output(Path(output.name)), "WEB_BUILD")
+        if outcome.exit_code:
+            return outcome
+        exported = docker_call(prefix, ["exec", container_id, "/usr/bin/python3",
+                              "/opt/atenea-web-runtime-v1.py", "--export-static"], remaining(30), capture=True)
+        if exported.returncode != 0 or not receive_web_static(exported.stdout, stage, slot_gid):
+            return RunOutcome(70, "ARTIFACTS", "WEB_BUILD_OUTPUT_INVALID", "VALIDATION")
+        return outcome
+    finally:
+        cleanup_failed = False
+        try:
+            if container_id is not None:
+                cleanup_failed = docker_call(prefix, ["rm", "--force", container_id], 60).returncode != 0
             if image_id is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
                 cleanup_failed |= docker_call(prefix, ["image", "rm", image_id], 60).returncode != 0
         except (OSError, subprocess.SubprocessError):
@@ -1396,7 +1562,7 @@ def execute_validation_in_slot(
         outcome = None
         with output_path.open("x", encoding="utf-8") as output:
             try:
-                if definition.runner in {"sandbox", "playwright"}:
+                if definition.runner == "sandbox":
                     sandbox_timeout = (
                         330 if definition.runner == "playwright" else definition.timeout + 30
                     )
@@ -1429,6 +1595,9 @@ def execute_validation_in_slot(
                         if definition.runner == "backend":
                             outcome = run_backend(prefix, validation_id, source_root, definition, output)
                             exit_code = outcome.exit_code
+                        elif definition.runner in {"web", "playwright"}:
+                            outcome = run_web(prefix, validation_id, source_root, definition, artifact_stage, output)
+                            exit_code = outcome.exit_code
                         else:
                             outcome = run_android(prefix, validation_id, source_root, definition, output)
                             exit_code = outcome.exit_code
@@ -1446,6 +1615,8 @@ def execute_validation_in_slot(
                         remaining,
                         output,
                     )
+                    # Browser failure must not retain a successful build outcome.
+                    outcome = classify_execution(exit_code, bounded_output(output_path), operation)
             except subprocess.TimeoutExpired:
                 exit_code = 124
                 output.write("validation timed out\n")
@@ -1712,7 +1883,7 @@ def durable_unit_command(identity: dict[str, str]) -> list[str]:
     # BuildKit's trusted registry-token provider runs in the client process.
     # It needs DNS/HTTPS for the hash-locked backend/Android recipes, not just
     # the Unix daemon socket. Candidate containers remain --network=none.
-    families = "AF_UNIX AF_INET AF_INET6" if definition.runner in {"backend", "android"} else "AF_UNIX"
+    families = "AF_UNIX AF_INET AF_INET6" if definition.runner in {"backend", "android", "web", "playwright"} else "AF_UNIX"
     helper = Path(__file__).resolve()
     command = [
         "/usr/bin/systemd-run",
