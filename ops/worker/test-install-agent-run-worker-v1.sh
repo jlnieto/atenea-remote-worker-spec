@@ -105,6 +105,13 @@ fi
     == "${BACKEND_TEST_DOCKERFILE_SHA256}" ]] || fail "backend test recipe fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-backend-test-v2.py" | cut -d' ' -f1)" \
     == "${BACKEND_TEST_PREPARER_SHA256}" ]] || fail "backend test preparer fingerprint is stale"
+[[ "${WEB_VALIDATION_DOCKERFILE}" == /usr/local/libexec/atenea/atenea-web-validation-v1.Dockerfile \
+    && "${WEB_VALIDATION_RUNTIME}" == /usr/local/libexec/atenea/atenea-web-runtime-v1.py ]] \
+  || fail "web validation installation paths are not fixed"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-web-validation-v1.Dockerfile" | cut -d' ' -f1)" \
+    == "${WEB_VALIDATION_DOCKERFILE_SHA256}" ]] || fail "web validation recipe fingerprint is stale"
+[[ "$(sha256sum "${SCRIPT_DIR}/atenea-web-runtime-v1.py" | cut -d' ' -f1)" \
+    == "${WEB_VALIDATION_RUNTIME_SHA256}" ]] || fail "web validation runtime fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-android-inputs-v2.json" | cut -d' ' -f1)" \
     == "${ANDROID_VALIDATION_INPUTS_SHA256}" ]] || fail "Android validation manifest fingerprint is stale"
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-android-validation-v2.Dockerfile" | cut -d' ' -f1)" \
