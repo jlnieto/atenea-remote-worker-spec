@@ -848,6 +848,8 @@ def run_backend(
             "--env", "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE=0",
             "--env", "SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=5",
             "--env", "ATENEA_WORKSPACE_ROOT=/workspace/repos",
+            # Apply the server-owned CPU budget to Maven and its forked JVM.
+            "--env", "JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2",
             image_id, "/bin/sleep", "infinity",
         ], remaining(30), capture=True)
         candidate_id = str(created.stdout).strip()
@@ -863,7 +865,11 @@ def run_backend(
             return RunOutcome(prepared.returncode, "TEST_DATABASE", "TEST_DATABASE_SETUP_FAILED", "INFRASTRUCTURE")
         tested = docker_call(prefix, ["exec", "--workdir", "/work/repo", container_id,
                             "/usr/share/maven/bin/mvn", "--offline", "-B", "-q",
-                            "-Dmaven.repo.local=/work/m2", "test"], remaining(definition.timeout), output)
+                            "-Dmaven.repo.local=/work/m2",
+                            # Closing evicted test contexts releases their schedulers,
+                            # connection pools and client references between test classes.
+                            # Do not raise pids/memory limits or omit any tests instead.
+                            "-Dspring.test.context.cache.maxSize=1", "test"], remaining(definition.timeout), output)
         output.flush()
         return classify_execution(tested.returncode, bounded_output(Path(output.name)), "BACKEND_TEST")
     finally:

@@ -98,6 +98,7 @@ class BackendValidationTest(unittest.TestCase):
         self.assertIn("SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE=0", create)
         self.assertIn("SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=5", create)
         self.assertIn("ATENEA_WORKSPACE_ROOT=/workspace/repos", create)
+        self.assertIn("JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2", create)
         tmpfs = [create[index + 1] for index, value in enumerate(create) if value == "--tmpfs"]
         self.assertEqual([
             "/work:rw,nosuid,nodev,size=5g,uid=1000,gid=0,mode=0700",
@@ -113,8 +114,25 @@ class BackendValidationTest(unittest.TestCase):
         test = next(call for call in calls if "test" in call)
         self.assertIn("--offline", test)
         self.assertIn("-Dmaven.repo.local=/work/m2", test)
+        self.assertIn("-Dspring.test.context.cache.maxSize=1", test)
         self.assertLess(calls.index(next(call for call in calls if "--prepare" in call)), calls.index(test))
         self.assertEqual(["rm", "--force", "b" * 64], calls[-2])
+
+    def test_context_budget_keeps_the_full_suite_and_existing_resource_boundaries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result, calls = self.invoke(Path(temporary))
+        self.assertEqual("NONE", result.failure_class)
+        create = next(call for call in calls if call[0] == "create")
+        self.assertEqual("2", create[create.index("--cpus") + 1])
+        self.assertEqual("512", create[create.index("--pids-limit") + 1])
+        self.assertEqual("4g", create[create.index("--memory") + 1])
+        self.assertEqual(1, create.count("JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2"))
+        test = next(call for call in calls if "test" in call)
+        self.assertEqual("test", test[-1])
+        self.assertEqual(1, test.count("-Dspring.test.context.cache.maxSize=1"))
+        self.assertFalse(any(value.startswith(("-Dtest=", "-Dskip", "-Dmaven.test.skip"))
+                             for value in test))
+        self.assertEqual(900, RUNNER.DEFINITIONS["BACKEND_TEST"].timeout)
 
     def test_database_preparation_failure_is_infrastructure_and_never_starts_tests(self):
         with tempfile.TemporaryDirectory() as temporary:
