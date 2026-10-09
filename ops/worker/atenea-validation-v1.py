@@ -6,11 +6,13 @@ from __future__ import annotations
 import base64
 import dataclasses
 import fcntl
+import grp
 import hashlib
 import json
 import os
 import pwd
 import re
+import runpy
 import resource
 import shutil
 import stat as stat_module
@@ -30,6 +32,7 @@ RUNTIME_ROOT = Path("/srv/atenea/validation-runtime-v1")
 JOURNAL_ROOT = Path("/srv/atenea/worker/validation-broker-v1")
 WORKSPACE_ROOT = Path("/srv/atenea/workspaces/sessions")
 CHANGE_WORKSPACE_ROOT = Path("/srv/atenea/workspaces/changes")
+SOURCE_AUTHORITY_MEDIATOR = Path("/usr/local/libexec/atenea/development-change-workspace-v1.py")
 RUNTIME_ADMISSION = Path("/usr/local/libexec/atenea/runtime-admission-v1.sh")
 WORKER_USER = "atenea-worker"
 PLAYWRIGHT_CHECK = Path("/usr/local/libexec/atenea/atenea-playwright-validation-v1.js")
@@ -249,6 +252,12 @@ def slot_authority(slot: str) -> tuple[str, int, Path, Path]:
     return slot_user, account.pw_uid, slot_home, Path(f"/run/user/{account.pw_uid}/docker.sock")
 
 
+def load_source_authority() -> dict[str, Any]:
+    if not exact_regular_file(SOURCE_AUTHORITY_MEDIATOR, 0o755, uid=0, gid=0):
+        reject()
+    return runpy.run_path(str(SOURCE_AUTHORITY_MEDIATOR))
+
+
 def resolve_authority(
     session_id: str, workspace_identity: str
 ) -> tuple[Path, tuple[str, int, Path, Path] | None, str]:
@@ -263,7 +272,9 @@ def resolve_authority(
         try:
             worker_account = pwd.getpwnam(WORKER_USER)
             worker_uid = worker_account.pw_uid
-            worker_gid = worker_account.pw_gid
+            # Match the fixed systemd Group=atenea and SGID workspace parent,
+            # not the account's potentially different login/primary group.
+            worker_gid = grp.getgrnam("atenea").gr_gid
         except KeyError:
             reject()
         if not exact_regular_file(record_path, 0o600, uid=worker_uid, gid=worker_gid):
@@ -295,7 +306,13 @@ def resolve_authority(
             reject()
         if not worktree.is_dir() or worktree.is_symlink() or observed.st_uid != worker_uid:
             reject()
-        return worktree, None, record["baseCommit"]
+        try:
+            expected_commit = record["baseCommit"]
+            if any((root / name).exists() or (root / name).is_symlink() for name in ("source-update-v1.json", "source-update-active-v1.json")):
+                expected_commit = load_source_authority()["approved_validation_commit"](root, record, worker_uid, worker_gid)
+        except Exception:
+            reject()
+        return worktree, None, expected_commit
 
     if workspace_identity != f"remote:ax42-01:work-session:{session_id}":
         reject()

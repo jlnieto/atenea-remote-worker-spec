@@ -44,6 +44,11 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 OPERATIONS = {"PROVISION", "INSPECT", "RECONCILE"}
 PUBLICATION_OPERATION = "PUBLISH"
+SOURCE_UPDATE_PROTOCOL = "development-change-source-update/v1"
+SOURCE_CONTINUATION_PROTOCOL = "development-change-source-update/v2"
+SOURCE_UPDATE_OPERATIONS = {"PREPARE", "INSPECT", "RECONCILE", "RECOVER"}
+SOURCE_FINALIZATION_PROTOCOL = "development-change-source-finalization/v1"
+SOURCE_FINALIZATION_OPERATIONS = {"FINALIZE", "INSPECT", "RECOVER"}
 REQUEST_KEYS = {
     "schemaVersion",
     "protocolVersion",
@@ -112,6 +117,28 @@ PUBLICATION_RECORD_KEYS = PUBLICATION_REQUEST_KEYS | {
     "remoteDisposition",
     "publicationReceiptSha256",
     "recordSha256",
+}
+SOURCE_UPDATE_REQUEST_KEYS = PUBLICATION_REQUEST_KEYS | {
+    "targetMainCommit", "publicationReceiptSha256",
+}
+SOURCE_UPDATE_RECORD_KEYS = SOURCE_UPDATE_REQUEST_KEYS | {
+    "state", "intentSha256", "ownerRecordSha256", "preparedTreeSha",
+    "conflictFiles", "preparedFingerprintSha256", "recordSha256",
+}
+SOURCE_CONTINUATION_REQUEST_KEYS = SOURCE_UPDATE_REQUEST_KEYS | {
+    "predecessorPreparationOperationId", "predecessorPreparationReceiptSha256", "publishedSourceRevision",
+}
+SOURCE_CONTINUATION_RECORD_KEYS = SOURCE_UPDATE_RECORD_KEYS | (SOURCE_CONTINUATION_REQUEST_KEYS - SOURCE_UPDATE_REQUEST_KEYS) | {
+    "inputTreeSha", "checkpointCommitSha",
+}
+SOURCE_AUTHORITY_KEYS = {"operationId", "intentSha256", "recordSha256"}
+SOURCE_FINALIZATION_REQUEST_KEYS = PUBLICATION_REQUEST_KEYS | {
+    "targetMainCommit", "publicationReceiptSha256", "preparationOperationId",
+    "preparationReceiptSha256", "validationProjectionSha256",
+}
+SOURCE_FINALIZATION_RECORD_KEYS = SOURCE_FINALIZATION_REQUEST_KEYS | {
+    "state", "intentSha256", "ownerRecordSha256", "expectedTreeSha", "publishedHeadSha",
+    "finalizationReceiptSha256", "recordSha256",
 }
 
 
@@ -292,6 +319,219 @@ def validate_publication_request(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_source_update_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
+    effects = {"PREPARE": "PREPARE_PINNED_MAIN", "INSPECT": "OBSERVE_ONLY",
+               "RECONCILE": "OBSERVE_OR_RESUME_EXACT", "RECOVER": "RESUME_PINNED_SOURCE"}
+    continuation = value.get("protocolVersion") == SOURCE_CONTINUATION_PROTOCOL
+    if (set(value) != (SOURCE_CONTINUATION_REQUEST_KEYS if continuation else SOURCE_UPDATE_REQUEST_KEYS)
+            or operation not in SOURCE_UPDATE_OPERATIONS
+            or type(value.get("schemaVersion")) is not int
+            or value.get("protocolVersion") not in {SOURCE_UPDATE_PROTOCOL, SOURCE_CONTINUATION_PROTOCOL}
+            or value.get("operation") != operation
+            or value.get("effect") != effects[operation]
+            or (not continuation and value.get("sourceFingerprintSha256") is not None)
+            or any(not isinstance(value.get(field), str) for field in (
+                "baseCommit", "sourceCommit", "targetMainCommit", "publicationReceiptSha256", "requestFingerprintSha256"))
+            or not GIT_COMMIT.fullmatch(str(value.get("targetMainCommit")))
+            or not SHA256.fullmatch(str(value.get("publicationReceiptSha256")))):
+        raise ContractError("source update request is invalid")
+    if continuation and (canonical_uuid(value.get("predecessorPreparationOperationId")) != value.get("predecessorPreparationOperationId")
+            or not SHA256.fullmatch(str(value.get("predecessorPreparationReceiptSha256")))
+            or type(value.get("publishedSourceRevision")) is not int
+            or type(value.get("sourceRevision")) is not int
+            or not 0 <= value["publishedSourceRevision"] <= value["sourceRevision"]):
+        raise ContractError("source continuation predecessor is invalid")
+    # Reuse the closed publication identities, not its effects or credentials.
+    publication = {key: value[key] for key in PUBLICATION_REQUEST_KEYS}
+    publication.update(protocolVersion=PUBLICATION_PROTOCOL_VERSION,
+                       effect="PUBLISH_EXACT_CHANGE_BRANCH", operation="PUBLISH")
+    publication["requestFingerprintSha256"] = canonical_sha256({
+        key: item for key, item in publication.items() if key != "requestFingerprintSha256"})
+    validate_publication_request(publication)
+    if (isinstance(value["schemaVersion"], bool)
+            or canonical_sha256({key: item for key, item in value.items()
+                                 if key != "requestFingerprintSha256"})
+            != value["requestFingerprintSha256"]):
+        raise ContractError("source update fingerprint is invalid")
+    return dict(value)
+
+
+def source_update_intent(request: dict[str, Any]) -> str:
+    return canonical_sha256({key: value for key, value in request.items()
+                             if key not in {"operation", "effect", "requestFingerprintSha256"}})
+
+
+def sealed_source_record(path: Path, keys: set[str], uid: int, gid: int) -> dict[str, Any]:
+    try:
+        observed = path.lstat()
+    except OSError as error:
+        raise ContractError("validation source authority record is unavailable") from error
+    if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != uid or observed.st_gid != gid
+            or stat.S_IMODE(observed.st_mode) != 0o600 or observed.st_nlink != 1 or observed.st_size > 65536):
+        raise ContractError("validation source authority record is unsafe")
+    try:
+        record = strict_json(path.read_bytes())
+    except OSError as error:
+        raise ContractError("validation source authority record is unavailable") from error
+    if (set(record) != keys or record["recordSha256"] != canonical_sha256(
+            {key: item for key, item in record.items() if key != "recordSha256"})):
+        raise ContractError("validation source authority seal is invalid")
+    return record
+
+
+def source_record(root: Path, operation_id: str, uid: int, gid: int) -> tuple[Path, dict[str, Any]]:
+    canonical_uuid(operation_id)
+    legacy = root / "source-update-v1.json"
+    first = sealed_source_record(legacy, SOURCE_UPDATE_RECORD_KEYS, uid, gid)
+    if first["operationId"] == operation_id:
+        return legacy, first
+    path = root / f"source-update-{operation_id}-v2.json"
+    return path, sealed_source_record(path, SOURCE_CONTINUATION_RECORD_KEYS, uid, gid)
+
+
+def source_request(record: dict[str, Any]) -> dict[str, Any]:
+    keys = SOURCE_CONTINUATION_REQUEST_KEYS if record["protocolVersion"] == SOURCE_CONTINUATION_PROTOCOL else SOURCE_UPDATE_REQUEST_KEYS
+    request = {key: record[key] for key in keys}
+    return validate_source_update_request(request, "PREPARE")
+
+
+def active_source_record(root: Path, uid: int, gid: int) -> tuple[Path, dict[str, Any]]:
+    pointer = root / "source-update-active-v1.json"
+    if pointer.exists() or pointer.is_symlink():
+        authority = sealed_source_record(pointer, SOURCE_AUTHORITY_KEYS, uid, gid)
+        path, record = source_record(root, authority["operationId"], uid, gid)
+        if authority["intentSha256"] != record["intentSha256"]:
+            raise ContractError("source update active authority is incompatible")
+        return path, record
+    path = root / "source-update-v1.json"
+    return path, sealed_source_record(path, SOURCE_UPDATE_RECORD_KEYS, uid, gid)
+
+
+def source_finalization_path(root: Path, preparation_id: str, uid: int, gid: int) -> Path:
+    preparation_path, _ = source_record(root, preparation_id, uid, gid)
+    return root / ("source-finalization-v1.json" if preparation_path.name == "source-update-v1.json"
+        else f"source-finalization-{canonical_uuid(preparation_id)}-v1.json")
+
+
+def require_source_publication(root: Path, request: dict[str, Any], owner: dict[str, Any], uid: int, gid: int, depth: int = 0) -> None:
+    if depth >= 32:
+        raise ContractError("source continuation history exceeds bound")
+    identity = ("changeKey", "databaseProjectId", "projectId", "repository", "repositoryBranch",
+                "baseCommit", "workspaceBranch", "workspaceIdentity", "workerId")
+    if request.get("protocolVersion") == SOURCE_CONTINUATION_PROTOCOL:
+        _, parent = source_record(root, request["predecessorPreparationOperationId"], uid, gid)
+        parent_request = source_request(parent)
+        if (parent["recordSha256"] != request["predecessorPreparationReceiptSha256"]
+                or parent["ownerRecordSha256"] != canonical_sha256(owner)
+                or parent["intentSha256"] != source_update_intent(parent_request)
+                or parent["state"] not in {"NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+                or any(parent.get(key) != request[key] for key in identity)):
+            raise ContractError("source continuation preparation lineage is incompatible")
+        require_source_publication(root, parent_request, owner, uid, gid, depth+1)
+    publication = sealed_source_record(root / "branch-publication-v1.json", PUBLICATION_RECORD_KEYS, uid, gid)
+    revision = request.get("publishedSourceRevision", request["sourceRevision"])
+    if (publication["state"] == "PUBLISHED" and all(publication.get(key) == request[key] for key in identity)
+            and publication["publishedHeadSha"] == request["sourceCommit"]
+            and publication["publicationReceiptSha256"] == request["publicationReceiptSha256"]
+            and publication["sourceRevision"] == revision):
+        return
+    if request.get("protocolVersion") != SOURCE_CONTINUATION_PROTOCOL:
+        raise ContractError("source update predecessor publication is incompatible")
+    _, parent = source_record(root, request["predecessorPreparationOperationId"], uid, gid)
+    parent_request = source_request(parent)
+    if (parent["recordSha256"] != request["predecessorPreparationReceiptSha256"]
+            or parent["ownerRecordSha256"] != canonical_sha256(owner)
+            or parent["state"] not in {"NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+            or any(parent.get(key) != request[key] for key in identity)):
+        raise ContractError("source continuation preparation lineage is incompatible")
+    final_path = source_finalization_path(root, parent["operationId"], uid, gid)
+    if not final_path.exists() and not final_path.is_symlink():
+        if (parent["sourceCommit"] != request["sourceCommit"]
+                or parent["publicationReceiptSha256"] != request["publicationReceiptSha256"]
+                or parent.get("publishedSourceRevision", parent["sourceRevision"]) != revision):
+            raise ContractError("source continuation unpublished lineage is incompatible")
+        return
+    final = sealed_source_record(final_path, SOURCE_FINALIZATION_RECORD_KEYS, uid, gid)
+    exact = {key: final[key] for key in SOURCE_FINALIZATION_REQUEST_KEYS}
+    validate_source_finalization_request(exact, "FINALIZE")
+    if (final["state"] != "PUBLISHED" or any(final.get(key) != request[key] for key in identity)
+            or final["ownerRecordSha256"] != canonical_sha256(owner)
+            or final["intentSha256"] != source_update_intent(exact)
+            or final["preparationOperationId"] != parent["operationId"]
+            or final["preparationReceiptSha256"] != parent["recordSha256"]
+            or parent["recordSha256"] != request["predecessorPreparationReceiptSha256"]
+            or final["sourceRevision"] != revision or final["publishedHeadSha"] != request["sourceCommit"]
+            or final["finalizationReceiptSha256"] != request["publicationReceiptSha256"]
+            or final["finalizationReceiptSha256"] != canonical_sha256({"intentSha256": final["intentSha256"],
+                "expectedTreeSha": final["expectedTreeSha"], "publishedHeadSha": final["publishedHeadSha"],
+                "predecessorReceiptSha256": final["publicationReceiptSha256"]})):
+        raise ContractError("source continuation publication is incompatible")
+
+
+def validate_source_finalization_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
+    if (not isinstance(value, dict) or set(value) != SOURCE_FINALIZATION_REQUEST_KEYS
+            or operation not in SOURCE_FINALIZATION_OPERATIONS or value.get("operation") != operation
+            or value.get("protocolVersion") != SOURCE_FINALIZATION_PROTOCOL
+            or value.get("effect") != {"FINALIZE": "FINALIZE_VALIDATED_SOURCE", "INSPECT": "OBSERVE_ONLY",
+                                      "RECOVER": "RESUME_PINNED_SOURCE"}[operation]
+            or any(not isinstance(value.get(key), str) or not SHA256.fullmatch(value[key]) for key in
+                   ("publicationReceiptSha256", "preparationReceiptSha256", "validationProjectionSha256"))
+            or not isinstance(value.get("targetMainCommit"), str)
+            or not GIT_COMMIT.fullmatch(value["targetMainCommit"])
+            or canonical_uuid(value.get("preparationOperationId")) != value.get("preparationOperationId")
+            or isinstance(value.get("schemaVersion"), bool)):
+        raise ContractError("source finalization request is invalid")
+    publication = {key: value[key] for key in PUBLICATION_REQUEST_KEYS}
+    publication.update(protocolVersion=PUBLICATION_PROTOCOL_VERSION, operation="PUBLISH", effect="PUBLISH_EXACT_CHANGE_BRANCH")
+    # The publication validator is the authority for all fixed owner fields.
+    publication["requestFingerprintSha256"] = canonical_sha256({key: item for key, item in publication.items()
+                                                               if key != "requestFingerprintSha256"})
+    validate_publication_request(publication)
+    if value["requestFingerprintSha256"] != canonical_sha256({key: item for key, item in value.items()
+                                                               if key != "requestFingerprintSha256"}):
+        raise ContractError("source finalization request is invalid")
+    return dict(value)
+
+
+def approved_validation_commit(root: Path, owner: dict[str, Any], uid: int, gid: int) -> str:
+    """Read-only source authority; the immutable creation base is never replaced."""
+    path = root / "source-update-v1.json"
+    if not path.exists() and not path.is_symlink():
+        if (root / "source-update-active-v1.json").exists() or (root / "source-update-active-v1.json").is_symlink():
+            raise ContractError("validation source initial authority is missing")
+        return owner["baseCommit"]
+    metadata = regular_directory(root, uid)
+    if metadata.st_gid != gid or stat.S_IMODE(metadata.st_mode) not in {0o700, 0o770}:
+        raise ContractError("validation source authority root is unsafe")
+    _, record = active_source_record(root, uid, gid)
+    request = source_request(record)
+    identity = ("changeKey", "databaseProjectId", "projectId", "baseCommit", "workspaceBranch", "workspaceIdentity", "workerId")
+    if (any(owner.get(key) != record[key] for key in identity)
+            or record["ownerRecordSha256"] != canonical_sha256(owner)
+            or record["intentSha256"] != source_update_intent(request)
+            or record["state"] not in {"NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+            or not GIT_COMMIT.fullmatch(str(record["preparedTreeSha"]))):
+        raise ContractError("validation source preparation identity is invalid")
+    require_source_publication(root, request, owner, uid, gid)
+    final_path = source_finalization_path(root, record["operationId"], uid, gid)
+    if final_path.exists() or final_path.is_symlink():
+        final = sealed_source_record(final_path, SOURCE_FINALIZATION_RECORD_KEYS, uid, gid)
+        exact = {key: final[key] for key in SOURCE_FINALIZATION_REQUEST_KEYS}
+        validate_source_finalization_request(exact, "FINALIZE")
+        if final["state"] == "PUBLISHED":
+            if (final["preparationReceiptSha256"] != record["recordSha256"]
+                    or final["ownerRecordSha256"] != canonical_sha256(owner)
+                    or any(final.get(key) != record[key] for key in (*identity, "sourceCommit", "targetMainCommit", "publicationReceiptSha256"))
+                    or final["intentSha256"] != source_update_intent(exact)
+                    or not GIT_COMMIT.fullmatch(str(final["publishedHeadSha"]))
+                    or final["finalizationReceiptSha256"] != canonical_sha256({"intentSha256": final["intentSha256"],
+                        "expectedTreeSha": final["expectedTreeSha"], "publishedHeadSha": final["publishedHeadSha"],
+                        "predecessorReceiptSha256": final["publicationReceiptSha256"]})):
+                raise ContractError("validation finalized source authority is invalid")
+            return final["publishedHeadSha"]
+    return record["sourceCommit"]
+
+
 class WorkspaceMediator:
     def __init__(
         self,
@@ -366,6 +606,543 @@ class WorkspaceMediator:
         with self.lock():
             self._validate_roots()
             return self._publish_exact(exact)
+
+    def finalize_source(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
+        exact = validate_source_finalization_request(request, operation)
+        with self.lock():
+            self._validate_roots()
+            root = self._root(exact["changeKey"])
+            root_metadata = regular_directory(root, os.geteuid())
+            if stat.S_IMODE(root_metadata.st_mode) not in {0o700, 0o770}:
+                raise ContractError("source finalization workspace root mode is unsafe")
+            path = source_finalization_path(root, exact["preparationOperationId"], os.geteuid(), root_metadata.st_gid)
+            if not path.exists() and not path.is_symlink() and operation == "INSPECT":
+                return {**exact, "state": "ABSENT", "publishedHeadSha": None,
+                        "expectedTreeSha": None, "finalizationReceiptSha256": None, "valuesExposed": False}
+            _, preparation = active_source_record(root, os.geteuid(), root_metadata.st_gid)
+            retained = source_request(preparation)
+            identity = ("changeKey", "databaseProjectId", "projectId", "repository", "repositoryBranch",
+                        "baseCommit", "sourceCommit", "workspaceBranch", "workspaceIdentity", "workerId",
+                        "targetMainCommit", "publicationReceiptSha256")
+            owner_hash = canonical_sha256(self._read_record(self._record_path(exact["changeKey"])))
+            if (any(exact[key] != preparation[key] for key in identity)
+                    or preparation["operationId"] != exact["preparationOperationId"]
+                    or preparation["recordSha256"] != exact["preparationReceiptSha256"]
+                    or preparation["ownerRecordSha256"] != owner_hash
+                    or preparation["state"] not in {"NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+                    or exact["sourceRevision"] <= preparation["sourceRevision"]):
+                raise ContractError("source finalization preparation is incompatible")
+            exists = path.exists() or path.is_symlink()
+            worktree = self._worktree(exact["changeKey"])
+            recovery = None
+            if exists:
+                record = self._read_sealed_record(path, SOURCE_FINALIZATION_RECORD_KEYS)
+                if (source_update_intent(exact) != record["intentSha256"]
+                        or record["ownerRecordSha256"] != owner_hash
+                        or record["state"] not in {"PREPARED", "PUBLISHED"}
+                        or not GIT_COMMIT.fullmatch(str(record["publishedHeadSha"]))
+                        or not GIT_COMMIT.fullmatch(str(record["expectedTreeSha"]))):
+                    raise ContractError("source finalization durable identity is incompatible")
+            else:
+                self._source_update_idle()
+                self._source_update_owner(retained)
+                if operation == "RECOVER":
+                    recovery = self._retain_main_recovery(exact, "FINALIZATION", {exact["sourceCommit"]})
+                self._source_update_refs(retained, recovery)
+                observation = self._workspace_observation_for_publication(exact)
+                if (observation["state"] != "OWNED" or observation["sourceCommit"] != exact["sourceCommit"]
+                        or observation["sourceFingerprintSha256"] != exact["sourceFingerprintSha256"]
+                        or self._safe_update_git("ls-files", "--unmerged", cwd=worktree)):
+                    raise ContractError("source finalization source changed")
+                tree = self._write_worktree_tree(worktree)
+                files = self._update_files(tree)  # rejects symlinks/submodules and unsafe paths
+                for name in preparation["conflictFiles"]:
+                    if name in files:
+                        data = self._safe_update_git("cat-file", "blob", files[name][1], git_dir=True)
+                        if re.search(rb"(?m)^(?:<{7}|={7}|>{7}|\|{7})(?: |$)", data):
+                            raise ContractError("source finalization unresolved markers")
+                # No hooks, merge drivers, caller command, or caller commit text.
+                # Seal the exact candidate BEFORE moving the owned branch.
+                timestamp = self._safe_update_git("show", "-s", "--format=%ct", exact["sourceCommit"], git_dir=True).decode().strip()
+                if not re.fullmatch(r"[0-9]{1,12}", timestamp):
+                    raise ContractError("source finalization predecessor timestamp is invalid")
+                head = self._safe_update_git("commit-tree", tree, "-p", exact["sourceCommit"],
+                    "-p", exact["targetMainCommit"], "-m", "Atenea pinned source update " + exact["operationId"],
+                    git_dir=True, env_extra={"GIT_AUTHOR_NAME": "Atenea", "GIT_AUTHOR_EMAIL": "atenea@localhost",
+                    "GIT_COMMITTER_NAME": "Atenea", "GIT_COMMITTER_EMAIL": "atenea@localhost",
+                    "GIT_AUTHOR_DATE": "@" + str(int(timestamp) + 1) + " +0000",
+                    "GIT_COMMITTER_DATE": "@" + str(int(timestamp) + 1) + " +0000"}).decode().strip()
+                journal_request = self._journal_request(exact, "FINALIZE", "FINALIZE_VALIDATED_SOURCE")
+                record = {**journal_request, "state": "PREPARED", "intentSha256": source_update_intent(exact),
+                    "ownerRecordSha256": owner_hash, "expectedTreeSha": tree, "publishedHeadSha": head,
+                    "finalizationReceiptSha256": None}
+                self._pin_finalization_candidate(exact, head, create=True)
+                self._save_source_update(path, record)
+                record = self._read_sealed_record(path, SOURCE_FINALIZATION_RECORD_KEYS)
+            # JSON is not a GC root. Keep the candidate behind a fixed private
+            # ref, including an interruption between pinning and journal write.
+            self._pin_finalization_candidate(exact, record["publishedHeadSha"], create=False)
+            if record["state"] == "PUBLISHED":
+                # Inspection of a completed receipt is proof, not an invitation
+                # to re-push a remotely moved branch or accept a later edit.
+                actual = self._safe_update_git("rev-parse", "HEAD", cwd=worktree).decode().strip()
+                self._source_update_owner(retained, expected_head=record["publishedHeadSha"])
+                if (actual != record["publishedHeadSha"]
+                        or self._safe_update_git("status", "--porcelain=v2", "-z", "--untracked-files=all", cwd=worktree)
+                        or self._remote_branch_head(exact, worktree) != record["publishedHeadSha"]):
+                    raise ContractError("source finalization published identity moved")
+            if operation != "INSPECT":
+                self._source_update_idle()
+                if operation == "RECOVER" and recovery is None and record["state"] != "PUBLISHED":
+                    recovery = self._retain_main_recovery(exact, "FINALIZATION", {exact["sourceCommit"],record["publishedHeadSha"]})
+                self._resume_source_finalization(exact, retained, record, path, recovery)
+                record = self._read_sealed_record(path, SOURCE_FINALIZATION_RECORD_KEYS)
+            return {**exact, "state": record["state"], "publishedHeadSha": record["publishedHeadSha"],
+                    "expectedTreeSha": record["expectedTreeSha"],
+                    "finalizationReceiptSha256": record["finalizationReceiptSha256"], "valuesExposed": False}
+
+    def _pin_finalization_candidate(self, request: dict[str, Any], head: str, *, create: bool) -> None:
+        if not GIT_COMMIT.fullmatch(head):
+            raise ContractError("source finalization candidate is invalid")
+        ref = f"refs/atenea/source-finalizations/{request['changeKey']}/{request['operationId']}"
+        found = self._git_result(*self._update_git_options(), "show-ref", "--verify", "--quiet", ref,
+                                 git_dir=True, env_extra=self._update_git_environment())
+        if found.returncode == 1 and create:
+            self._safe_update_git("update-ref", ref, head, "0" * len(head), git_dir=True)
+        elif found.returncode != 0 or self._safe_update_git("rev-parse", ref, git_dir=True).decode().strip() != head:
+            raise ContractError("source finalization candidate ref is incompatible")
+
+    def _resume_source_finalization(self, request: dict[str, Any], retained: dict[str, Any],
+                                    record: dict[str, Any], path: Path, recovery: dict[str, Any] | None = None) -> None:
+        worktree = self._worktree(request["changeKey"])
+        head = record["publishedHeadSha"]
+        tree = record["expectedTreeSha"]
+        parents = self._safe_update_git("rev-list", "--parents", "-n", "1", head, git_dir=True).decode().split()
+        if (parents != [head, request["sourceCommit"], request["targetMainCommit"]]
+                or self._safe_update_git("rev-parse", f"{head}^{{tree}}", git_dir=True).decode().strip() != tree):
+            raise ContractError("source finalization candidate is incompatible")
+        actual = self._safe_update_git("rev-parse", "HEAD", cwd=worktree).decode().strip()
+        self._source_update_owner(retained, expected_head=actual)
+        if actual not in {request["sourceCommit"], head} or self._write_worktree_tree(worktree) != tree:
+            raise ContractError("source finalization later edit requires attention")
+        remote = self._remote_branch_head(request, worktree)
+        if record["state"] != "PUBLISHED":
+            # Verify retained main again, before EACH effect/recovery. No fetch.
+            self._source_update_refs({**retained, "sourceCommit": remote}, recovery)
+            if remote not in {request["sourceCommit"], head}:
+                raise ContractError("source finalization remote head moved")
+            if actual == request["sourceCommit"]:
+                observation = self._workspace_observation_for_publication(request)
+                if observation["sourceFingerprintSha256"] != request["sourceFingerprintSha256"]:
+                    raise ContractError("source finalization source changed")
+                self._safe_update_git("update-ref", self._branch_ref(request), head, actual, git_dir=True)
+            # Resume an interruption after update-ref without modifying any file.
+            self._safe_update_git("read-tree", tree, cwd=worktree)
+        if self._safe_update_git("status", "--porcelain=v2", "-z", "--untracked-files=all", cwd=worktree):
+            raise ContractError("source finalization worktree is not clean")
+        if remote == request["sourceCommit"]:
+            # Only a normal fast-forward push is permitted. Git receive-pack
+            # checks its advertised old ref atomically; never request force.
+            ref = self._branch_ref(request)
+            self._source_update_refs({**retained, "sourceCommit": remote}, recovery)
+            self._safe_update_git("push", "--porcelain", "--no-force",
+                                  self.publication_transport, f"{head}:{ref}", cwd=worktree, publication=True)
+        elif remote != head:
+            raise ContractError("source finalization remote head moved")
+        if self._remote_branch_head(request, worktree) != head:
+            raise ContractError("source finalization remote verification failed")
+        receipt = canonical_sha256({"intentSha256": record["intentSha256"], "expectedTreeSha": tree,
+                                   "publishedHeadSha": head, "predecessorReceiptSha256": request["publicationReceiptSha256"]})
+        if record["state"] == "PUBLISHED":
+            if record["finalizationReceiptSha256"] != receipt:
+                raise ContractError("source finalization receipt changed")
+            return
+        self._save_source_update(path, {**{key: value for key, value in record.items() if key != "recordSha256"},
+                                       "state": "PUBLISHED", "finalizationReceiptSha256": receipt})
+
+    def update_source(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
+        exact = validate_source_update_request(request, operation)
+        with self.lock():
+            self._validate_roots()
+            root = self._root(exact["changeKey"])
+            continuation = exact["protocolVersion"] == SOURCE_CONTINUATION_PROTOCOL
+            path = root / (f"source-update-{exact['operationId']}-v2.json" if continuation else "source-update-v1.json")
+            record_keys = SOURCE_CONTINUATION_RECORD_KEYS if continuation else SOURCE_UPDATE_RECORD_KEYS
+            exists = path.exists() or path.is_symlink()
+            if not exists and operation not in {"PREPARE", "RECOVER"}:
+                return self._source_update_response(exact, None)
+            self._source_update_owner(exact)
+            if operation != "INSPECT":
+                self._source_update_idle()
+            recovery = self._retain_main_recovery(exact, "PREPARATION", {exact["sourceCommit"]}) if operation == "RECOVER" else None
+            if exists:
+                record = self._read_sealed_record(path, record_keys)
+                source_request(record)
+                if (record["intentSha256"] != source_update_intent(exact)
+                        or record["ownerRecordSha256"] != canonical_sha256(
+                            self._read_record(self._record_path(exact["changeKey"])))
+                        or record["state"] not in {"PREPARED", "NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+                        or not GIT_COMMIT.fullmatch(str(record["preparedTreeSha"]))
+                        or not isinstance(record["conflictFiles"], list)
+                        or any(not isinstance(item, str) for item in record["conflictFiles"])):
+                    raise ContractError("source update durable identity is incompatible")
+            else:
+                # No local/remote moving ref is selected implicitly. Both are
+                # observations of the exact target approved by App.
+                self._source_update_refs(exact, recovery)
+                worktree = self._worktree(exact["changeKey"])
+                if not continuation and self._safe_update_git("status", "--porcelain=v2", "-z",
+                                         "--untracked-files=all", cwd=worktree):
+                    raise ContractError("source update workspace is not clean")
+                input_commit, input_tree = self._continuation_input(exact) if continuation else (exact["sourceCommit"], None)
+                self._update_files(exact["sourceCommit"])
+                result = self._git_result(
+                    *self._update_git_options(), "merge-tree", "--write-tree", "--name-only",
+                    "--no-messages", "-z", input_commit, exact["targetMainCommit"], git_dir=True,
+                    env_extra=self._update_git_environment())
+                parts = result.stdout.split(b"\0")
+                if result.returncode not in {0, 1} or len(result.stdout) > MAX_GIT_OUTPUT_BYTES:
+                    raise ContractError("source update merge preparation failed")
+                try:
+                    tree = parts[0].decode("ascii").strip()
+                    conflicts = sorted(set(part.decode("utf-8") for part in parts[1:] if part))
+                except UnicodeDecodeError as error:
+                    raise ContractError("source update paths are unsupported") from error
+                if not GIT_COMMIT.fullmatch(tree) or (result.returncode == 0 and conflicts):
+                    raise ContractError("source update merge preparation is invalid")
+                if any(not name or "\\" in name or name.startswith("/") or any(ord(char) < 32 or ord(char) == 127 for char in name)
+                       or any(part in {"", ".", ".."} or part.lower() == ".git"
+                              for part in name.split("/")) for name in conflicts):
+                    raise ContractError("source update conflict path is unsupported")
+                self._update_files(tree)
+                self._source_update_refs(exact, recovery)
+                journal_request = self._journal_request(exact, "PREPARE", "PREPARE_PINNED_MAIN")
+                record = {**journal_request, "state": "PREPARED", "intentSha256": source_update_intent(exact),
+                          "ownerRecordSha256": canonical_sha256(self._read_record(self._record_path(exact["changeKey"]))),
+                          "preparedTreeSha": tree, "conflictFiles": conflicts,
+                          "preparedFingerprintSha256": None}
+                if continuation:
+                    record.update(inputTreeSha=input_tree, checkpointCommitSha=input_commit)
+                    # Retain the captured input tree/commit before the journal and every effect.
+                    ref = f"refs/atenea/source-checkpoints/{exact['changeKey']}/{exact['operationId']}"
+                    found = self._git_result(*self._update_git_options(), "show-ref", "--verify", "--quiet", ref,
+                        git_dir=True, env_extra=self._update_git_environment())
+                    if found.returncode == 1:
+                        self._safe_update_git("update-ref", ref, input_commit, "0" * len(input_commit), git_dir=True)
+                    elif found.returncode != 0 or self._safe_update_git("rev-parse", ref, git_dir=True).decode().strip() != input_commit:
+                        raise ContractError("source continuation checkpoint ref changed")
+                # Intention and immutable trees precede every worktree effect.
+                self._save_source_update(path, record)
+            self._pin_source_update_tree(record, create=operation != "INSPECT" and record["state"] == "PREPARED")
+            if operation != "INSPECT" and record["state"] == "PREPARED":
+                self._source_update_refs(exact, recovery)
+            if continuation:
+                self._continuation_authority(exact, record, write=operation != "INSPECT")
+            if operation != "INSPECT" and record["state"] == "PREPARED":
+                self._resume_source_update(exact, record, path)
+            return self._source_update_response(exact, record)
+
+    def _continuation_input(self, request: dict[str, Any]) -> tuple[str, str]:
+        root = self._root(request["changeKey"])
+        _, parent = active_source_record(root, os.geteuid(), root.stat().st_gid)
+        if (parent["operationId"] != request["predecessorPreparationOperationId"]
+                or parent["recordSha256"] != request["predecessorPreparationReceiptSha256"]
+                or parent["state"] not in {"NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
+                or parent["targetMainCommit"] == request["targetMainCommit"]
+                or request["sourceRevision"] <= parent["sourceRevision"]
+                or self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor",
+                    parent["targetMainCommit"], request["targetMainCommit"], git_dir=True,
+                    env_extra=self._update_git_environment()).returncode != 0):
+            raise ContractError("source continuation predecessor or main moved")
+        source_request(parent)
+        final_path = source_finalization_path(root, parent["operationId"], os.geteuid(), root.stat().st_gid)
+        if final_path.exists() or final_path.is_symlink():
+            final = self._read_sealed_record(final_path, SOURCE_FINALIZATION_RECORD_KEYS)
+            if final["state"] != "PUBLISHED":
+                raise ContractError("source continuation publication is uncertain")
+        elif (parent["sourceCommit"] != request["sourceCommit"]
+                or parent["publicationReceiptSha256"] != request["publicationReceiptSha256"]):
+            raise ContractError("source continuation unpublished head moved")
+        worktree = self._worktree(request["changeKey"])
+        observation = self._workspace_observation_for_publication(request)
+        if (observation["state"] != "OWNED" or observation["sourceCommit"] != request["sourceCommit"]
+                or observation["sourceFingerprintSha256"] != request["sourceFingerprintSha256"]
+                or self._safe_update_git("ls-files", "--unmerged", cwd=worktree)):
+            raise ContractError("source continuation source changed")
+        tree = self._write_worktree_tree(worktree)
+        self._require_update_files(worktree, self._update_files(tree), self._update_files(tree))
+        # Snapshot never moves HEAD or the remote branch. Only fixed commit metadata is used.
+        if final_path.exists():
+            if request["sourceFingerprintSha256"] is not None:
+                raise ContractError("source continuation published workspace is not clean")
+            return request["sourceCommit"], tree
+        timestamp = self._safe_update_git("show", "-s", "--format=%ct", request["sourceCommit"], git_dir=True).decode().strip()
+        if not re.fullmatch(r"[0-9]{1,12}", timestamp):
+            raise ContractError("source continuation timestamp is invalid")
+        commit = self._safe_update_git("commit-tree", tree, "-p", request["sourceCommit"], "-p", parent["targetMainCommit"],
+            "-m", "Atenea retained source checkpoint " + request["operationId"], git_dir=True,
+            env_extra={"GIT_AUTHOR_NAME": "Atenea", "GIT_AUTHOR_EMAIL": "atenea@localhost",
+                "GIT_COMMITTER_NAME": "Atenea", "GIT_COMMITTER_EMAIL": "atenea@localhost",
+                "GIT_AUTHOR_DATE": "@" + str(int(timestamp) + 1) + " +0000",
+                "GIT_COMMITTER_DATE": "@" + str(int(timestamp) + 1) + " +0000"}).decode().strip()
+        return commit, tree
+
+    def _continuation_authority(self, request: dict[str, Any], record: dict[str, Any], *, write: bool) -> None:
+        root = self._root(request["changeKey"])
+        checkpoint = record["checkpointCommitSha"]
+        ref = f"refs/atenea/source-checkpoints/{request['changeKey']}/{request['operationId']}"
+        if (self._safe_update_git("rev-parse", "--verify", ref, git_dir=True).decode().strip() != checkpoint
+                or self._safe_update_git("rev-parse", f"{checkpoint}^{{tree}}", git_dir=True).decode().strip() != record["inputTreeSha"]):
+            raise ContractError("source continuation checkpoint is incompatible")
+        _, active = active_source_record(root, os.geteuid(), root.stat().st_gid)
+        if active["operationId"] == request["operationId"]:
+            return
+        if (active["operationId"] != request["predecessorPreparationOperationId"]
+                or active["recordSha256"] != request["predecessorPreparationReceiptSha256"]
+                or record["state"] != "PREPARED"):
+            raise ContractError("source continuation active preparation changed")
+        if write:
+            self._save_source_update(root / "source-update-active-v1.json", {
+                "operationId": request["operationId"], "intentSha256": record["intentSha256"]})
+
+    def _pin_source_update_tree(self, record: dict[str, Any], *, create: bool) -> None:
+        # Git GC does not read our JSON journal. Retain the prepared conflict
+        # blobs/tree behind a private, server-derived ref, never a branch ref.
+        ref = f"refs/atenea/source-updates/{record['changeKey']}/{record['operationId']}"
+        found = self._git_result(*self._update_git_options(), "show-ref", "--verify", "--quiet", ref,
+                                 git_dir=True, env_extra=self._update_git_environment())
+        if found.returncode == 0:
+            if self._safe_update_git("rev-parse", "--verify", ref, git_dir=True).decode().strip() != record["preparedTreeSha"]:
+                raise ContractError("source update retained tree ref is incompatible")
+        elif found.returncode == 1 and create:
+            tree = record["preparedTreeSha"]
+            if self._safe_update_git("cat-file", "-t", tree, git_dir=True).strip() != b"tree":
+                raise ContractError("source update prepared tree is unavailable")
+            self._safe_update_git("update-ref", ref, tree, "0" * len(tree), git_dir=True)
+        elif found.returncode != 1 or record["state"] != "PREPARED":
+            raise ContractError("source update retained tree ref is unavailable")
+
+    @staticmethod
+    def _update_git_options() -> tuple[str, ...]:
+        return ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                "-c", "rerere.enabled=false", "-c", "merge.autoStash=false")
+
+    def _safe_update_git(self, *args: str, **kwargs: Any) -> bytes:
+        extra = {**self._update_git_environment(), **kwargs.pop("env_extra", {})}
+        return self._git(*self._update_git_options(), *args,
+                         env_extra=extra, **kwargs)
+
+    @staticmethod
+    def _update_git_environment() -> dict[str, str]:
+        return {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1"}
+
+    def _source_update_idle(self) -> None:
+        path = self.lock_file.parent / "executions.json"
+        try:
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise ContractError("source update worker state is unsafe")
+            state = strict_json(path.read_bytes())
+        except OSError as error:
+            raise ContractError("source update worker state is unavailable") from error
+        if (state.get("protocol") != "agent-run-worker/v1" or state.get("workerId") != WORKER_ID
+                or not isinstance(state.get("executions"), dict)
+                or not isinstance(state.get("validations"), dict)):
+            raise ContractError("source update worker state is invalid")
+        terminal_validations = {"SUCCEEDED", "CANDIDATE_FAILED", "INFRASTRUCTURE_FAILED",
+                                "POLICY_FAILED", "VALIDATION_FAILED", "OWNERSHIP_FAILED", "CANCELLED"}
+        if (any(not isinstance(item, dict) or item.get("status") not in {"SUCCEEDED", "FAILED", "CANCELLED"}
+                for item in state["executions"].values())
+                or any(not isinstance(item, dict) or item.get("state") not in terminal_validations
+                       for item in state["validations"].values())):
+            raise ContractError("source update execution or validation is active")
+
+    def _source_update_owner(self, request: dict[str, Any], *, expected_head: str | None = None) -> None:
+        worktree = self._worktree(request["changeKey"])
+        root = regular_directory(self._root(request["changeKey"]), os.geteuid())
+        if stat.S_IMODE(root.st_mode) not in {0o700, 0o770}:
+            raise ContractError("source update workspace root mode is unsafe")
+        regular_directory(worktree, os.geteuid())
+        owner = self._read_record(self._record_path(request["changeKey"]))
+        # Creation base stays immutable even after main is incorporated.
+        workspace_request = {**request, "protocolVersion": PROTOCOL_VERSION}
+        if not self._record_matches_request(owner, workspace_request):
+            raise ContractError("source update workspace owner is incompatible")
+        keys = self._git("config", "--name-only", "--list", cwd=worktree,
+                         env_extra=self._update_git_environment()).decode().lower().splitlines()
+        if any(key.startswith(("filter.", "include.", "includeif."))
+               or (key.startswith("merge.") and key.endswith(".driver"))
+               or key in {"core.fsmonitor", "core.attributesfile", "core.worktree"}
+               for key in keys):
+            raise ContractError("source update external Git configuration is forbidden")
+        common = self._safe_update_git("rev-parse", "--git-common-dir", cwd=worktree).decode().strip()
+        if not Path(common).is_absolute():
+            common = str(worktree / common)
+        if (Path(common).resolve() != self.mirror.resolve()
+                or self._safe_update_git("symbolic-ref", "--quiet", "HEAD", cwd=worktree).decode().strip()
+                    != self._branch_ref(request)
+                or self._safe_update_git("rev-parse", "--verify", "HEAD^{commit}", cwd=worktree).decode().strip()
+                    != (request["sourceCommit"] if expected_head is None else expected_head)
+                or self._safe_update_git("rev-parse", "--show-toplevel", cwd=worktree).decode().strip()
+                    != str(worktree)):
+            raise ContractError("source update local head or identity moved")
+        if self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor",
+                            request["baseCommit"], request["sourceCommit"], git_dir=True,
+                            env_extra=self._update_git_environment()).returncode != 0:
+            raise ContractError("source update creation base is not an ancestor")
+        require_source_publication(self._root(request["changeKey"]), request, owner, os.geteuid(), root.st_gid)
+
+    @staticmethod
+    def _journal_request(request: dict[str, Any], operation: str, effect: str) -> dict[str, Any]:
+        # Recovery does not replace the original intent/receipt with a new action.
+        normalized = {**request, "operation": operation, "effect": effect}
+        normalized["requestFingerprintSha256"] = canonical_sha256({key: value for key,value in normalized.items()
+            if key != "requestFingerprintSha256"})
+        return normalized
+
+    def _retain_main_recovery(self, request: dict[str, Any], kind: str, allowed_heads: set[str]) -> dict[str, Any]:
+        """Authenticated App reauthorizes its exact durable intent, never another target."""
+        tip = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
+        remote = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
+            "refs/heads/main", self._branch_ref(request), git_dir=True, publication=True).decode().splitlines()
+        refs = dict(line.split("\t",1)[::-1] for line in remote if "\t" in line)
+        observed_head = refs.get(self._branch_ref(request))
+        if (not GIT_COMMIT.fullmatch(tip) or len(remote)!=2 or set(refs)!={"refs/heads/main",self._branch_ref(request)}
+                or refs["refs/heads/main"]!=tip or observed_head not in allowed_heads
+                or any(self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor", before, after,
+                    git_dir=True, env_extra=self._update_git_environment()).returncode != 0
+                    for before,after in ((request["baseCommit"],request["targetMainCommit"]),(request["targetMainCommit"],tip)))):
+            raise ContractError("source recovery main or branch is not the exact retained descendant")
+        root=self._root(request["changeKey"])
+        evidence={"operationId":request["operationId"],"idempotencyKey":request["idempotencyKey"],
+            "kind":kind,"intentSha256":source_update_intent(request),"targetMainCommit":request["targetMainCommit"],
+            "observedMainCommit":tip,"observedBranchHead":observed_head,
+            "ownerRecordSha256":canonical_sha256(self._read_record(self._record_path(request["changeKey"])))}
+        path=root / f"source-main-recovery-{request['operationId']}-{tip}-{observed_head}-v1.json"
+        if path.exists() or path.is_symlink():
+            recorded=sealed_source_record(path,set(evidence)|{"recordSha256"},os.geteuid(),root.stat().st_gid)
+            if any(recorded[key]!=value for key,value in evidence.items()):
+                raise ContractError("source recovery immutable evidence is incompatible")
+        else:
+            self._save_source_update(path,evidence)
+        return evidence
+
+    def _source_update_refs(self, request: dict[str, Any], recovery: dict[str, Any] | None = None) -> None:
+        target = request["targetMainCommit"]
+        observed = recovery["observedMainCommit"] if recovery else target
+        if recovery and recovery["targetMainCommit"]!=target:
+            raise ContractError("source recovery target changed")
+        local = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
+        remote = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
+                                       "refs/heads/main", self._branch_ref(request),
+                                       git_dir=True, publication=True).decode().splitlines()
+        refs = dict(line.split("\t", 1)[::-1] for line in remote if "\t" in line)
+        if (len(remote) != 2 or local != observed
+                or refs != {"refs/heads/main": observed, self._branch_ref(request): request["sourceCommit"]}):
+            raise ContractError("source update retained main or published head moved")
+        if self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor",
+                            request["baseCommit"], target, git_dir=True,
+                            env_extra=self._update_git_environment()).returncode != 0:
+            raise ContractError("source update target is not a descendant of creation base")
+
+    def _update_files(self, tree: str) -> dict[str, tuple[str, str]]:
+        files = {}
+        raw = self._safe_update_git("ls-tree", "-r", "-z", tree, git_dir=True)
+        try:
+            for entry in raw.split(b"\0"):
+                if not entry:
+                    continue
+                header, raw_name = entry.split(b"\t", 1)
+                mode, kind, blob = header.decode("ascii").split()
+                name = raw_name.decode("utf-8")
+                parts = name.split("/")
+                if (mode not in {"100644", "100755"} or kind != "blob"
+                        or any(part in {"", ".", ".."} or part.lower() == ".git" for part in parts)
+                        or "\\" in name or name.startswith("/") or any(ord(char) < 32 or ord(char) == 127 for char in name)
+                        or not GIT_COMMIT.fullmatch(blob)):
+                    raise ContractError("source update file type or path is unsupported")
+                files[name] = (mode, blob)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ContractError("source update tree is invalid") from error
+        return files
+
+    def _resume_source_update(self, request: dict[str, Any], record: dict[str, Any], path: Path) -> None:
+        # Recover only bytes belonging to the retained predecessor or prepared
+        # tree. A later edit is never silently reset, even after an interruption.
+        worktree = self._worktree(request["changeKey"])
+        before = self._update_files(record.get("inputTreeSha", request["sourceCommit"]))
+        after = self._update_files(record["preparedTreeSha"])
+        self._require_update_files(worktree, before, after)
+        # This changes the editable index/tree, never HEAD, creation ownership,
+        # publication receipt or a remote branch. No MERGE_HEAD/hook is created.
+        self._safe_update_git("read-tree", "--reset", "-u", record["preparedTreeSha"], cwd=worktree)
+        self._require_update_files(worktree, after, after)
+        if self._safe_update_git("write-tree", cwd=worktree).decode().strip() != record["preparedTreeSha"]:
+            raise ContractError("source update index postcondition failed")
+        observation = self._workspace_observation_for_publication(request)
+        if observation["state"] != "OWNED" or observation["sourceCommit"] != request["sourceCommit"]:
+            raise ContractError("source update postcondition failed")
+        for name in after:
+            descriptor = os.open(worktree / name, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        # Directory entries (including deletions) must precede the terminal
+        # receipt, not merely file bytes and the Git index.
+        for directory, _, _ in os.walk(worktree):
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        git_directory = Path(self._safe_update_git("rev-parse", "--absolute-git-dir", cwd=worktree).decode().strip())
+        with (git_directory / "index").open("rb") as index:
+            os.fsync(index.fileno())
+        record.update(state="NEEDS_RESOLUTION" if record["conflictFiles"] else "READY_TO_FINALIZE",
+                      preparedFingerprintSha256=observation["sourceFingerprintSha256"])
+        self._save_source_update(path, record)
+
+    def _require_update_files(self, worktree: Path, before: dict[str, tuple[str, str]],
+                              after: dict[str, tuple[str, str]]) -> None:
+        actual = set()
+        for directory, children, names in os.walk(worktree, followlinks=False):
+            regular_directory(Path(directory), os.geteuid())
+            for child in children:
+                regular_directory(Path(directory) / child, os.geteuid())
+            for name in names:
+                candidate = Path(directory) / name
+                relative = candidate.relative_to(worktree).as_posix()
+                if relative == ".git":
+                    continue
+                actual.add(relative)
+                info = candidate.lstat()
+                choices = [entry for entry in (before.get(relative), after.get(relative)) if entry]
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_nlink != 1 or info.st_size > MAX_GIT_OUTPUT_BYTES or not choices):
+                    raise ContractError("source update unexpected retained file")
+                content = candidate.read_bytes()
+                if not any(bool(info.st_mode & 0o111) == (mode == "100755")
+                           and content == self._safe_update_git("cat-file", "blob", blob, git_dir=True)
+                           for mode, blob in choices):
+                    raise ContractError("source update later edit requires attention")
+        if not (set(before) & set(after)).issubset(actual):
+            raise ContractError("source update retained file is missing")
+
+    def _save_source_update(self, path: Path, record: dict[str, Any]) -> None:
+        body = {key: value for key, value in record.items() if key != "recordSha256"}
+        record["recordSha256"] = canonical_sha256(body)
+        self._write_record(path, record)
+
+    def _source_update_response(self, request: dict[str, Any], record: dict[str, Any] | None) -> dict[str, Any]:
+        return {**request, "state": record["state"] if record else "ABSENT",
+                "preparedTreeSha": record["preparedTreeSha"] if record else None,
+                "conflictFiles": record["conflictFiles"] if record else [],
+                "preparedFingerprintSha256": record["preparedFingerprintSha256"] if record else None,
+                "receiptSha256": record["recordSha256"] if record else None,
+                "valuesExposed": False}
 
     def _validate_roots(self) -> None:
         regular_directory(self.mirror, os.geteuid())
@@ -1276,7 +2053,9 @@ class WorkspaceMediator:
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1].upper() not in OPERATIONS | {PUBLICATION_OPERATION}:
+    updates = {f"{operation.lower()}-update": operation for operation in SOURCE_UPDATE_OPERATIONS}
+    finalizations = {f"{operation.lower()}-source": operation for operation in SOURCE_FINALIZATION_OPERATIONS}
+    if len(sys.argv) != 2 or sys.argv[1].upper() not in OPERATIONS | {PUBLICATION_OPERATION} and sys.argv[1] not in updates | finalizations:
         print("DEVELOPMENT_CHANGE_WORKSPACE_REJECTED", file=sys.stderr)
         return 65
     try:
@@ -1286,15 +2065,27 @@ def main() -> int:
         request = strict_json(raw)
         operation = sys.argv[1].upper()
         mediator = WorkspaceMediator()
-        response = (
-            mediator.publish(request)
-            if operation == PUBLICATION_OPERATION
-            else mediator.execute(request, operation)
-        )
+        if sys.argv[1] in finalizations:
+            response = mediator.finalize_source(request, finalizations[sys.argv[1]])
+        elif sys.argv[1] in updates:
+            response = mediator.update_source(request, updates[sys.argv[1]])
+        else:
+            response = mediator.publish(request) if operation == PUBLICATION_OPERATION else mediator.execute(request, operation)
         sys.stdout.buffer.write(canonical_bytes(response) + b"\n")
         return 0
-    except ContractError:
-        print("DEVELOPMENT_CHANGE_WORKSPACE_REJECTED", file=sys.stderr)
+    except (ContractError, OSError, UnicodeError, ValueError) as error:
+        if sys.argv[1] in updates | finalizations:
+            code = {
+                "source update retained main or published head moved": "SOURCE_UPDATE_REF_MOVED",
+                "source update local head or identity moved": "SOURCE_UPDATE_REF_MOVED",
+                "source update workspace is not clean": "SOURCE_UPDATE_DIRTY_WORKSPACE",
+                "source update later edit requires attention": "SOURCE_UPDATE_LATER_EDIT",
+                "source update execution or validation is active": "SOURCE_UPDATE_EXECUTION_ACTIVE",
+                "source update durable identity is incompatible": "SOURCE_UPDATE_IDENTITY_CONFLICT",
+            }.get(str(error), "SOURCE_UPDATE_REJECTED")
+            print(json.dumps({"code": code}, separators=(",", ":")), file=sys.stderr)
+        else:
+            print("DEVELOPMENT_CHANGE_WORKSPACE_REJECTED", file=sys.stderr)
         return 65
 
 

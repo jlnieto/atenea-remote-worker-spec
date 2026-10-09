@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/development-change-source-finalization-v1.request.schema.json",
+  "title": "App-authorized exact source finalization v1 request",
+  "description": "Only the authenticated App authority sends this intent after current-revision validation. Not mobile or AgentRun input. Incorporates exactly the retained main with a two-parent commit and a normal fast-forward on the existing change-owned branch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "protocolVersion", "effect", "operationId", "idempotencyKey", "operation", "changeKey", "databaseProjectId", "projectId", "repository", "repositoryBranch", "baseCommit", "sourceCommit", "targetMainCommit", "workspaceBranch", "workspaceIdentity", "workerId", "sourceRevision", "sourceFingerprintSha256", "publicationReceiptSha256", "preparationOperationId", "preparationReceiptSha256", "validationProjectionSha256", "requestFingerprintSha256"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "protocolVersion": {"const": "development-change-source-finalization/v1"},
+    "effect": {"enum": ["FINALIZE_VALIDATED_SOURCE", "OBSERVE_ONLY", "RESUME_PINNED_SOURCE"]},
+    "operation": {"enum": ["FINALIZE", "INSPECT", "RECOVER"]},
+    "operationId": {"type": "string", "format": "uuid"},
+    "idempotencyKey": {"type": "string", "format": "uuid"},
+    "changeKey": {"type": "string", "format": "uuid"},
+    "databaseProjectId": {"type": "integer", "minimum": 1},
+    "projectId": {"const": "atenea"},
+    "repository": {"const": "https://github.com/jlnieto/atenea.git"},
+    "repositoryBranch": {"const": "main"},
+    "baseCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "sourceCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "targetMainCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "workspaceBranch": {"type": "string", "pattern": "^atenea/change-[0-9a-f-]{36}$"},
+    "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"},
+    "workerId": {"const": "ax42-01"},
+    "sourceRevision": {"type": "integer", "minimum": 1},
+    "sourceFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "publicationReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "preparationOperationId": {"type": "string", "format": "uuid"},
+    "preparationReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "validationProjectionSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "requestFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"operation": {"const": "RECOVER"}}}, "then": {"properties": {"effect": {"const": "RESUME_PINNED_SOURCE"}}}},
+    {"if": {"properties": {"operation": {"const": "FINALIZE"}}}, "then": {"properties": {"effect": {"const": "FINALIZE_VALIDATED_SOURCE"}}}},
+    {"if": {"properties": {"operation": {"const": "INSPECT"}}}, "then": {"properties": {"effect": {"const": "OBSERVE_ONLY"}}}}
+  ]
+}

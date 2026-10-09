@@ -79,7 +79,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "d0984168086eb15c00d694e56839c37b64259f92e7fc405bf5c58778215024fc" ]] \
+    == "6e347016d4082b56bf3502f94cb5d9cffe96cd6d03fd21641795728c0bcd3cf6" ]] \
   || fail "worker validation admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
@@ -289,9 +289,23 @@ grep -F -- '--development-change-workspace-mediator /usr/local/libexec/atenea/de
   || fail "development-change workspace mediator boundary is not explicit"
 [[ "$(grep -Fc '/srv/atenea/workspaces/changes' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "development-change workspace write boundary is not exact"
-grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $validation_capability]' \
+grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $development_change_source_continuation_capability, $development_change_source_recovery_capability, $development_change_source_finalization_capability, $validation_capability]' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "installer plan does not advertise the durable worker capabilities"
+[[ "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR" == /usr/local/libexec/atenea/development-change-workspace-v1.py ]] \
+  || fail "source update mediator authority is not fixed"
+grep -F -- '--arg development_change_source_update_capability "development-change-source-update/v1"' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
+  || fail "source update capability is not versioned"
+[[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
+    == "81f2d65c1ed8f7924430ba47e333bf67534060122b18b4e34fcc8db9d2eb108e" ]] \
+  || fail "source update mediator provenance is not exact"
+grep -F -- '--arg development_change_source_finalization_capability "development-change-source-finalization/v1"' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
+  || fail "source finalization capability is not versioned"
+grep -F -- '--arg development_change_source_recovery_capability "development-change-source-recovery/v1"' \
+  "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
+  || fail "source recovery capability is not versioned"
 
 SESSION_ID=11111111-1111-4111-8111-111111111111
 WORKSPACE_IDENTITY="remote:ax42-01:work-session:${SESSION_ID}"

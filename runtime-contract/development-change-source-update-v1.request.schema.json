@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/development-change-source-update-v1.request.schema.json",
+  "title": "Pinned owned change source preparation v1 request",
+  "description": "App-authorized metadata only; never mobile or AgentRun input. No branch history is rewritten and the creation base is immutable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "protocolVersion",
+    "effect",
+    "operationId",
+    "idempotencyKey",
+    "operation",
+    "changeKey",
+    "databaseProjectId",
+    "projectId",
+    "repository",
+    "repositoryBranch",
+    "baseCommit",
+    "sourceCommit",
+    "targetMainCommit",
+    "workspaceBranch",
+    "workspaceIdentity",
+    "workerId",
+    "sourceRevision",
+    "sourceFingerprintSha256",
+    "publicationReceiptSha256",
+    "requestFingerprintSha256"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "protocolVersion": {
+      "const": "development-change-source-update/v1"
+    },
+    "effect": {
+      "enum": [
+        "PREPARE_PINNED_MAIN",
+        "OBSERVE_ONLY",
+        "OBSERVE_OR_RESUME_EXACT",
+        "RESUME_PINNED_SOURCE"
+      ]
+    },
+    "operationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "operation": {
+      "enum": [
+        "PREPARE",
+        "INSPECT",
+        "RECONCILE",
+        "RECOVER"
+      ]
+    },
+    "changeKey": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "databaseProjectId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "projectId": {
+      "const": "atenea"
+    },
+    "repository": {
+      "const": "https://github.com/jlnieto/atenea.git"
+    },
+    "repositoryBranch": {
+      "const": "main"
+    },
+    "baseCommit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "targetMainCommit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "workspaceBranch": {
+      "type": "string",
+      "pattern": "^atenea/change-[0-9a-f-]{36}$"
+    },
+    "workspaceIdentity": {
+      "type": "string",
+      "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"
+    },
+    "workerId": {
+      "const": "ax42-01"
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sourceFingerprintSha256": {
+      "type": "null"
+    },
+    "publicationReceiptSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "requestFingerprintSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"operation": {"const": "RECOVER"}}}, "then": {"properties": {"effect": {"const": "RESUME_PINNED_SOURCE"}}}},
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "PREPARE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect": {
+            "const": "PREPARE_PINNED_MAIN"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "INSPECT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect": {
+            "const": "OBSERVE_ONLY"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "RECONCILE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect": {
+            "const": "OBSERVE_OR_RESUME_EXACT"
+          }
+        }
+      }
+    }
+  ]
+}

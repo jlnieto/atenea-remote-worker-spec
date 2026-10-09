@@ -293,6 +293,165 @@ only after the control plane no longer dispatches legacy WorkSession-owned
 identities; this change does not set a retirement date or weaken their current
 behavior.
 
+### Prepare the same change for a pinned main
+
+`development-change-source-update/v1` is additive to the existing mediator.
+The authenticated control plane calls
+`POST /v1/development-changes/source-updates/{prepare,inspect,reconcile}`.
+The exact request and response schemas live in `runtime-contract/`.
+Neither mobile clients nor AgentRuns select this request: App must derive the
+retained main, published predecessor, source revision and publication receipt
+from its own authorized observations. No commands, paths or credentials are
+request fields. The repository, main ref and change branch remain closed.
+
+Preparation requires an exact owned, clean worktree, its immutable creation
+base and durable PUBLISHED receipt, the pinned main in the canonical mirror,
+matching GitHub main/change refs, and zero non-terminal executions or
+validations. Worker admission holds its state and lifecycle locks through the
+effect; a mediator timeout kills its private process group before unlocking.
+The installer continues to install the same fixed mediator with exact source
+fingerprints. No additional sudoers or systemd authority is introduced.
+
+The private `source-update-v1.json` journal retains the request, immutable
+intent hash, original owner-record hash, prepared tree, conflict files and
+sealed receipt. Its states are PREPARED before materialization, then
+NEEDS_RESOLUTION or READY_TO_FINALIZE. A private server-derived
+`refs/atenea/source-updates/<changeKey>/<operationId>` ref retains the tree and
+conflict blobs against Git garbage collection, without changing any branch.
+INSPECT never prepares or resumes.
+RECONCILE resumes only that same operation, key, predecessor and target;
+it cannot adopt a different request or reset later edits. Partial files must
+match either the retained predecessor or prepared tree. Unexpected files,
+symlinks, submodules, external merge/filter drivers or ambiguous ownership
+fail closed. A retained Git lock of unknown ownership also blocks recovery;
+no lock or file is forcibly removed.
+
+The prepared tree and index use ordinary editable files, including conflict
+markers, without MERGE_HEAD or an unmerged index. HEAD, the remote branch,
+creation base, workspace identity and original publication receipt do not
+change. Replay of a completed preparation leaves subsequent resolver edits
+untouched. The pinned main remains separate evidence, never a new creation
+base. Completion of this operation is not resolution, a merge commit,
+publication or validation. App orchestration of the resolver and a new source
+revision, followed by authorized merge-commit publication to the same PR,
+remain separate implementation units.
+
+Run the isolated preparation/recovery suite with:
+
+```bash
+python3 -B ./test-development-change-source-update-v1.py
+```
+
+### Finalize a validated pinned update on the same branch
+
+`development-change-source-finalization/v1` adds authenticated
+`POST /v1/development-changes/source-finalizations/{finalize,inspect}`.
+App, not a mobile client or AgentRun, authorizes FINALIZE after the four
+current-definition checks pass for the new source revision. Its immutable
+intent contains the preparation operation and sealed receipt, predecessor
+publication receipt, pinned main, exact source fingerprint and validation
+projection. Protocol hashes are audit bindings, not substitutes for App's
+authorization or successful validation.
+
+The mediator rejects changed source, unresolved markers, unmerged entries,
+unsafe paths/types, moved retained refs, or active runs/validations. It creates
+a deterministic commit with exactly two parents: the previously published
+head and retained main. A private candidate ref protects the commit against
+GC before the sealed PREPARED journal and before any branch effect. It moves
+only the owned branch through local compare-and-swap and a normal `--no-force`
+fast-forward push. It neither pushes main nor rewrites history. Git's receive
+transaction checks its advertised old branch ref; remote and local heads are
+verified again before sealing PUBLISHED.
+
+The `source-finalization-v1.json` receipt links the predecessor, expected tree,
+new head and validation projection. The original owner, preparation and first
+publication records are retained unchanged. INSPECT is read-only; a lost reply
+or interrupted branch/index/push resumes the same candidate, never overwrites
+a later edit or repairs a moved remote ref. A completed receipt cannot authorize
+a second publication of another source.
+
+Worker fingerprinting and the privileged validator read the same root-installed
+workspace mediator's `approved_validation_commit` authority. The immutable
+creation base remains sealed in `workspace-v1.json`; only an exact, sealed
+NEEDS_RESOLUTION/READY_TO_FINALIZE preparation with its matching PUBLISHED
+predecessor authorizes validation at a different local head. No preparation
+means the original validation rule; an invalid preparation rejects rather than
+falling back. App records this source observation and queries the existing
+fingerprint API for clean source, without duplicating worker hash algorithms.
+
+App's new durable finalization receipt and publication outbox retain the same
+WorkSession, branch and PR URL. GitHub/UFD must validate the new head before
+integration. There is no automatic merge, release, deployment or second PR.
+This development unit is not an installed capability or mobile acceptance.
+
+```bash
+python3 -B ./test-development-change-source-finalization-v1.py
+```
+
+### Continue after another pinned main advance
+
+`development-change-source-update/v2` uses the same authenticated endpoints,
+retains v1 support and adds exactly `predecessorPreparationOperationId`,
+`predecessorPreparationReceiptSha256` and `publishedSourceRevision`. App derives
+these fields and the exact new main; neither mobile nor AgentRuns choose them.
+The prior preparation must be sealed and complete, the new main an exact
+descendant observed in GitHub and the canonical mirror, and executions idle.
+
+Before publication, the actual resolved files and fingerprint are captured in
+a private checkpoint commit/ref without moving HEAD or a remote branch. After
+publication, the sealed PUBLISHED head/receipt of that same branch is the input.
+Each continuation retains `source-update-<operation UUID>-v2.json`; the sealed
+`source-update-active-v1.json` selects its authority. Later finalizations use
+`source-finalization-<preparation UUID>-v1.json`. The original owner, preparation,
+publication and all earlier journals remain unchanged. Lineage verification is
+bounded to 32 preparations and fails closed rather than truncating history.
+
+Materialization recovers only captured/prepared bytes. INSPECT never changes the
+active authority, and unexpected edits cannot be reset. Private checkpoint and
+prepared-tree refs protect both inputs against GC. A publication not confirmed
+PUBLISHED blocks continuation. A pending preparation remains pinned to its
+original main; moving that main is not an authorization to replace the intent.
+These boundaries use the explicit recovery described below. A new preparation
+is not validation or publication; the same four checks
+and authorized finalization are required before updating the same PR again.
+No new sudoers, arbitrary paths, commands or automatic deployment are introduced.
+
+```bash
+python3 -B ./test-development-change-source-continuation-v2.py
+```
+
+### Recover a retained intent after main advances
+
+`development-change-source-recovery/v1` advertises additive RECOVER actions on
+the existing `source-updates/recover` and `source-finalizations/recover` routes.
+The request is the exact original v1/v2 intent, with only its operation/effect
+changed to RECOVER/RESUME_PINNED_SOURCE. No caller-selected main, path, command,
+credential or branch is added. App reauthorizes its durable intent explicitly;
+INSPECT remains read-only and normal PREPARE/FINALIZE retain their strict refs.
+
+Recovery verifies that the canonical mirror and GitHub main equal one observed
+commit and that immutable base → retained main → observed main is an ancestry
+chain. The same owned branch must still equal the predecessor or the exact
+sealed finalization candidate. Before any worktree/branch effect it seals the
+observation in `source-main-recovery-<operation UUID>-<observed main>-<branch
+head>-v1.json`, including intent and owner hashes. The filename is server-derived
+from validated IDs/commits. Replays preserve existing audit bytes. A further
+main advance fails the pinned observation checks; no input is silently repinned.
+
+An absent worker journal can recover the original durable App request; an
+interrupted preparation can resume only its original captured/prepared bytes.
+Finalization retains its validated tree/candidate and original parents. Recovery
+finishes that candidate through normal CAS/index/fast-forward push, or seals a
+lost receipt without pushing again. A completed finalization never creates a
+second recovery audit on replay. Unexpected edits, locks, refs or ownership fail
+closed. Executions and validations remain idle under the same admission locks.
+After completion, a separate v2 preparation may incorporate the newer main.
+There is no force push, automatic merge, deployment or authority expansion.
+
+```bash
+python3 -B ./test-development-change-source-main-recovery-v1.py
+```
+
 ## Session runtime allocation
 
 `session-runtime-allocation-v1.sh` implements task 3.2 without starting a
