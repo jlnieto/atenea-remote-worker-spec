@@ -26,6 +26,9 @@ jobs:
           bash ops/worker/test-install-agent-run-worker-v1.sh
           python3 ops/worker/test-atenea-project-source-sync-v1.py
           python3 ops/worker/test-project-codex-runner-v1.py ReviewedDeploymentMetadataTest
+          python3 ops/worker/test-codex-release-stage-v1.py
+          python3 ops/worker/test-codex-release-runtime-access-v1.py
+          sudo python3 -B ops/worker/test-codex-release-runtime-access-v1.py DistinctIdentityNamespaceTest RetainedEvidenceTest
           bash -n ops/release/install-release-control-v1.sh
           bash -n ops/worker/install-agent-run-worker-v1.sh
           git diff --check

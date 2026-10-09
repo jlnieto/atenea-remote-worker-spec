@@ -32,6 +32,8 @@ WORKSPACE_ACTIVATION_SUDOERS="/etc/sudoers.d/92-atenea-routing-activation-v1"
 WORKSPACE_ACTIVATION_BUNDLE="/srv/atenea/worker/workspace-v1/ops/worker"
 WORKSPACE_RELEASE_ROOT="/srv/atenea/worker/workspace-release-v1/sessions"
 CODEX_UPDATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-stage-v1.py"
+CODEX_RUNTIME_ACCESS="/usr/local/libexec/atenea/codex-release-runtime-access-v1.py"
+CODEX_RUNTIME_ACCESS_SHA256="a48e4a086739c560a55a81497e4bcd6ba6e3c7824531cae813746d3dc128c2bb"
 CODEX_RECONCILE_MEDIATOR="/usr/local/libexec/atenea/codex-release-reconcile-v1.py"
 CODEX_RECOVERY_ACTIVATE_MEDIATOR="/usr/local/libexec/atenea/codex-release-recovery-activate-v1.py"
 CODEX_RECONCILE_MANIFEST="/etc/atenea-worker/codex-release-reconcile-v1.json"
@@ -382,6 +384,11 @@ tailscale_ipv4() {
 }
 
 validate_inputs() {
+  [[ -f "$SCRIPT_DIR/codex-release-runtime-access-v1.py" \
+      && ! -L "$SCRIPT_DIR/codex-release-runtime-access-v1.py" \
+      && "$(sha256sum "$SCRIPT_DIR/codex-release-runtime-access-v1.py" | cut -d' ' -f1)" \
+        == "$CODEX_RUNTIME_ACCESS_SHA256" ]] \
+    || fail "closed Codex runtime access procedure differs from reviewed source"
   [[ -f "$SCRIPT_DIR/atenea-project-source-sync-v1.py" \
       && ! -L "$SCRIPT_DIR/atenea-project-source-sync-v1.py" \
       && "$(sha256sum "$SCRIPT_DIR/atenea-project-source-sync-v1.py" | cut -d' ' -f1)" \
@@ -1425,6 +1432,7 @@ verify_project_runtime_state() {
 apply_install() {
   require_root
   validate_inputs
+  "$SCRIPT_DIR/codex-release-runtime-access-v1.py" plan >/dev/null
   [[ "$CONTROL_PLANE_IP" =~ ^100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] \
     || fail "ATENEA_CONTROL_PLANE_TAILSCALE_IP must be an exact tailnet IPv4 address"
   local bind
@@ -1468,6 +1476,8 @@ apply_install() {
   install -o root -g root -m 0644 "$SCRIPT_DIR/atenea-playwright-validation-v1.js" "$PLAYWRIGHT_CHECK"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-multi-repository-v1.sh" "$ROLE_MEDIATOR"
   install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-stage-v1.py" "$CODEX_UPDATE_MEDIATOR"
+  install -o root -g root -m 0755 "$SCRIPT_DIR/codex-release-runtime-access-v1.py" "$CODEX_RUNTIME_ACCESS"
+  "$CODEX_RUNTIME_ACCESS" apply
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/codex-release-reconcile-v1.py" "$CODEX_RECONCILE_MEDIATOR"
   install -o root -g root -m 0755 \
@@ -1548,6 +1558,12 @@ apply_install() {
 }
 
 verify() {
+  [[ -f "$CODEX_RUNTIME_ACCESS" && ! -L "$CODEX_RUNTIME_ACCESS" \
+      && "$(stat -c '%a:%U:%G' "$CODEX_RUNTIME_ACCESS")" == "755:root:root" \
+      && "$(sha256sum "$CODEX_RUNTIME_ACCESS" | cut -d' ' -f1)" \
+        == "$CODEX_RUNTIME_ACCESS_SHA256" ]] \
+    || fail "closed Codex runtime access procedure is not exact"
+  "$CODEX_RUNTIME_ACCESS" verify
   require_root
   verify_workspace_activation_dependency
   local bind

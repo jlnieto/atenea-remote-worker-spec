@@ -135,6 +135,9 @@ for name in ("app-server.schema.json", "cli.schema.json"):
         staged = [path for path in self.releases.iterdir() if path.name.startswith(VERSION)]
         self.assertEqual(1, len(staged))
         self.assertTrue((staged[0] / "generated-schemas" / "app-server.schema.json").is_file())
+        self.assertEqual(0o750, staged[0].stat().st_mode & 0o777)
+        self.assertEqual(0o750, (staged[0] / "bin/generate-schemas").stat().st_mode & 0o777)
+        self.assertEqual(0o640, (staged[0] / "release.txt").stat().st_mode & 0o777)
         self.assertTrue((self.releases / "0.145.0-current" / "retained.txt").is_file())
         self.assertTrue((self.releases / "0.144.0-previous" / "retained.txt").is_file())
 

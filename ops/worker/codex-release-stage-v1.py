@@ -188,7 +188,13 @@ def extract_verified(archive: Path, destination: Path) -> None:
                 total += member.size
                 if total > MAX_EXTRACTED_BYTES:
                     raise StageError("release archive expanded size is outside policy")
-            bundle.extractall(destination, members=members, filter="data")
+            # Implicit parent directories must not inherit a permissive shell
+            # umask. The complete private tree is validated/normalized later.
+            previous_umask = os.umask(0o077)
+            try:
+                bundle.extractall(destination, members=members, filter="data")
+            finally:
+                os.umask(previous_umask)
     except (OSError, tarfile.TarError) as error:
         raise StageError("release archive cannot be extracted") from error
 
@@ -261,6 +267,62 @@ def release_manifest(release: Path) -> str:
     return digest_bytes(canonical_bytes(entries))
 
 
+def runtime_access_entries(release: Path, owner_uid: int, group_gid: int) -> list[dict[str, Any]]:
+    """Validate the entire owned tree before changing any permission.
+
+    The stage service's fixed group is also the runner's group. It gets only
+    read/execute access, never permission to modify the managed package.
+    """
+    paths = [release, *sorted(release.rglob("*"))]
+    if len(paths) > MAX_ARCHIVE_MEMBERS:
+        raise StageError("runtime package member count is outside policy")
+    entries = []
+    for path in paths:
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        directory = stat.S_ISDIR(info.st_mode)
+        if (info.st_uid != owner_uid or info.st_gid != group_gid
+                or not (directory or stat.S_ISREG(info.st_mode))
+                or (not directory and info.st_nlink != 1)
+                or mode not in ({0o700, 0o750, 0o755} if directory
+                    else {0o600, 0o640, 0o644, 0o700, 0o750, 0o755})):
+            raise StageError("runtime package ownership, type or mode is unsafe")
+        if any(name.startswith('system.posix_acl_') for name in os.listxattr(path,follow_symlinks=False)):
+            raise StageError("runtime package has unexpected ACL authority")
+        entries.append({"path": path.relative_to(release).as_posix(),
+            "directory": directory, "beforeMode": mode,
+            "afterMode": 0o750 if directory or mode & 0o111 else 0o640,
+            "uid": info.st_uid, "gid": info.st_gid,
+            "sha256": None if directory else digest_file(path)})
+    return entries
+
+
+def set_runtime_modes(release: Path, entries: list[dict[str, Any]], restore: bool = False) -> None:
+    for entry in entries:
+        path = release if entry["path"] == "." else release / entry["path"]
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            | (os.O_DIRECTORY if entry["directory"] else 0))
+        try:
+            info = os.fstat(descriptor)
+            digest = None
+            if stat.S_ISREG(info.st_mode):
+                hasher = hashlib.sha256()
+                while chunk := os.read(descriptor,1024*1024):
+                    hasher.update(chunk)
+                digest = hasher.hexdigest()
+            linked = path.lstat()
+            if (info.st_uid != entry["uid"] or info.st_gid != entry["gid"]
+                    or stat.S_ISDIR(info.st_mode) != entry["directory"]
+                    or (info.st_dev,info.st_ino)!=(linked.st_dev,linked.st_ino)
+                    or (not entry["directory"] and (not stat.S_ISREG(info.st_mode)
+                        or info.st_nlink != 1 or digest != entry["sha256"]))
+                    or stat.S_IMODE(info.st_mode) not in (entry["beforeMode"],entry["afterMode"])):
+                raise StageError("runtime package changed during permission reconciliation")
+            os.fchmod(descriptor, entry["beforeMode"] if restore else entry["afterMode"])
+        finally:
+            os.close(descriptor)
+
+
 def validate_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != RESULT_FIELDS:
         raise StageError("persisted stage result is invalid")
@@ -314,6 +376,9 @@ def stage(args: argparse.Namespace, request: dict[str, str]) -> dict[str, Any]:
             schema_manifest = generate_schemas(
                 temporary, temporary / "generated-schemas", candidate["codexVersion"]
             )
+            # mkdtemp and private archives may both start at 0700/0600.
+            # Normalize before sealing/publishing the staged package.
+            set_runtime_modes(temporary, runtime_access_entries(temporary, os.geteuid(), os.getegid()))
             manifest = release_manifest(temporary)
             os.replace(temporary, target)
         finally:
