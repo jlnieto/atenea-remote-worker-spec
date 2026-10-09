@@ -24,6 +24,14 @@ fail() {
 source "${SCRIPT_DIR}/install-agent-run-worker-v1.sh"
 require_root() { :; }
 chown() { :; }
+[[ "$CODEX_RUNTIME_ACCESS" == /usr/local/libexec/atenea/codex-release-runtime-access-v1.py \
+    && "$(sha256sum "$SCRIPT_DIR/codex-release-runtime-access-v1.py" | cut -d' ' -f1)" \
+      == "$CODEX_RUNTIME_ACCESS_SHA256" ]] || fail "closed runtime access procedure is not exact"
+[[ "$(declare -f apply_install)" == *'"$CODEX_RUNTIME_ACCESS" apply'* \
+    && "$(declare -f verify)" == *'"$CODEX_RUNTIME_ACCESS" verify'* ]] \
+  || fail "installer does not reconcile and verify actual runtime access"
+[[ "$CODEX_RUNTIME_ACCESS" != "$CODEX_ACTIVATE_MEDIATOR" ]] \
+  || fail "runtime access must not be a release activation"
 [[ "$(sha256sum "$SCRIPT_DIR/atenea-project-source-sync-v1.py" | cut -d' ' -f1)" \
     == "$PROJECT_SOURCE_SYNC_SHA256" ]] || fail "source sync fingerprint is stale"
 [[ "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT" == "847a2f240e3d64af2cf3f166ff3c70ad7cc8497f" \
