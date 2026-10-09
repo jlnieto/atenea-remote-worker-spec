@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/development-change-source-update-v2.request.schema.json",
+  "title": "Pinned owned source continuation v2 request",
+  "description": "Server-owned continuation from sealed preparation and exact source; no caller-selected paths or commands.",
+  "$ref": "#/$defs/identity",
+  "unevaluatedProperties": false,
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": ["schemaVersion", "protocolVersion", "effect", "operation", "operationId", "idempotencyKey", "changeKey", "databaseProjectId", "projectId", "repository", "repositoryBranch", "baseCommit", "sourceCommit", "targetMainCommit", "workspaceBranch", "workspaceIdentity", "workerId", "sourceRevision", "sourceFingerprintSha256", "publicationReceiptSha256", "requestFingerprintSha256", "predecessorPreparationOperationId", "predecessorPreparationReceiptSha256", "publishedSourceRevision"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "protocolVersion": {"const": "development-change-source-update/v2"},
+        "effect": {"enum": ["PREPARE_PINNED_MAIN", "OBSERVE_ONLY", "OBSERVE_OR_RESUME_EXACT"]},
+        "operation": {"enum": ["PREPARE", "INSPECT", "RECONCILE"]},
+        "operationId": {"type": "string", "format": "uuid"},
+        "idempotencyKey": {"type": "string", "format": "uuid"},
+        "changeKey": {"type": "string", "format": "uuid"},
+        "databaseProjectId": {"type": "integer", "minimum": 1},
+        "projectId": {"const": "atenea"},
+        "repository": {"const": "https://github.com/jlnieto/atenea.git"},
+        "repositoryBranch": {"const": "main"},
+        "baseCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "targetMainCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "workspaceBranch": {"type": "string", "pattern": "^atenea/change-[0-9a-f-]{36}$"},
+        "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"},
+        "workerId": {"const": "ax42-01"},
+        "sourceRevision": {"type": "integer", "minimum": 0},
+        "sourceFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "publicationReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "requestFingerprintSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "predecessorPreparationOperationId": {"type": "string", "format": "uuid"},
+        "predecessorPreparationReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publishedSourceRevision": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

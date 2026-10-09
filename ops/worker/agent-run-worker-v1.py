@@ -53,6 +53,7 @@ DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
 DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publication/v1"
 DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY = "development-change-source-update/v1"
+DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY = "development-change-source-update/v2"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX = "/v1/development-changes/source-updates/"
 DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY = "development-change-source-finalization/v1"
 DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX = "/v1/development-changes/source-finalizations/"
@@ -1320,6 +1321,7 @@ class WorkerState:
                 capabilities.append(DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY)
+                capabilities.append(DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY)
                 route = self._project_route(PROJECT_ID)
                 if route is not None and self._project_execution_enabled(route, False):
@@ -1624,11 +1626,14 @@ class WorkerState:
     @release_admitted
     def update_development_change_source(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
         operation = operation.upper()
+        continuation = request.get("protocolVersion") == DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY if isinstance(request, dict) else False
+        request_keys = DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS | ({
+            "predecessorPreparationOperationId", "predecessorPreparationReceiptSha256", "publishedSourceRevision"} if continuation else set())
         if (not isinstance(request, dict)
-                or set(request) != DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS
+                or set(request) != request_keys
                 or request.get("schemaVersion") != 1
                 or isinstance(request.get("schemaVersion"), bool)
-                or request.get("protocolVersion") != DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY
+                or request.get("protocolVersion") not in {DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY, DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY}
                 or request.get("workerId") != self.worker_id
                 or operation not in {"PREPARE", "INSPECT", "RECONCILE"}
                 or request.get("operation") != operation):
@@ -1671,7 +1676,7 @@ class WorkerState:
                                 "Source update response is invalid") from error
         absent = response.get("state") == "ABSENT"
         conflicts = response.get("conflictFiles")
-        if (set(response) != DEVELOPMENT_CHANGE_SOURCE_UPDATE_RESPONSE_KEYS
+        if (set(response) != request_keys | (DEVELOPMENT_CHANGE_SOURCE_UPDATE_RESPONSE_KEYS - DEVELOPMENT_CHANGE_SOURCE_UPDATE_REQUEST_KEYS)
                 or canonical_hash({key: response[key] for key in request}) != canonical_hash(request)
                 or response.get("valuesExposed") is not False
                 or response.get("state") not in {"ABSENT", "PREPARED", "NEEDS_RESOLUTION", "READY_TO_FINALIZE"}
@@ -3277,7 +3282,7 @@ class WorkerState:
         commit = request.get("commit")
         try:
             approved_commit = record["baseCommit"]
-            if (root / "source-update-v1.json").exists() or (root / "source-update-v1.json").is_symlink():
+            if any((root / name).exists() or (root / name).is_symlink() for name in ("source-update-v1.json", "source-update-active-v1.json")):
                 approved_commit = load_source_authority()["approved_validation_commit"](root, record, os.geteuid(), os.getegid())
         except Exception as error:
             raise ProtocolError(HTTPStatus.FORBIDDEN, "source_tree_ownership_conflict",

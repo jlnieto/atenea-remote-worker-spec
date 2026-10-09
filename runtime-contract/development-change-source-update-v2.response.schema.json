@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/development-change-source-update-v2.response.schema.json",
+  "title": "Pinned owned source continuation v2 response",
+  "allOf": [{"$ref": "https://atenea.local/contracts/development-change-source-update-v2.request.schema.json#/$defs/identity"}],
+  "type": "object",
+  "required": ["state", "preparedTreeSha", "conflictFiles", "preparedFingerprintSha256", "receiptSha256", "valuesExposed"],
+  "properties": {
+    "state": {"enum": ["ABSENT", "PREPARED", "NEEDS_RESOLUTION", "READY_TO_FINALIZE"]},
+    "preparedTreeSha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "conflictFiles": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "preparedFingerprintSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "receiptSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "valuesExposed": {"const": false}
+  },
+  "unevaluatedProperties": false
+}

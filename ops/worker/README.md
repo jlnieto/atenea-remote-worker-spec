@@ -388,6 +388,38 @@ This development unit is not an installed capability or mobile acceptance.
 python3 -B ./test-development-change-source-finalization-v1.py
 ```
 
+### Continue after another pinned main advance
+
+`development-change-source-update/v2` uses the same authenticated endpoints,
+retains v1 support and adds exactly `predecessorPreparationOperationId`,
+`predecessorPreparationReceiptSha256` and `publishedSourceRevision`. App derives
+these fields and the exact new main; neither mobile nor AgentRuns choose them.
+The prior preparation must be sealed and complete, the new main an exact
+descendant observed in GitHub and the canonical mirror, and executions idle.
+
+Before publication, the actual resolved files and fingerprint are captured in
+a private checkpoint commit/ref without moving HEAD or a remote branch. After
+publication, the sealed PUBLISHED head/receipt of that same branch is the input.
+Each continuation retains `source-update-<operation UUID>-v2.json`; the sealed
+`source-update-active-v1.json` selects its authority. Later finalizations use
+`source-finalization-<preparation UUID>-v1.json`. The original owner, preparation,
+publication and all earlier journals remain unchanged. Lineage verification is
+bounded to 32 preparations and fails closed rather than truncating history.
+
+Materialization recovers only captured/prepared bytes. INSPECT never changes the
+active authority, and unexpected edits cannot be reset. Private checkpoint and
+prepared-tree refs protect both inputs against GC. A publication not confirmed
+PUBLISHED blocks continuation. A pending preparation remains pinned to its
+original main; moving that main is not an authorization to replace the intent.
+Recovery across these last two boundaries still needs its explicit orchestration
+review. A new preparation is not validation or publication; the same four checks
+and authorized finalization are required before updating the same PR again.
+No new sudoers, arbitrary paths, commands or automatic deployment are introduced.
+
+```bash
+python3 -B ./test-development-change-source-continuation-v2.py
+```
+
 ## Session runtime allocation
 
 `session-runtime-allocation-v1.sh` implements task 3.2 without starting a

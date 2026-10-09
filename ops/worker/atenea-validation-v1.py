@@ -308,7 +308,7 @@ def resolve_authority(
             reject()
         try:
             expected_commit = record["baseCommit"]
-            if (root / "source-update-v1.json").exists() or (root / "source-update-v1.json").is_symlink():
+            if any((root / name).exists() or (root / name).is_symlink() for name in ("source-update-v1.json", "source-update-active-v1.json")):
                 expected_commit = load_source_authority()["approved_validation_commit"](root, record, worker_uid, worker_gid)
         except Exception:
             reject()

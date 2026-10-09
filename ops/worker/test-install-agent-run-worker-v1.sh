@@ -79,7 +79,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "cd8122ecceaf9b44de1207dad6656ad82632426f61e218f695ce9f2b274d45a3" ]] \
+    == "9ff8617618a1c22fb240e235dd67e3cdce854f0415a3795ed345edf7daa602a5" ]] \
   || fail "worker validation admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
@@ -289,7 +289,7 @@ grep -F -- '--development-change-workspace-mediator /usr/local/libexec/atenea/de
   || fail "development-change workspace mediator boundary is not explicit"
 [[ "$(grep -Fc '/srv/atenea/workspaces/changes' "${SERVICE_TEMPLATE}")" -eq 1 ]] \
   || fail "development-change workspace write boundary is not exact"
-grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $development_change_source_finalization_capability, $validation_capability]' \
+grep -F -- 'capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $development_change_source_continuation_capability, $development_change_source_finalization_capability, $validation_capability]' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "installer plan does not advertise the durable worker capabilities"
 [[ "$DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR" == /usr/local/libexec/atenea/development-change-workspace-v1.py ]] \
@@ -298,7 +298,7 @@ grep -F -- '--arg development_change_source_update_capability "development-chang
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "source update capability is not versioned"
 [[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
-    == "cf2f50f556bc4fc0c05461ca0acd48768c8a24fa1fcb2f7400fd290d014b2418" ]] \
+    == "8c4002d216ad64f65855a8b57c63f8fd8e1837a793e88e2e8339e9f6dc82ebf6" ]] \
   || fail "source update mediator provenance is not exact"
 grep -F -- '--arg development_change_source_finalization_capability "development-change-source-finalization/v1"' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \

@@ -80,8 +80,8 @@ PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="0028eda39a04ee91ecc6a8ca4888e9d26b8a3506c76500b7fe727ab2c2c0bdf7"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="cd8122ecceaf9b44de1207dad6656ad82632426f61e218f695ce9f2b274d45a3"
-VALIDATION_MEDIATOR_SHA256="802dcd01d63a8df48629b5af427772c021a9e7922900dd0db41353b81964412a"
+PROGRAM_SHA256="9ff8617618a1c22fb240e235dd67e3cdce854f0415a3795ed345edf7daa602a5"
+VALIDATION_MEDIATOR_SHA256="c1c2b743e7ac23707514c78521898053860aed9a15ccc860630b21a54c33e98d"
 BACKEND_TEST_DOCKERFILE_SHA256="8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
 BACKEND_TEST_PREPARER_SHA256="0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
 WEB_VALIDATION_DOCKERFILE_SHA256="e8d0a10e39aea1ecf49869cc7596717bf54cdf472d19dd28a8f725d2f6d9c34f"
@@ -90,7 +90,7 @@ ANDROID_VALIDATION_INPUTS_SHA256="bd78708d54aadda01ecd0961eed742bd7d43838e495274
 ANDROID_VALIDATION_FRAGMENT_SHA256="60dec6885b030ba5a4f3287b80e58d51a046fcf905cba2db67122bda7b8f4d74"
 ANDROID_VALIDATION_RUNTIME_SHA256="964586ac5953ad5e5e781a917890c68b60d8319b6de6b55552cd14c0a9c0b105"
 PLAYWRIGHT_CHECK_SHA256="92ebd40e97fb805b0950f0a50eb49dff727a9dd4df794c1236f503016d4a3824"
-DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="cf2f50f556bc4fc0c05461ca0acd48768c8a24fa1fcb2f7400fd290d014b2418"
+DEVELOPMENT_CHANGE_WORKSPACE_MEDIATOR_SHA256="8c4002d216ad64f65855a8b57c63f8fd8e1837a793e88e2e8339e9f6dc82ebf6"
 PROJECT_RUNNER_SHA256="34c18208f978b728a949deb73bf60391f48944778c1502befc86606e9687b5f1"
 BEAUTIPS_PROJECT_RUNNER_SHA256="c5299c501f5e810ae0fde94303d9387735788d6baa22b0ef7ed9209eea735c89"
 BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a413b4feee5a59ce8152954d97b983"
@@ -467,6 +467,7 @@ plan() {
     --arg development_change_capability "development-change-workspace/v1" \
     --arg development_change_publication_capability "development-change-branch-publication/v1" \
     --arg development_change_source_update_capability "development-change-source-update/v1" \
+    --arg development_change_source_continuation_capability "development-change-source-update/v2" \
     --arg development_change_source_finalization_capability "development-change-source-finalization/v1" \
     --arg validation_capability "closed-validation-broker/v1" \
     --arg project_capability "project-codex-v1" \
@@ -477,7 +478,7 @@ plan() {
       port: $port,
       controlPlaneIp: (if $control_plane_ip == "" then null else $control_plane_ip end),
       protocol: $protocol,
-      capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $development_change_source_finalization_capability, $validation_capability],
+      capabilities: [$synthetic_capability, $development_change_capability, $development_change_publication_capability, $development_change_source_update_capability, $development_change_source_continuation_capability, $development_change_source_finalization_capability, $validation_capability],
       availableDisabledCapabilities: [$project_capability],
       normalCapacity: 4,
       heavyCapacity: 2,
