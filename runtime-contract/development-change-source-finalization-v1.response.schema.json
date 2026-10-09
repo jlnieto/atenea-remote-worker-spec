@@ -8,8 +8,8 @@
   "properties": {
     "schemaVersion": {"type": "integer", "const": 1},
     "protocolVersion": {"const": "development-change-source-finalization/v1"},
-    "effect": {"enum": ["FINALIZE_VALIDATED_SOURCE", "OBSERVE_ONLY"]},
-    "operation": {"enum": ["FINALIZE", "INSPECT"]},
+    "effect": {"enum": ["FINALIZE_VALIDATED_SOURCE", "OBSERVE_ONLY", "RESUME_PINNED_SOURCE"]},
+    "operation": {"enum": ["FINALIZE", "INSPECT", "RECOVER"]},
     "operationId": {"type": "string", "format": "uuid"},
     "idempotencyKey": {"type": "string", "format": "uuid"},
     "changeKey": {"type": "string", "format": "uuid"},
@@ -37,6 +37,7 @@
     "valuesExposed": {"const": false}
   },
   "allOf": [
+    {"if": {"properties": {"operation": {"const": "RECOVER"}}}, "then": {"properties": {"effect": {"const": "RESUME_PINNED_SOURCE"}, "state": {"const": "PUBLISHED"}}}},
     {"if": {"properties": {"operation": {"const": "FINALIZE"}}}, "then": {"properties": {"effect": {"const": "FINALIZE_VALIDATED_SOURCE"}, "state": {"const": "PUBLISHED"}}}},
     {"if": {"properties": {"operation": {"const": "INSPECT"}}}, "then": {"properties": {"effect": {"const": "OBSERVE_ONLY"}}}},
     {"if": {"properties": {"state": {"const": "ABSENT"}}}, "then": {"properties": {"operation": {"const": "INSPECT"}, "publishedHeadSha": {"type": "null"}, "expectedTreeSha": {"type": "null"}, "finalizationReceiptSha256": {"type": "null"}}}, "else": {"properties": {"publishedHeadSha": {"type": "string"}, "expectedTreeSha": {"type": "string"}}}},

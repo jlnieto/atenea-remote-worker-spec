@@ -54,6 +54,7 @@ DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publicati
 DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY = "development-change-source-update/v1"
 DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY = "development-change-source-update/v2"
+DEVELOPMENT_CHANGE_SOURCE_RECOVERY_CAPABILITY = "development-change-source-recovery/v1"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX = "/v1/development-changes/source-updates/"
 DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY = "development-change-source-finalization/v1"
 DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX = "/v1/development-changes/source-finalizations/"
@@ -1322,6 +1323,7 @@ class WorkerState:
                 capabilities.append(DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY)
+                capabilities.append(DEVELOPMENT_CHANGE_SOURCE_RECOVERY_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY)
                 route = self._project_route(PROJECT_ID)
                 if route is not None and self._project_execution_enabled(route, False):
@@ -1635,7 +1637,7 @@ class WorkerState:
                 or isinstance(request.get("schemaVersion"), bool)
                 or request.get("protocolVersion") not in {DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY, DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY}
                 or request.get("workerId") != self.worker_id
-                or operation not in {"PREPARE", "INSPECT", "RECONCILE"}
+                or operation not in {"PREPARE", "INSPECT", "RECONCILE", "RECOVER"}
                 or request.get("operation") != operation):
             raise ProtocolError(HTTPStatus.UNPROCESSABLE_ENTITY,
                                 "source_update_request_invalid", "Source update request is invalid")
@@ -1687,7 +1689,7 @@ class WorkerState:
                                                for part in name.split("/")) for name in conflicts)
                 or (absent and (conflicts or any(response[key] is not None for key in (
                     "preparedTreeSha", "preparedFingerprintSha256", "receiptSha256"))))
-                or (absent and operation == "PREPARE")
+                or (absent and operation in {"PREPARE", "RECOVER"})
                 or (not absent and (re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", str(response.get("preparedTreeSha"))) is None
                                     or re.fullmatch(r"[0-9a-f]{64}", str(response.get("receiptSha256"))) is None))
                 or (response.get("preparedFingerprintSha256") is not None
@@ -1727,9 +1729,10 @@ class WorkerState:
         if (not isinstance(request, dict) or set(request) != DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_REQUEST_KEYS
                 or request.get("schemaVersion") != 1 or isinstance(request.get("schemaVersion"), bool)
                 or request.get("protocolVersion") != DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY
-                or request.get("workerId") != self.worker_id or operation not in {"FINALIZE", "INSPECT"}
+                or request.get("workerId") != self.worker_id or operation not in {"FINALIZE", "INSPECT", "RECOVER"}
                 or request.get("operation") != operation
-                or request.get("effect") != ("FINALIZE_VALIDATED_SOURCE" if operation == "FINALIZE" else "OBSERVE_ONLY")):
+                or request.get("effect") != {"FINALIZE": "FINALIZE_VALIDATED_SOURCE", "INSPECT": "OBSERVE_ONLY",
+                                            "RECOVER": "RESUME_PINNED_SOURCE"}[operation]):
             raise ProtocolError(HTTPStatus.UNPROCESSABLE_ENTITY, "source_finalization_request_invalid",
                                 "Source finalization request is invalid")
         mediator = self.development_change_workspace_mediator
@@ -1774,7 +1777,7 @@ class WorkerState:
                      str(response.get(key))) is None for key in hashes[:2]))
                 or (state == "PREPARED" and response.get("finalizationReceiptSha256") is not None)
                 or (state == "PUBLISHED" and re.fullmatch(r"[0-9a-f]{64}", str(response.get(hashes[2]))) is None)
-                or (operation == "FINALIZE" and state != "PUBLISHED")):
+                or (operation in {"FINALIZE", "RECOVER"} and state != "PUBLISHED")):
             raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_finalization_response_invalid",
                                 "Source finalization response is not exact")
         return response
@@ -5461,13 +5464,13 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith(DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX):
                 operation = path.removeprefix(DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX)
-                if operation not in {"prepare", "inspect", "reconcile"}:
+                if operation not in {"prepare", "inspect", "reconcile", "recover"}:
                     raise ProtocolError(HTTPStatus.NOT_FOUND, "not_found", "route does not exist")
                 self._write(HTTPStatus.OK, self.server.state.update_development_change_source(body, operation))
                 return
             if path.startswith(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX):
                 operation = path.removeprefix(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX)
-                if operation not in {"finalize", "inspect"}:
+                if operation not in {"finalize", "inspect", "recover"}:
                     raise ProtocolError(HTTPStatus.NOT_FOUND, "not_found", "route does not exist")
                 self._write(HTTPStatus.OK, self.server.state.finalize_development_change_source(body, operation))
                 return

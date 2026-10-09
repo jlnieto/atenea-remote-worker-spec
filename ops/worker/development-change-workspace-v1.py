@@ -46,9 +46,9 @@ OPERATIONS = {"PROVISION", "INSPECT", "RECONCILE"}
 PUBLICATION_OPERATION = "PUBLISH"
 SOURCE_UPDATE_PROTOCOL = "development-change-source-update/v1"
 SOURCE_CONTINUATION_PROTOCOL = "development-change-source-update/v2"
-SOURCE_UPDATE_OPERATIONS = {"PREPARE", "INSPECT", "RECONCILE"}
+SOURCE_UPDATE_OPERATIONS = {"PREPARE", "INSPECT", "RECONCILE", "RECOVER"}
 SOURCE_FINALIZATION_PROTOCOL = "development-change-source-finalization/v1"
-SOURCE_FINALIZATION_OPERATIONS = {"FINALIZE", "INSPECT"}
+SOURCE_FINALIZATION_OPERATIONS = {"FINALIZE", "INSPECT", "RECOVER"}
 REQUEST_KEYS = {
     "schemaVersion",
     "protocolVersion",
@@ -321,7 +321,7 @@ def validate_publication_request(value: dict[str, Any]) -> dict[str, Any]:
 
 def validate_source_update_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
     effects = {"PREPARE": "PREPARE_PINNED_MAIN", "INSPECT": "OBSERVE_ONLY",
-               "RECONCILE": "OBSERVE_OR_RESUME_EXACT"}
+               "RECONCILE": "OBSERVE_OR_RESUME_EXACT", "RECOVER": "RESUME_PINNED_SOURCE"}
     continuation = value.get("protocolVersion") == SOURCE_CONTINUATION_PROTOCOL
     if (set(value) != (SOURCE_CONTINUATION_REQUEST_KEYS if continuation else SOURCE_UPDATE_REQUEST_KEYS)
             or operation not in SOURCE_UPDATE_OPERATIONS
@@ -472,7 +472,8 @@ def validate_source_finalization_request(value: dict[str, Any], operation: str) 
     if (not isinstance(value, dict) or set(value) != SOURCE_FINALIZATION_REQUEST_KEYS
             or operation not in SOURCE_FINALIZATION_OPERATIONS or value.get("operation") != operation
             or value.get("protocolVersion") != SOURCE_FINALIZATION_PROTOCOL
-            or value.get("effect") != ("FINALIZE_VALIDATED_SOURCE" if operation == "FINALIZE" else "OBSERVE_ONLY")
+            or value.get("effect") != {"FINALIZE": "FINALIZE_VALIDATED_SOURCE", "INSPECT": "OBSERVE_ONLY",
+                                      "RECOVER": "RESUME_PINNED_SOURCE"}[operation]
             or any(not isinstance(value.get(key), str) or not SHA256.fullmatch(value[key]) for key in
                    ("publicationReceiptSha256", "preparationReceiptSha256", "validationProjectionSha256"))
             or not isinstance(value.get("targetMainCommit"), str)
@@ -633,6 +634,7 @@ class WorkspaceMediator:
                 raise ContractError("source finalization preparation is incompatible")
             exists = path.exists() or path.is_symlink()
             worktree = self._worktree(exact["changeKey"])
+            recovery = None
             if exists:
                 record = self._read_sealed_record(path, SOURCE_FINALIZATION_RECORD_KEYS)
                 if (source_update_intent(exact) != record["intentSha256"]
@@ -644,7 +646,9 @@ class WorkspaceMediator:
             else:
                 self._source_update_idle()
                 self._source_update_owner(retained)
-                self._source_update_refs(retained)
+                if operation == "RECOVER":
+                    recovery = self._retain_main_recovery(exact, "FINALIZATION", {exact["sourceCommit"]})
+                self._source_update_refs(retained, recovery)
                 observation = self._workspace_observation_for_publication(exact)
                 if (observation["state"] != "OWNED" or observation["sourceCommit"] != exact["sourceCommit"]
                         or observation["sourceFingerprintSha256"] != exact["sourceFingerprintSha256"]
@@ -668,7 +672,8 @@ class WorkspaceMediator:
                     "GIT_COMMITTER_NAME": "Atenea", "GIT_COMMITTER_EMAIL": "atenea@localhost",
                     "GIT_AUTHOR_DATE": "@" + str(int(timestamp) + 1) + " +0000",
                     "GIT_COMMITTER_DATE": "@" + str(int(timestamp) + 1) + " +0000"}).decode().strip()
-                record = {**exact, "state": "PREPARED", "intentSha256": source_update_intent(exact),
+                journal_request = self._journal_request(exact, "FINALIZE", "FINALIZE_VALIDATED_SOURCE")
+                record = {**journal_request, "state": "PREPARED", "intentSha256": source_update_intent(exact),
                     "ownerRecordSha256": owner_hash, "expectedTreeSha": tree, "publishedHeadSha": head,
                     "finalizationReceiptSha256": None}
                 self._pin_finalization_candidate(exact, head, create=True)
@@ -688,7 +693,9 @@ class WorkspaceMediator:
                     raise ContractError("source finalization published identity moved")
             if operation != "INSPECT":
                 self._source_update_idle()
-                self._resume_source_finalization(exact, retained, record, path)
+                if operation == "RECOVER" and recovery is None and record["state"] != "PUBLISHED":
+                    recovery = self._retain_main_recovery(exact, "FINALIZATION", {exact["sourceCommit"],record["publishedHeadSha"]})
+                self._resume_source_finalization(exact, retained, record, path, recovery)
                 record = self._read_sealed_record(path, SOURCE_FINALIZATION_RECORD_KEYS)
             return {**exact, "state": record["state"], "publishedHeadSha": record["publishedHeadSha"],
                     "expectedTreeSha": record["expectedTreeSha"],
@@ -706,7 +713,7 @@ class WorkspaceMediator:
             raise ContractError("source finalization candidate ref is incompatible")
 
     def _resume_source_finalization(self, request: dict[str, Any], retained: dict[str, Any],
-                                    record: dict[str, Any], path: Path) -> None:
+                                    record: dict[str, Any], path: Path, recovery: dict[str, Any] | None = None) -> None:
         worktree = self._worktree(request["changeKey"])
         head = record["publishedHeadSha"]
         tree = record["expectedTreeSha"]
@@ -721,7 +728,7 @@ class WorkspaceMediator:
         remote = self._remote_branch_head(request, worktree)
         if record["state"] != "PUBLISHED":
             # Verify retained main again, before EACH effect/recovery. No fetch.
-            self._source_update_refs({**retained, "sourceCommit": remote})
+            self._source_update_refs({**retained, "sourceCommit": remote}, recovery)
             if remote not in {request["sourceCommit"], head}:
                 raise ContractError("source finalization remote head moved")
             if actual == request["sourceCommit"]:
@@ -737,6 +744,7 @@ class WorkspaceMediator:
             # Only a normal fast-forward push is permitted. Git receive-pack
             # checks its advertised old ref atomically; never request force.
             ref = self._branch_ref(request)
+            self._source_update_refs({**retained, "sourceCommit": remote}, recovery)
             self._safe_update_git("push", "--porcelain", "--no-force",
                                   self.publication_transport, f"{head}:{ref}", cwd=worktree, publication=True)
         elif remote != head:
@@ -761,11 +769,12 @@ class WorkspaceMediator:
             path = root / (f"source-update-{exact['operationId']}-v2.json" if continuation else "source-update-v1.json")
             record_keys = SOURCE_CONTINUATION_RECORD_KEYS if continuation else SOURCE_UPDATE_RECORD_KEYS
             exists = path.exists() or path.is_symlink()
-            if not exists and operation != "PREPARE":
+            if not exists and operation not in {"PREPARE", "RECOVER"}:
                 return self._source_update_response(exact, None)
             self._source_update_owner(exact)
             if operation != "INSPECT":
                 self._source_update_idle()
+            recovery = self._retain_main_recovery(exact, "PREPARATION", {exact["sourceCommit"]}) if operation == "RECOVER" else None
             if exists:
                 record = self._read_sealed_record(path, record_keys)
                 source_request(record)
@@ -780,7 +789,7 @@ class WorkspaceMediator:
             else:
                 # No local/remote moving ref is selected implicitly. Both are
                 # observations of the exact target approved by App.
-                self._source_update_refs(exact)
+                self._source_update_refs(exact, recovery)
                 worktree = self._worktree(exact["changeKey"])
                 if not continuation and self._safe_update_git("status", "--porcelain=v2", "-z",
                                          "--untracked-files=all", cwd=worktree):
@@ -806,8 +815,9 @@ class WorkspaceMediator:
                               for part in name.split("/")) for name in conflicts):
                     raise ContractError("source update conflict path is unsupported")
                 self._update_files(tree)
-                self._source_update_refs(exact)
-                record = {**exact, "state": "PREPARED", "intentSha256": source_update_intent(exact),
+                self._source_update_refs(exact, recovery)
+                journal_request = self._journal_request(exact, "PREPARE", "PREPARE_PINNED_MAIN")
+                record = {**journal_request, "state": "PREPARED", "intentSha256": source_update_intent(exact),
                           "ownerRecordSha256": canonical_sha256(self._read_record(self._record_path(exact["changeKey"]))),
                           "preparedTreeSha": tree, "conflictFiles": conflicts,
                           "preparedFingerprintSha256": None}
@@ -825,7 +835,7 @@ class WorkspaceMediator:
                 self._save_source_update(path, record)
             self._pin_source_update_tree(record, create=operation != "INSPECT" and record["state"] == "PREPARED")
             if operation != "INSPECT" and record["state"] == "PREPARED":
-                self._source_update_refs(exact)
+                self._source_update_refs(exact, recovery)
             if continuation:
                 self._continuation_authority(exact, record, write=operation != "INSPECT")
             if operation != "INSPECT" and record["state"] == "PREPARED":
@@ -984,15 +994,53 @@ class WorkspaceMediator:
             raise ContractError("source update creation base is not an ancestor")
         require_source_publication(self._root(request["changeKey"]), request, owner, os.geteuid(), root.st_gid)
 
-    def _source_update_refs(self, request: dict[str, Any]) -> None:
+    @staticmethod
+    def _journal_request(request: dict[str, Any], operation: str, effect: str) -> dict[str, Any]:
+        # Recovery does not replace the original intent/receipt with a new action.
+        normalized = {**request, "operation": operation, "effect": effect}
+        normalized["requestFingerprintSha256"] = canonical_sha256({key: value for key,value in normalized.items()
+            if key != "requestFingerprintSha256"})
+        return normalized
+
+    def _retain_main_recovery(self, request: dict[str, Any], kind: str, allowed_heads: set[str]) -> dict[str, Any]:
+        """Authenticated App reauthorizes its exact durable intent, never another target."""
+        tip = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
+        remote = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
+            "refs/heads/main", self._branch_ref(request), git_dir=True, publication=True).decode().splitlines()
+        refs = dict(line.split("\t",1)[::-1] for line in remote if "\t" in line)
+        observed_head = refs.get(self._branch_ref(request))
+        if (not GIT_COMMIT.fullmatch(tip) or len(remote)!=2 or set(refs)!={"refs/heads/main",self._branch_ref(request)}
+                or refs["refs/heads/main"]!=tip or observed_head not in allowed_heads
+                or any(self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor", before, after,
+                    git_dir=True, env_extra=self._update_git_environment()).returncode != 0
+                    for before,after in ((request["baseCommit"],request["targetMainCommit"]),(request["targetMainCommit"],tip)))):
+            raise ContractError("source recovery main or branch is not the exact retained descendant")
+        root=self._root(request["changeKey"])
+        evidence={"operationId":request["operationId"],"idempotencyKey":request["idempotencyKey"],
+            "kind":kind,"intentSha256":source_update_intent(request),"targetMainCommit":request["targetMainCommit"],
+            "observedMainCommit":tip,"observedBranchHead":observed_head,
+            "ownerRecordSha256":canonical_sha256(self._read_record(self._record_path(request["changeKey"])))}
+        path=root / f"source-main-recovery-{request['operationId']}-{tip}-{observed_head}-v1.json"
+        if path.exists() or path.is_symlink():
+            recorded=sealed_source_record(path,set(evidence)|{"recordSha256"},os.geteuid(),root.stat().st_gid)
+            if any(recorded[key]!=value for key,value in evidence.items()):
+                raise ContractError("source recovery immutable evidence is incompatible")
+        else:
+            self._save_source_update(path,evidence)
+        return evidence
+
+    def _source_update_refs(self, request: dict[str, Any], recovery: dict[str, Any] | None = None) -> None:
         target = request["targetMainCommit"]
+        observed = recovery["observedMainCommit"] if recovery else target
+        if recovery and recovery["targetMainCommit"]!=target:
+            raise ContractError("source recovery target changed")
         local = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
         remote = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
                                        "refs/heads/main", self._branch_ref(request),
                                        git_dir=True, publication=True).decode().splitlines()
         refs = dict(line.split("\t", 1)[::-1] for line in remote if "\t" in line)
-        if (len(remote) != 2 or local != target
-                or refs != {"refs/heads/main": target, self._branch_ref(request): request["sourceCommit"]}):
+        if (len(remote) != 2 or local != observed
+                or refs != {"refs/heads/main": observed, self._branch_ref(request): request["sourceCommit"]}):
             raise ContractError("source update retained main or published head moved")
         if self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor",
                             request["baseCommit"], target, git_dir=True,

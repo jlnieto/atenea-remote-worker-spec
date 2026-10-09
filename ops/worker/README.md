@@ -411,13 +411,45 @@ active authority, and unexpected edits cannot be reset. Private checkpoint and
 prepared-tree refs protect both inputs against GC. A publication not confirmed
 PUBLISHED blocks continuation. A pending preparation remains pinned to its
 original main; moving that main is not an authorization to replace the intent.
-Recovery across these last two boundaries still needs its explicit orchestration
-review. A new preparation is not validation or publication; the same four checks
+These boundaries use the explicit recovery described below. A new preparation
+is not validation or publication; the same four checks
 and authorized finalization are required before updating the same PR again.
 No new sudoers, arbitrary paths, commands or automatic deployment are introduced.
 
 ```bash
 python3 -B ./test-development-change-source-continuation-v2.py
+```
+
+### Recover a retained intent after main advances
+
+`development-change-source-recovery/v1` advertises additive RECOVER actions on
+the existing `source-updates/recover` and `source-finalizations/recover` routes.
+The request is the exact original v1/v2 intent, with only its operation/effect
+changed to RECOVER/RESUME_PINNED_SOURCE. No caller-selected main, path, command,
+credential or branch is added. App reauthorizes its durable intent explicitly;
+INSPECT remains read-only and normal PREPARE/FINALIZE retain their strict refs.
+
+Recovery verifies that the canonical mirror and GitHub main equal one observed
+commit and that immutable base → retained main → observed main is an ancestry
+chain. The same owned branch must still equal the predecessor or the exact
+sealed finalization candidate. Before any worktree/branch effect it seals the
+observation in `source-main-recovery-<operation UUID>-<observed main>-<branch
+head>-v1.json`, including intent and owner hashes. The filename is server-derived
+from validated IDs/commits. Replays preserve existing audit bytes. A further
+main advance fails the pinned observation checks; no input is silently repinned.
+
+An absent worker journal can recover the original durable App request; an
+interrupted preparation can resume only its original captured/prepared bytes.
+Finalization retains its validated tree/candidate and original parents. Recovery
+finishes that candidate through normal CAS/index/fast-forward push, or seals a
+lost receipt without pushing again. A completed finalization never creates a
+second recovery audit on replay. Unexpected edits, locks, refs or ownership fail
+closed. Executions and validations remain idle under the same admission locks.
+After completion, a separate v2 preparation may incorporate the newer main.
+There is no force push, automatic merge, deployment or authority expansion.
+
+```bash
+python3 -B ./test-development-change-source-main-recovery-v1.py
 ```
 
 ## Session runtime allocation

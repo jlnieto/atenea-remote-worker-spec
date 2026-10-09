@@ -39,7 +39,8 @@
       "enum": [
         "PREPARE_PINNED_MAIN",
         "OBSERVE_ONLY",
-        "OBSERVE_OR_RESUME_EXACT"
+        "OBSERVE_OR_RESUME_EXACT",
+        "RESUME_PINNED_SOURCE"
       ]
     },
     "operationId": {
@@ -54,7 +55,8 @@
       "enum": [
         "PREPARE",
         "INSPECT",
-        "RECONCILE"
+        "RECONCILE",
+        "RECOVER"
       ]
     },
     "changeKey": {
@@ -114,6 +116,7 @@
     }
   },
   "allOf": [
+    {"if": {"properties": {"operation": {"const": "RECOVER"}}}, "then": {"properties": {"effect": {"const": "RESUME_PINNED_SOURCE"}}}},
     {
       "if": {
         "properties": {

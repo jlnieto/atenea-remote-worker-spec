@@ -12,8 +12,8 @@
       "properties": {
         "schemaVersion": {"const": 1},
         "protocolVersion": {"const": "development-change-source-update/v2"},
-        "effect": {"enum": ["PREPARE_PINNED_MAIN", "OBSERVE_ONLY", "OBSERVE_OR_RESUME_EXACT"]},
-        "operation": {"enum": ["PREPARE", "INSPECT", "RECONCILE"]},
+        "effect": {"enum": ["PREPARE_PINNED_MAIN", "OBSERVE_ONLY", "OBSERVE_OR_RESUME_EXACT", "RESUME_PINNED_SOURCE"]},
+        "operation": {"enum": ["PREPARE", "INSPECT", "RECONCILE", "RECOVER"]},
         "operationId": {"type": "string", "format": "uuid"},
         "idempotencyKey": {"type": "string", "format": "uuid"},
         "changeKey": {"type": "string", "format": "uuid"},
