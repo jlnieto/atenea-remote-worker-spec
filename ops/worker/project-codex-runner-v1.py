@@ -51,6 +51,9 @@ PLATFORM_INSTRUCTION_SHA256 = (
     "44c578a286eb50b35612be0b6c38d59a503e6fee1ecf6cd0339415af018cdf0d"
 )
 PROJECT_INSTRUCTION_PATH = "AGENTS.md"
+REVIEWED_DEPLOY_METADATA_PATH = ".codex/deploy-mode.env"
+REVIEWED_DEPLOY_METADATA_BLOB = "e049f9bbcdd503bdcbf28ee632af7e85618958d7"
+REVIEWED_DEPLOY_METADATA_SHA256 = "6c5751039049de7896be8fda8a8b7b014f1e670e8cb433b368b4e5823e8553d4"
 PROJECT_INSTRUCTION_SHA256 = (
     "a09adc5855ff54490211a0f5c82f413cb84ee7197b2b350e0b0dc40eba7c98dc"
 )
@@ -1352,12 +1355,46 @@ def validate_worktree(worktree: Path, record: dict[str, Any]) -> Path:
     return common_dir
 
 
+def validate_project_deploy_metadata(worktree: Path, allow_reviewed: bool) -> None:
+    """Only fixed inert deployment data, never a project Codex configuration."""
+    directory = worktree / ".codex"
+    if not directory.exists() and not directory.is_symlink():
+        return
+    if not allow_reviewed or PROJECT_ID != "atenea":
+        reject("instruction bundle rejected")
+    try:
+        _service_uid, owners, group = change_workspace_owner_ids()
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in owners
+                or info.st_gid != group or info.st_mode & 0o002
+                or sorted(path.name for path in directory.iterdir()) != ["deploy-mode.env"]):
+            reject("instruction bundle rejected")
+        path = worktree / REVIEWED_DEPLOY_METADATA_PATH
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid not in owners or info.st_gid != group
+                or info.st_mode & 0o113 or info.st_size > 128
+                or hashlib.sha256(path.read_bytes()).hexdigest() != REVIEWED_DEPLOY_METADATA_SHA256):
+            reject("instruction bundle rejected")
+        indexed = subprocess.run(
+            ["git", "-c", f"safe.directory={worktree}", "-c", "core.fsmonitor=false",
+             "ls-files", "--stage", "--", ".codex"], cwd=worktree,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=True,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        reject("instruction bundle rejected")
+    expected = f"100644 {REVIEWED_DEPLOY_METADATA_BLOB} 0\t{REVIEWED_DEPLOY_METADATA_PATH}\n".encode()
+    if indexed != expected:
+        reject("instruction bundle rejected")
+
+
 def validate_instruction_bundle(worktree: Path, enforce_legacy_bundle_pins: bool = True) -> ReviewedInstructionBundle:
     project_path = worktree / PROJECT_INSTRUCTION_PATH
     forbidden = (
         worktree / "AGENTS.override.md",
-        worktree / ".codex",
     )
+    validate_project_deploy_metadata(worktree, allow_reviewed=not enforce_legacy_bundle_pins)
     try:
         platform_stat = PLATFORM_INSTRUCTION_PATH.stat()
         project_stat = project_path.stat()
@@ -1528,6 +1565,12 @@ def sandbox_command(
         mount_index = command.index("--setenv")
         command[mount_index:mount_index] = mounts
     if workload["kind"] == CHANGE_CAPABILITY:
+        # Preserve Git's view of the tracked inert file, while preventing
+        # Codex from introducing a config/rules source in this directory.
+        if (worktree / ".codex").exists():
+            metadata = str(worktree / ".codex")
+            mount = command.index("--ro-bind", command.index(str(worktree)))
+            command[mount:mount] = ["--ro-bind", metadata, metadata]
         workspace_index = command.index("--dir", command.index("/srv/atenea/workspaces"))
         # The path is derived from the sealed change identity; no caller path is mounted.
         command[workspace_index + 2:workspace_index + 2] = [

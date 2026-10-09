@@ -1716,5 +1716,131 @@ class ProjectCodexContractTest(unittest.TestCase):
                 ) = old_values
 
 
+class ReviewedDeploymentMetadataTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="reviewed-deploy-metadata-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.worktree = self.root / "worktree"
+        self.worktree.mkdir()
+        self.agents = self.worktree / "AGENTS.md"
+        self.agents.write_bytes(b"reviewed repository contract\n")
+        for args in (("init", "-q"), ("config", "user.name", "Test"),
+                     ("config", "user.email", "test@example.invalid"),
+                     ("add", "AGENTS.md"), ("commit", "-q", "-m", "base")):
+            self.git(*args)
+        self.directory = self.worktree / ".codex"
+        self.directory.mkdir()
+        self.path = self.directory / "deploy-mode.env"
+        self.body = b"synthetic inert reviewed deployment data\n"
+        self.path.write_bytes(self.body)
+        self.blob = self.git("hash-object", str(self.path)).decode().strip()
+        self.git("add", ".codex/deploy-mode.env")
+        for name, value in (("REVIEWED_DEPLOY_METADATA_BLOB", self.blob),
+                            ("REVIEWED_DEPLOY_METADATA_SHA256", hashlib.sha256(self.body).hexdigest()),
+                            ("change_workspace_owner_ids", lambda: (os.getuid(), {os.getuid()}, os.getgid()))):
+            item = patch.object(MODULE, name, value)
+            item.start()
+            self.addCleanup(item.stop)
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.worktree), *args])
+
+    def test_exact_staged_metadata_is_not_an_instruction_source(self):
+        platform = self.root / "platform.md"
+        platform.write_bytes(b"reviewed platform contract\n")
+        platform.chmod(0o644)
+        with patch.object(MODULE, "PLATFORM_INSTRUCTION_PATH", platform), \
+                patch.object(MODULE, "PLATFORM_INSTRUCTION_UID", os.getuid()), \
+                patch.object(MODULE, "PLATFORM_INSTRUCTION_SHA256", hashlib.sha256(platform.read_bytes()).hexdigest()):
+            bundle = MODULE.validate_instruction_bundle(self.worktree, False)
+        self.assertNotIn(self.body.decode(), bundle.developer_instructions)
+        self.assertEqual(self.agents.read_bytes(), bundle.project_bytes)
+        self.assertEqual(b"", self.git("ls-tree", "HEAD", ".codex"))
+
+    def test_legacy_and_other_projects_still_reject_dot_codex(self):
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, False)
+        with patch.object(MODULE, "PROJECT_ID", "beautips"):
+            with self.assertRaises(SystemExit):
+                MODULE.validate_project_deploy_metadata(self.worktree, True)
+
+    def test_changed_or_untracked_metadata_rejected(self):
+        self.path.write_bytes(self.body + b"foreign\n")
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+        self.path.write_bytes(self.body)
+        self.git("rm", "--cached", "-q", ".codex/deploy-mode.env")
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+
+    def test_configs_rules_and_arbitrary_children_rejected(self):
+        for name in ("config.toml", "AGENTS.md", "AGENTS.override.md", "foreign.env", ".hidden"):
+            path = self.directory / name
+            path.write_bytes(b"not authorized\n")
+            with self.subTest(name=name), self.assertRaises(SystemExit):
+                MODULE.validate_project_deploy_metadata(self.worktree, True)
+            path.unlink()
+        (self.directory / "skills").mkdir()
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+
+    def test_symlink_hardlink_and_executable_metadata_rejected(self):
+        target = self.root / "target"
+        target.write_bytes(self.body)
+        self.path.unlink()
+        self.path.symlink_to(target)
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+        self.path.unlink()
+        os.link(target, self.path)
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+        self.path.unlink()
+        self.path.write_bytes(self.body)
+        self.path.chmod(0o755)
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+
+    def test_foreign_owner_and_world_writable_directory_rejected(self):
+        with patch.object(MODULE, "change_workspace_owner_ids", return_value=(os.getuid(), {os.getuid()+1}, os.getgid())):
+            with self.assertRaises(SystemExit):
+                MODULE.validate_project_deploy_metadata(self.worktree, True)
+        self.directory.chmod(0o777)
+        with self.assertRaises(SystemExit):
+            MODULE.validate_project_deploy_metadata(self.worktree, True)
+
+    def test_sandbox_overlays_only_derived_metadata_directory_read_only(self):
+        workload = ProjectCodexContractTest().workload()
+        workload["kind"] = MODULE.CHANGE_CAPABILITY
+        workload.update(modelId="test-model", reasoningEffort="high")
+        command = MODULE.sandbox_command(workload, self.worktree, MODULE.GIT_COMMON_DIR,
+            self.root / "final.txt", self.root / "resolv.conf", self.root / "mask",
+            "reviewed instructions", str(uuid.uuid4()))
+        path = str(self.directory)
+        index = command.index(path)
+        self.assertEqual(["--ro-bind", path, path], command[index-1:index+2])
+        self.assertEqual(2, command.count(path))
+        self.assertNotIn(self.body.decode(), "\n".join(command))
+
+    def test_read_only_bubblewrap_keeps_git_view_and_blocks_new_config(self):
+        if not Path("/usr/bin/bwrap").exists():
+            self.skipTest("Bubblewrap unavailable")
+        probe = subprocess.run(["/usr/bin/bwrap", "--unshare-all", "--ro-bind", "/", "/", "--dev", "/dev", "/bin/true"],
+            capture_output=True)
+        if probe.returncode:
+            self.skipTest("unprivileged Bubblewrap unavailable")
+        subprocess.run(["/usr/bin/bwrap", "--unshare-all", "--ro-bind", "/", "/",
+            "--dev", "/dev",
+            "--bind", str(self.worktree), str(self.worktree),
+            "--ro-bind", str(self.directory), str(self.directory),
+            "--chdir", str(self.worktree), "/bin/sh", "-c",
+            "test -r .codex/deploy-mode.env && ! touch .codex/config.toml && "
+            "view=$(git -c safe.directory=\"$PWD\" -c core.fsmonitor=false diff --name-only -- .codex) && "
+            "test -z \"$view\""], check=True)
+        self.assertFalse((self.directory / "config.toml").exists())
+        self.assertEqual(self.body, self.path.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()

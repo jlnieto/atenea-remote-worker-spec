@@ -25,6 +25,7 @@ jobs:
           node --test ops/worker/test-atenea-playwright-http-v1.js
           bash ops/worker/test-install-agent-run-worker-v1.sh
           python3 ops/worker/test-atenea-project-source-sync-v1.py
+          python3 ops/worker/test-project-codex-runner-v1.py ReviewedDeploymentMetadataTest
           bash -n ops/release/install-release-control-v1.sh
           bash -n ops/worker/install-agent-run-worker-v1.sh
           git diff --check
