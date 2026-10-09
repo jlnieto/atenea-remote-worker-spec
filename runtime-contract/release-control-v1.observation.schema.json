@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.yudri.es/contracts/release-control-v1.observation.schema.json",
+  "title": "Read-only verified App PROD installation, not a publication receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "target", "state", "sourceCommit", "imageSha256", "healthy", "observedAt", "planId", "operationId", "receiptSha256", "finishedAt"],
+  "properties": {
+    "protocol": {"const": "atenea-app-observation/v1"},
+    "target": {"const": "APP_PROD"},
+    "state": {"const": "OBSERVED"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "imageSha256": {"$ref": "#/$defs/digest"},
+    "healthy": {"type": "boolean"},
+    "observedAt": {"type": "integer", "minimum": 1},
+    "planId": {"$ref": "#/$defs/id"},
+    "operationId": {"$ref": "#/$defs/id"},
+    "receiptSha256": {"$ref": "#/$defs/digest"},
+    "finishedAt": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+  }
+}

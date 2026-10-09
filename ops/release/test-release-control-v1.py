@@ -38,6 +38,7 @@ class Artifacts:
 class Target:
     def __init__(self):
         self.current = {"sourceCommit": OLD, "configuration": "unchanged"}
+        self.current["imageId"] = "sha256:" + "a" * 64
         self.applies = self.rollbacks = self.stages = 0
         self.health = True
         self.locked = False
@@ -49,11 +50,15 @@ class Target:
         finally: self.locked = False
 
     def inspect(self): return copy.deepcopy(self.current)
+    def observe_current(self):
+        return {"sourceCommit": self.current["sourceCommit"], "imageId": self.current["imageId"],
+                "healthy": self.health, "instanceId": "private-container-id"}
     def stage(self, plan, path): self.stages += 1
     def apply(self, plan, path):
         assert self.locked
         self.applies += 1
         self.current["sourceCommit"] = plan["sourceCommit"]
+        self.current["imageId"] = "sha256:" + "b" * 64
     def verify(self, plan, path):
         assert self.locked
         if not self.health or self.current["sourceCommit"] != plan["sourceCommit"]:
@@ -77,6 +82,8 @@ class ControllerTest(unittest.TestCase):
         self.trust = patch.object(release, "trusted", side_effect=lambda path, mode=None: path)
         self.thread = patch.object(release.threading, "Thread", InlineThread)
         self.trust.start(); self.thread.start()
+        directory = patch.object(release, "trusted_directory")
+        directory.start(); self.addCleanup(directory.stop)
         self.addCleanup(self.trust.stop); self.addCleanup(self.thread.stop); self.addCleanup(self.temp.cleanup)
         self.id = str(uuid.uuid4())
         self.operation_id = str(uuid.uuid4())
@@ -226,6 +233,69 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual("PLAN_EXPIRED", receipt["errorCode"])
         self.assertEqual(self.operation_id, receipt["operationId"])
         self.assertEqual((0,0),(self.target.applies,self.target.rollbacks))
+
+    def completed_observation(self):
+        self.execute(self.plan())
+        return self.controller.dispatch({"operation": "OBSERVE_APP"})
+
+    def test_observation_is_read_only_preserves_receipts_and_has_no_authority(self):
+        self.completed_observation()
+        snapshot = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                    for p in self.root.rglob("*") if p.is_file()}
+        for _ in range(2):
+            observed = self.controller.dispatch({"operation": "OBSERVE_APP"})
+            self.assertEqual(NEW, observed["sourceCommit"])
+            self.assertEqual(self.id, observed["planId"])
+            self.assertEqual(self.operation_id, observed["operationId"])
+            self.assertTrue(observed["healthy"])
+            self.assertEqual(11, len(observed))
+            self.assertNotIn("private-container-id", json.dumps(observed))
+            self.assertNotIn("configuration", json.dumps(observed))
+        self.assertEqual(snapshot, {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                         for p in self.root.rglob("*") if p.is_file()})
+        self.assertEqual((1, 0, 1), (self.target.applies, self.target.rollbacks, self.target.stages))
+
+    def test_observation_contracts_are_closed_draft_2020_12(self):
+        from jsonschema import Draft202012Validator
+        root = Path(__file__).parents[2] / "runtime-contract"
+        request = json.loads((root / "release-control-v1.request.schema.json").read_bytes())
+        response = json.loads((root / "release-control-v1.observation.schema.json").read_bytes())
+        for schema in (request, response): Draft202012Validator.check_schema(schema)
+        Draft202012Validator(request).validate({"operation": "OBSERVE_APP"})
+        Draft202012Validator(response).validate(self.completed_observation())
+        for field in ("target", "path", "command", "token", "sourceCommit", "planId"):
+            value = {"operation": "OBSERVE_APP", field: "foreign"}
+            with self.subTest(field=field):
+                self.assertFalse(Draft202012Validator(request).is_valid(value))
+                with self.assertRaises(release.Rejected): self.controller.dispatch(value)
+        with self.assertRaises(release.Rejected):
+            release.Controller(self.root, Artifacts(), {}).dispatch({"operation": "OBSERVE_APP"})
+
+    def test_unattributed_runtime_and_image_or_plan_hash_mismatch_fail_closed(self):
+        self.completed_observation()
+        original = self.controller.read(self.id)
+        for key, value in (("effectiveSourceCommit", OLD), ("planSha256", "0" * 64)):
+            with self.subTest(key=key):
+                release.save(self.controller.path(self.id) / "operation.json", {**original, key: value})
+                with self.assertRaises(release.Rejected): self.controller.dispatch({"operation": "OBSERVE_APP"})
+        release.save(self.controller.path(self.id) / "operation.json", original)
+        self.target.current["imageId"] = "sha256:" + "c" * 64
+        with self.assertRaises(release.Rejected): self.controller.dispatch({"operation": "OBSERVE_APP"})
+        self.target.current["sourceCommit"] = OLD
+        with self.assertRaises(release.Rejected): self.controller.dispatch({"operation": "OBSERVE_APP"})
+
+    def test_active_release_runtime_drift_and_unhealthy_runtime_are_not_success(self):
+        self.completed_observation()
+        original = self.controller.read(self.id)
+        for state in ("ACCEPTED", "APPLYING", "ROLLING_BACK", "ROLLBACK_FAILED"):
+            release.save(self.controller.path(self.id) / "operation.json", {**original, "state": state})
+            with self.assertRaises(release.Rejected): self.controller.dispatch({"operation": "OBSERVE_APP"})
+        release.save(self.controller.path(self.id) / "operation.json", original)
+        self.target.health = False
+        self.assertFalse(self.controller.dispatch({"operation": "OBSERVE_APP"})["healthy"])
+        before = self.target.observe_current()
+        self.target.observe_current = Mock(side_effect=[before, {**before, "instanceId": "replacement"}])
+        with self.assertRaises(release.Rejected): self.controller.dispatch({"operation": "OBSERVE_APP"})
 
 
 class AuthorityTest(unittest.TestCase):

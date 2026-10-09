@@ -13,9 +13,21 @@ Nada de este documento se ejecuta por implementar o integrar el código.
 | AX42_PLATFORM | `jlnieto/atenea-remote-worker-spec`, `platform.tar` | Installer worker `apply` y `verify` |
 | ANDROID_STABLE | `jlnieto/atenea`, `app-unsigned.apk` | Firmar con la identidad instalada y actualizar el canal interno |
 
-Las solicitudes son PLAN, INSPECT y EXECUTE. Ninguna acepta rutas, comandos,
+Las solicitudes son PLAN, INSPECT, EXECUTE y OBSERVE_APP. Ninguna acepta rutas, comandos,
 hosts, versiones, claves de firma, servicios o enlaces. Los schemas cerrados
 están en `runtime-contract/release-control-v1.*.schema.json`.
+
+`OBSERVE_APP` acepta únicamente `{"operation":"OBSERVE_APP"}` en el VPS.
+Es una lectura de identidad de la imagen realmente ejecutada, health local
+y recibo root-owned de una publicación APP_PROD terminada correctamente.
+Devuelve `atenea-app-observation/v1`, sin configuración, rutas ni secretos.
+Comprueba el hash del plan y vincula recibo, operación, commit e imagen;
+rechaza publicaciones ambiguas/en curso y cambios de runtime durante la lectura.
+No exige AX42 idle, no crea planes/recibos, no reconcilia ni ejecuta efectos.
+App debe comprobar por separado que ese commit contiene el merge de su ticket.
+Un recibo del operador no se convierte en una operación de publicación móvil.
+Instalar esta ampliación usa el installer del publicador VPS; no el target
+AX42_PLATFORM, ni el installer del worker. El protocolo de efectos no cambia.
 
 El artefacto debe ser del último run push/main exitoso de
 `.github/workflows/release-artifacts-v1.yml`, para el SHA exacto de main y el

@@ -14,6 +14,7 @@ import grp
 import hashlib
 import hmac
 import http.server
+import itertools
 import json
 import os
 import re
@@ -34,6 +35,7 @@ import sys
 from pathlib import Path
 
 PROTOCOL = "atenea-release/v1"
+OBSERVATION_PROTOCOL = "atenea-app-observation/v1"
 CONFIG = Path("/etc/atenea-release-v1/config.json")
 ROOT = Path("/srv/atenea/release-v1")
 SOCKET = Path("/run/atenea/release-v1/control.sock")
@@ -403,6 +405,30 @@ class AppTarget:
             raise Rejected("WORKER_NOT_IDLE_OR_HEALTHY")
         return worker
 
+    def observe_current(self):
+        """Read-only identity/health. Unlike admission, work need not be idle."""
+        backend = json.loads(command(["/usr/bin/docker", "inspect", "atenea-backend-prod"], timeout=5))[0]
+        image_id = backend["Image"]
+        if not isinstance(image_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            raise Rejected("APP_OBSERVATION_INVALID")
+        image = json.loads(command(["/usr/bin/docker", "image", "inspect", image_id], timeout=5))[0]
+        source = (image["Config"].get("Labels") or {}).get("org.opencontainers.image.revision")
+        labels = backend["Config"].get("Labels") or {}
+        if (image["Id"] != image_id or not isinstance(source, str) or not HEX.fullmatch(source)
+                or labels.get("com.docker.compose.service") != "atenea-backend-prod"
+                or labels.get("org.opencontainers.image.revision", source) != source):
+            raise Rejected("APP_OBSERVATION_INVALID")
+        healthy = (backend["State"].get("Running") is True
+                   and backend["State"].get("Health", {}).get("Status") == "healthy")
+        try:
+            with urllib.request.build_opener(NoRedirect).open(
+                    "http://127.0.0.1:8081/actuator/health", timeout=3) as response:
+                healthy = healthy and response.status == 200 and json.loads(response.read(4096)).get("status") == "UP"
+        except (OSError, ValueError):
+            healthy = False
+        # Detect replacement during observation; instanceId never leaves the publisher.
+        return {"sourceCommit": source, "imageId": image_id, "healthy": healthy, "instanceId": backend["Id"]}
+
     def stage(self, plan, directory):
         if not isinstance(plan["artifact"]["flywayVersion"], int) or isinstance(plan["artifact"]["flywayVersion"], bool) or plan["artifact"]["flywayVersion"] < 1:
             raise Rejected("FLYWAY_MANIFEST_REJECTED")
@@ -648,6 +674,9 @@ class Controller:
             "versionCode", "versionName", "createdAt", "expiresAt", "finishedAt", "effectiveSourceCommit", "resultSha256")}
 
     def dispatch(self, request):
+        if request.get("operation") == "OBSERVE_APP":
+            exact(request, {"operation"})
+            return self.observe_app()
         if request.get("operation") == "PLAN":
             return self.plan(request)
         if request.get("operation") == "INSPECT":
@@ -656,6 +685,65 @@ class Controller:
         if request.get("operation") == "EXECUTE":
             return self.accept(request)
         raise Rejected("CLOSED_REQUEST_REQUIRED")
+
+    def observe_app(self):
+        """Verify an installation without creating/adopting a publication operation."""
+        if "APP_PROD" not in self.targets:
+            raise Rejected("TARGET_REJECTED")
+        if not self.execution_lock.acquire(blocking=False):
+            raise Rejected("APP_OBSERVATION_BUSY")
+        try:
+            with self.lock:
+                target = self.targets["APP_PROD"]
+                before = target.observe_current()
+                plans = self.root / "plans"
+                trusted_directory(plans, 0o700)
+                entries = list(itertools.islice(plans.iterdir(), 2001))
+                if len(entries) > 2000:
+                    raise Rejected("APP_OBSERVATION_BOUND_EXCEEDED")
+                matches = []
+                def read_evidence(path):
+                    trusted(path, 0o600)
+                    if path.stat().st_size > 262144:
+                        raise Rejected("APP_OBSERVATION_BOUND_EXCEEDED")
+                    return json.loads(path.read_bytes())
+                for entry in entries:
+                    identity(entry.name)
+                    trusted_directory(entry, 0o700)
+                    record = read_evidence(entry / "operation.json")
+                    if record.get("target") != "APP_PROD":
+                        continue
+                    if (record.get("protocol") != PROTOCOL or record.get("planId") != entry.name
+                            or record.get("state") not in TERMINAL | {"PREPARING", "READY", "ACCEPTED", "APPLYING", "ROLLING_BACK"}):
+                        raise Rejected("APP_OBSERVATION_EVIDENCE_MISMATCH")
+                    if record["state"] in {"ACCEPTED", "APPLYING", "ROLLING_BACK", "ROLLBACK_FAILED"}:
+                        raise Rejected("APP_OBSERVATION_BUSY")
+                    if record["state"] != "SUCCEEDED" or record.get("sourceCommit") != before["sourceCommit"]:
+                        continue
+                    receipt = read_evidence(entry / "receipt.json")
+                    plan_hash = digest({key: record[key] for key in
+                        ("protocol", "planId", "target", "sourceCommit", "artifact", "predecessor", "expiresAt")})
+                    if (record.get("planSha256") != plan_hash or record.get("errorCode") is not None
+                            or record.get("effectiveSourceCommit") != before["sourceCommit"]
+                            or receipt.get("sourceCommit") != before["sourceCommit"]
+                            or receipt.get("imageId") != before["imageId"]
+                            or not isinstance(record.get("finishedAt"), int) or isinstance(record["finishedAt"], bool)
+                            or not 0 < record["finishedAt"] <= int(time.time()) + 5):
+                        raise Rejected("APP_OBSERVATION_EVIDENCE_MISMATCH")
+                    identity(record.get("operationId"))
+                    matches.append((record, digest(receipt)))
+                if not matches:
+                    raise Rejected("APP_OBSERVATION_NOT_VERIFIED")
+                record, receipt_sha = max(matches, key=lambda item: (item[0]["finishedAt"], item[0]["planId"]))
+                if target.observe_current() != before:
+                    raise Rejected("APP_OBSERVATION_MOVED")
+                return {"protocol": OBSERVATION_PROTOCOL, "target": "APP_PROD", "state": "OBSERVED",
+                        "sourceCommit": before["sourceCommit"], "imageSha256": before["imageId"][7:],
+                        "healthy": before["healthy"], "observedAt": int(time.time()),
+                        "planId": record["planId"], "operationId": record["operationId"],
+                        "receiptSha256": receipt_sha, "finishedAt": record["finishedAt"]}
+        finally:
+            self.execution_lock.release()
 
     def plan(self, request):
         exact(request, {"operation", "planId", "target", "sourceCommit"})
