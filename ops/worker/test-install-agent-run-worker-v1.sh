@@ -24,6 +24,13 @@ fail() {
 source "${SCRIPT_DIR}/install-agent-run-worker-v1.sh"
 require_root() { :; }
 chown() { :; }
+[[ "$(sha256sum "$SCRIPT_DIR/atenea-project-source-sync-v1.py" | cut -d' ' -f1)" \
+    == "$PROJECT_SOURCE_SYNC_SHA256" ]] || fail "source sync fingerprint is stale"
+[[ "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT" == "847a2f240e3d64af2cf3f166ff3c70ad7cc8497f" \
+    && "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" == "07fdf9f56333ff8002450d7bc2719ac4000fe4a7" \
+    && "$PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256" == "beb08afbab13a65d46ad6b80f8a8df2368391521daaaffc39d6cecb413d3baf0" \
+    && "$PROJECT_MOBILE_SOURCE_TARGET_SHA256" == "c6d651e15fdd103df2cef306844f21384510c9f509f3b99cb26423e875266c0c" ]] \
+  || fail "mobile source sync is not the exact reviewed edge"
 
 MODE_FIXTURE="${TEST_ROOT}/mode-fixture"
 mkdir -p "${MODE_FIXTURE}"
@@ -1447,6 +1454,55 @@ verify_project_runtime_state
   || fail "advanced v4-only runtime did not require healthy v4 capability"
 
 assert_v4_only_transition_rejected "already transitioned configuration"
+# Installing the mobile source-sync support retains both exact endpoints,
+# without fetching or promoting the mirror as a side effect of deployment.
+MOBILE_SOURCE_CONFIG="${TEST_ROOT}/mobile-source-before.json"
+cp "$PROJECT_CONFIG" "$MOBILE_SOURCE_CONFIG"
+PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT="$V4_ONLY_SOURCE_TARGET_COMMIT"
+PROJECT_MOBILE_SOURCE_TARGET_COMMIT="$V4_ONLY_MOVED_COMMIT"
+PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
+MOBILE_SOURCE_AFTER="${TEST_ROOT}/mobile-source-after.json"
+write_project_config_commit_only \
+  "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT" "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" "$MOBILE_SOURCE_AFTER"
+PROJECT_MOBILE_SOURCE_TARGET_SHA256="$(sha256sum "$MOBILE_SOURCE_AFTER" | cut -d' ' -f1)"
+MOBILE_RETAIN="$(project_config_install_preflight)"
+[[ "$MOBILE_RETAIN" == "mobile-source-retain:$PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256" ]] \
+  || fail "mobile source support did not retain predecessor"
+project_config_install_finalize "$MOBILE_RETAIN"
+cmp -s "$PROJECT_CONFIG" "$MOBILE_SOURCE_CONFIG" \
+  || fail "installing mobile source support mutated the predecessor"
+verify_project_runtime_state
+if ( project_source_sync_check foreign ) >/dev/null 2>&1; then
+  fail "source-sync inspector accepted caller arguments"
+fi
+git --git-dir="$PROJECT_MIRROR" update-ref "$PROJECT_REF" \
+  "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "mobile source support accepted incoherent config/ref endpoints"
+fi
+cp "$MOBILE_SOURCE_AFTER" "$PROJECT_CONFIG"
+project_source_sync_check
+MOBILE_RETAIN="$(project_config_install_preflight)"
+[[ "$MOBILE_RETAIN" == "mobile-source-retain:$PROJECT_MOBILE_SOURCE_TARGET_SHA256" ]] \
+  || fail "mobile source support did not retain successor"
+project_config_install_finalize "$MOBILE_RETAIN"
+verify_project_runtime_state
+printf '\n' >>"$PROJECT_CONFIG"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "mobile source support accepted changed registry bytes"
+fi
+cp "$MOBILE_SOURCE_AFTER" "$PROJECT_CONFIG"
+jq '.executions.active = {status: "RUNNING"}' "$STATE_DIR/executions.json" \
+  >"$STATE_DIR/executions.changed"
+mv "$STATE_DIR/executions.changed" "$STATE_DIR/executions.json"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "mobile source support accepted active execution"
+fi
+jq 'del(.executions.active)' "$STATE_DIR/executions.json" >"$STATE_DIR/executions.changed"
+mv "$STATE_DIR/executions.changed" "$STATE_DIR/executions.json"
+git --git-dir="$PROJECT_MIRROR" update-ref "$PROJECT_REF" \
+  "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT" "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT"
+cp "$MOBILE_SOURCE_CONFIG" "$PROJECT_CONFIG"
 PROJECT_RUNNER="${REVIEWED_PROJECT_RUNNER}"
 
 CONTROL_PLANE_IP=100.64.0.10

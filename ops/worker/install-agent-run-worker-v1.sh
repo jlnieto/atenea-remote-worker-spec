@@ -41,6 +41,8 @@ CODEX_UPDATE_REGISTRY="/etc/atenea-worker/codex-release-stage-v1.json"
 CODEX_RELEASE_ROOT="/srv/atenea/worker/codex-releases-v1"
 PLATFORM_INSTRUCTIONS="/usr/local/share/atenea/codex-platform-instructions-v1.md"
 INSTALLER="/usr/local/libexec/atenea/install-agent-run-worker-v1.sh"
+PROJECT_SOURCE_SYNC="/usr/local/libexec/atenea/atenea-project-source-sync-v1.py"
+PROJECT_SOURCE_SYNC_SHA256="1d127d444ed9c19df4d4beb728b135356ac581dc0272423928f7bdb34e290032"
 ENV_FILE="/etc/atenea-worker/agent-run-worker-v1.env"
 TOKEN_FILE="/etc/atenea-worker/agent-run-worker-v1.token"
 PROJECT_CONFIG="/etc/atenea-worker/project-codex-v1.json"
@@ -73,6 +75,10 @@ PROJECT_V4_ONLY_PREDECESSOR_CONFIG_SHA256="3b2e2e242f88e72b64b1f400b3d703f109641
 PROJECT_V4_ONLY_SOURCE_PREDECESSOR_COMMIT="c3ebc2e9d252abe86ff85cb45e97e458b3a826e7"
 PROJECT_V4_ONLY_SOURCE_TARGET_COMMIT="847a2f240e3d64af2cf3f166ff3c70ad7cc8497f"
 PROJECT_V4_ONLY_SOURCE_PREDECESSOR_CONFIG_SHA256="ad8dc6a38fe720a587acd370c424c942a6f620a9fe032533bf6c42cd8f34cc36"
+PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT="847a2f240e3d64af2cf3f166ff3c70ad7cc8497f"
+PROJECT_MOBILE_SOURCE_TARGET_COMMIT="07fdf9f56333ff8002450d7bc2719ac4000fe4a7"
+PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256="beb08afbab13a65d46ad6b80f8a8df2368391521daaaffc39d6cecb413d3baf0"
+PROJECT_MOBILE_SOURCE_TARGET_SHA256="c6d651e15fdd103df2cef306844f21384510c9f509f3b99cb26423e875266c0c"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
@@ -374,6 +380,11 @@ tailscale_ipv4() {
 }
 
 validate_inputs() {
+  [[ -f "$SCRIPT_DIR/atenea-project-source-sync-v1.py" \
+      && ! -L "$SCRIPT_DIR/atenea-project-source-sync-v1.py" \
+      && "$(sha256sum "$SCRIPT_DIR/atenea-project-source-sync-v1.py" | cut -d' ' -f1)" \
+        == "$PROJECT_SOURCE_SYNC_SHA256" ]] \
+    || fail "closed project source synchronizer differs from the reviewed source"
   verify_validation_runtime_root allow-absent
   [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT >= 1024 && PORT <= 65535)) \
     || fail "worker port must be an unprivileged TCP port"
@@ -852,6 +863,40 @@ verify_project_v4_only_source_advance_successor_content() {
   verify_no_non_terminal_project_operations
 }
 
+# One reviewed edge, independent of code installation. Installation retains
+# either coherent endpoint; only the root operator sync action may advance it.
+verify_project_mobile_source_state() {
+  verify_project_config_file_identity
+  local commit fingerprint expected
+  commit="$(observe_project_commit)"
+  fingerprint="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
+  case "$commit" in
+    "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT")
+      expected="$PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256" ;;
+    "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT")
+      expected="$PROJECT_MOBILE_SOURCE_TARGET_SHA256"
+      git --git-dir="$PROJECT_MIRROR" merge-base --is-ancestor \
+        "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT" "$commit" \
+        || fail "mobile source target is not forward-only" ;;
+    *) fail "mobile source mirror is not an exact reviewed endpoint" ;;
+  esac
+  [[ "$fingerprint" == "$expected" \
+      && "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" \
+        == "$PROJECT_REPOSITORY" ]] \
+    || fail "mobile source registry or remote is not exact"
+  verify_project_config_pinned_workspace_content "$commit" false true
+  verify_no_non_terminal_project_operations
+}
+
+project_source_sync_check() {
+  require_root
+  [[ "$#" -eq 0 ]] || fail "source sync check accepts no arguments"
+  verify_project_mobile_source_state
+  wait_for_worker_health true || fail "v4 worker health is unavailable"
+  verify_project_v4_only_legacy_rejected \
+    || fail "legacy Atenea execution is still admitted"
+}
+
 read_worker_health() {
   local bind
   bind="$(tailscale_ipv4)"
@@ -1051,6 +1096,10 @@ project_config_install_preflight() {
   verify_project_config_file_identity
   local retained_sha256
   retained_sha256="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
+  if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+    printf 'mobile-source-retain:%s\n' "$retained_sha256"
+    return 0
+  fi
   if ( verify_project_v4_only_predecessor_content ) >/dev/null 2>&1; then
     printf 'v4-only-predecessor:%s\n' "$retained_sha256"
     return 0
@@ -1145,6 +1194,7 @@ project_config_install_finalize() {
       || "$operation" == "v4-only-successor" \
       || "$operation" == "v4-only-source-advance" \
       || "$operation" == "v4-only-source-successor" \
+      || "$operation" == "mobile-source-retain" \
       || "$operation" == "source-advance" \
       || "$operation" == "pinned-source-advance" \
       || "$operation" == "pinned-retained-advance" \
@@ -1171,6 +1221,10 @@ project_config_install_finalize() {
     || fail "existing project configuration changed during installation"
   if [[ "$operation" == "v4-only-predecessor" ]]; then
     verify_project_v4_only_predecessor_content
+    return 0
+  fi
+  if [[ "$operation" == "mobile-source-retain" ]]; then
+    verify_project_mobile_source_state
     return 0
   fi
   if [[ "$operation" == "v4-only-successor" ]]; then
@@ -1338,7 +1392,9 @@ verify_project_runtime_state() {
   if jq -e '
       .selectionEnabled == false and .executionEnabled == true
     ' "$PROJECT_CONFIG" >/dev/null 2>&1; then
-    if ( verify_project_v4_only_successor_content ) >/dev/null 2>&1; then
+    if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+      verify_project_mobile_source_state
+    elif ( verify_project_v4_only_successor_content ) >/dev/null 2>&1; then
       verify_project_v4_only_successor_content
     elif ( verify_project_v4_only_source_advance_successor_content ) \
         >/dev/null 2>&1; then
@@ -1423,6 +1479,7 @@ apply_install() {
   id atenea-program-role >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin atenea-program-role
   id atenea-worker-role >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin atenea-worker-role
   install -o root -g root -m 0755 "$SCRIPT_DIR/install-agent-run-worker-v1.sh" "$INSTALLER"
+  install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-project-source-sync-v1.py" "$PROJECT_SOURCE_SYNC"
   install -d -o root -g atenea -m 0750 /etc/atenea-worker
   install_exact_directory atenea-worker atenea 0700 "$STATE_DIR"
   install_exact_directory root atenea 0750 "$VALIDATION_JOURNAL_ROOT"
@@ -1547,6 +1604,11 @@ verify() {
       && "$(sha256sum "$INSTALLER" | cut -d' ' -f1)" \
         == "$(sha256sum "$SCRIPT_DIR/install-agent-run-worker-v1.sh" | cut -d' ' -f1)" ]] \
     || fail "worker installer differs from the reviewed source"
+  [[ -f "$PROJECT_SOURCE_SYNC" && ! -L "$PROJECT_SOURCE_SYNC" \
+      && "$(stat -c '%a:%U:%G' "$PROJECT_SOURCE_SYNC")" == "755:root:root" \
+      && "$(sha256sum "$PROJECT_SOURCE_SYNC" | cut -d' ' -f1)" \
+        == "$PROJECT_SOURCE_SYNC_SHA256" ]] \
+    || fail "closed project source synchronizer differs from the reviewed source"
   [[ -f "$PROGRAM" && ! -L "$PROGRAM" \
       && "$(stat -c '%a:%U:%G' "$PROGRAM")" == "755:root:root" \
       && "$(sha256sum "$PROGRAM" | cut -d' ' -f1)" == "$PROGRAM_SHA256" ]] \
@@ -1913,5 +1975,6 @@ case "$ACTION" in
   project-disable) project_disable ;;
   project-unregister) shift; project_unregister "$@" ;;
   prepare-materialization-root) prepare_materialization_root ;;
+  project-source-sync-check) shift; project_source_sync_check "$@" ;;
   *) fail "usage: $0 plan|apply|verify|disable|rollback|enable|project-register|project-retained-draft-register|project-activate|project-selection-enable|project-enable|project-v4-only-enable|project-disable|project-unregister|prepare-materialization-root" ;;
 esac
