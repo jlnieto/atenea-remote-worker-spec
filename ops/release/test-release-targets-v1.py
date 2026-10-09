@@ -131,6 +131,34 @@ class AppTargetTest(unittest.TestCase):
             with self.assertRaises(r.Rejected) as error: self.target.verify({**self.plan,"predecessor":predecessor},self.stage)
         self.assertEqual("APP_POSTCONDITION_FAILED",error.exception.code)
 
+    def test_observation_uses_actual_image_revision_without_workload_admission_or_mutations(self):
+        image_id = "sha256:" + "2" * 64
+        backend = {"Id": "private-id", "Image": image_id,
+                   "Config": {"Labels": {"com.docker.compose.service": "atenea-backend-prod"}},
+                   "State": {"Running": True, "Health": {"Status": "healthy"}}}
+        image = {"Id": image_id, "Config": {"Labels": {"org.opencontainers.image.revision": NEW}}}
+        self.target.worker_health = Mock(side_effect=AssertionError("Must not require idle AX42"))
+        self.target.compose = Mock(side_effect=AssertionError("No deployment preflight"))
+        response = Mock(); response.status = 200; response.read.return_value = b'{"status":"UP"}'
+        response.__enter__ = Mock(return_value=response); response.__exit__ = Mock(return_value=False)
+        opener = Mock(); opener.open.return_value = response
+        with patch.object(r, "command", side_effect=[json.dumps([backend]).encode(), json.dumps([image]).encode()]) as commands, \
+             patch.object(r.urllib.request, "build_opener", return_value=opener):
+            observed = self.target.observe_current()
+        self.assertEqual(NEW, observed["sourceCommit"]); self.assertTrue(observed["healthy"])
+        self.assertEqual([["/usr/bin/docker", "inspect", "atenea-backend-prod"],
+                          ["/usr/bin/docker", "image", "inspect", image_id]],
+                         [call.args[0] for call in commands.call_args_list])
+        self.target.worker_health.assert_not_called(); self.target.compose.assert_not_called()
+
+    def test_observation_rejects_container_revision_claim_not_matching_immutable_image(self):
+        image_id = "sha256:" + "2" * 64
+        backend = {"Image": image_id, "Config": {"Labels": {
+            "com.docker.compose.service": "atenea-backend-prod", "org.opencontainers.image.revision": OLD}}}
+        image = {"Id": image_id, "Config": {"Labels": {"org.opencontainers.image.revision": NEW}}}
+        with patch.object(r, "command", side_effect=[json.dumps([backend]).encode(), json.dumps([image]).encode()]), \
+             self.assertRaises(r.Rejected): self.target.observe_current()
+
 class PlatformTargetTest(unittest.TestCase):
     def test_installer_verify_cannot_hide_changed_codex_links_or_recovery_plan(self):
         target=r.PlatformTarget(); target.protected_state=Mock(return_value={"current":"releases/new"})
