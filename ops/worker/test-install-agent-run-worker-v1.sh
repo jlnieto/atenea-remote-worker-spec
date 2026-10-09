@@ -105,6 +105,21 @@ fi
 [[ "$(sha256sum "${SCRIPT_DIR}/beautips-project-codex-runner-v1.py" | cut -d' ' -f1)" \
     == "${BEAUTIPS_PROJECT_RUNNER_SHA256}" ]] \
   || fail "Beautips compatibility runner fingerprint is stale"
+[[ "$BEAUTIPS_PROJECT_RUNNER_METADATA_PREDECESSOR_SHA256" \
+    == "c5299c501f5e810ae0fde94303d9387735788d6baa22b0ef7ed9209eea735c89" ]] \
+  || fail "reviewed metadata adapter predecessor is not exact"
+(
+  verify_beautips_project_runner_file_identity() { :; }
+  sha256sum() { printf '%s  fixture\n' "$TEST_ADAPTER_DIGEST"; }
+  TEST_ADAPTER_DIGEST="$BEAUTIPS_PROJECT_RUNNER_METADATA_PREDECESSOR_SHA256"
+  verify_beautips_project_runner_upgrade
+  TEST_ADAPTER_DIGEST="$BEAUTIPS_PROJECT_RUNNER_SHA256"
+  verify_beautips_project_runner_upgrade
+  TEST_ADAPTER_DIGEST="$(printf '0%.0s' {1..64})"
+  if ( verify_beautips_project_runner_upgrade ) >/dev/null 2>&1; then
+    fail "foreign adapter hash was accepted"
+  fi
+)
 [[ "$(sha256sum "${SCRIPT_DIR}/atenea-validation-v1.py" | cut -d' ' -f1)" \
     == "${VALIDATION_MEDIATOR_SHA256}" ]] \
   || fail "validation mediator fingerprint is stale"
