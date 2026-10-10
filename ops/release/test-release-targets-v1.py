@@ -159,6 +159,91 @@ class AppTargetTest(unittest.TestCase):
         with patch.object(r, "command", side_effect=[json.dumps([backend]).encode(), json.dumps([image]).encode()]), \
              self.assertRaises(r.Rejected): self.target.observe_current()
 
+class AppObservationHealthTest(unittest.TestCase):
+    def setUp(self):
+        self.image_id = "sha256:" + "2" * 64
+        # Match PROD: running container, no Healthcheck config and no Health
+        # state. Image identity is still independently checked before health.
+        self.backend = {"Id": "private-id", "Image": self.image_id,
+                        "Config": {"Labels": {"com.docker.compose.service": "atenea-backend-prod"}},
+                        "State": {"Status": "running", "Running": True}}
+        self.image = {"Id": self.image_id,
+                      "Config": {"Labels": {"org.opencontainers.image.revision": NEW}}}
+        self.target = r.AppTarget({})
+        for name in ("worker_health", "compose", "stage", "apply", "rollback", "commit"):
+            setattr(self.target, name, Mock(side_effect=AssertionError("Read-only observation required")))
+
+    def observe(self, body=b'{"status":"UP"}', status=200, error=None):
+        response = Mock()
+        response.status = status
+        response.read.return_value = body
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock()
+        opener.open.return_value = response
+        opener.open.side_effect = error
+        with patch.object(r, "command", side_effect=[json.dumps([self.backend]).encode(),
+                                                     json.dumps([self.image]).encode()]) as commands, \
+             patch.object(r.urllib.request, "build_opener", return_value=opener):
+            observed = self.target.observe_current()
+        self.assertEqual([["/usr/bin/docker", "inspect", "atenea-backend-prod"],
+                          ["/usr/bin/docker", "image", "inspect", self.image_id]],
+                         [call.args[0] for call in commands.call_args_list])
+        opener.open.assert_called_once_with("http://127.0.0.1:8081/actuator/health", timeout=3)
+        if error is None:
+            response.read.assert_called_once_with(4096)
+        for name in ("worker_health", "compose", "stage", "apply", "rollback", "commit"):
+            getattr(self.target, name).assert_not_called()
+        self.assertEqual(NEW, observed["sourceCommit"])
+        self.assertEqual(self.image_id, observed["imageId"])
+        return observed
+
+    def test_running_prod_without_docker_probe_requires_actuator_up(self):
+        self.assertTrue(self.observe()["healthy"])
+        self.assertFalse(self.observe(body=b'{"status":"DOWN"}')["healthy"])
+
+    def test_explicitly_disabled_docker_probe_still_requires_actuator_up(self):
+        self.backend["Config"]["Healthcheck"] = {"Test": ["NONE"]}
+        self.assertTrue(self.observe()["healthy"])
+        self.assertFalse(self.observe(body=b'{"status":"DOWN"}')["healthy"])
+
+    def test_configured_docker_probe_cannot_be_missing(self):
+        self.backend["Config"]["Healthcheck"] = {"Test": ["CMD", "must-not-be-executed"]}
+        self.assertFalse(self.observe()["healthy"])
+        self.backend["State"]["Health"] = {"Status": "healthy"}
+        self.assertTrue(self.observe()["healthy"])
+        self.assertFalse(self.observe(body=b'{"status":"DOWN"}')["healthy"])
+
+    def test_docker_unhealthy_pending_or_malformed_cannot_be_overridden_by_up(self):
+        for health in ({"Status": "unhealthy"}, {"Status": "starting"}, {"Status": "unknown"},
+                       {"Status": None}, {"Status": True}, {}, None, "healthy", []):
+            with self.subTest(health=health):
+                self.backend["State"]["Health"] = health
+                self.assertFalse(self.observe()["healthy"])
+
+    def test_unknown_healthcheck_config_does_not_invent_a_missing_healthy_state(self):
+        for healthcheck in ("foreign", [], True, {"Test": "NONE"}, {"Test": ["foreign"]}):
+            with self.subTest(healthcheck=healthcheck):
+                self.backend["Config"]["Healthcheck"] = healthcheck
+                self.assertFalse(self.observe()["healthy"])
+
+    def test_non_running_container_is_not_healthy_even_if_actuator_is_up(self):
+        for running in (False, None, "true", 1):
+            with self.subTest(running=running):
+                self.backend["State"]["Running"] = running
+                self.assertFalse(self.observe()["healthy"])
+
+    def test_failed_or_malformed_actuator_never_claims_health(self):
+        for body, status in ((b'{"status":"DOWN"}', 200), (b'{"status":"UP"}', 503),
+                             (b'{"status":"UP"}', 302), (b'{}', 200), (b'[]', 200),
+                             (b'null', 200), (b'"UP"', 200), (b'not-json', 200)):
+            with self.subTest(body=body, status=status):
+                self.assertFalse(self.observe(body=body, status=status)["healthy"])
+
+    def test_actuator_transport_failure_is_unhealthy_not_success(self):
+        self.assertFalse(self.observe(error=TimeoutError("fixed endpoint timed out"))["healthy"])
+
+
 class PlatformTargetTest(unittest.TestCase):
     def test_installer_verify_cannot_hide_changed_codex_links_or_recovery_plan(self):
         target=r.PlatformTarget(); target.protected_state=Mock(return_value={"current":"releases/new"})
