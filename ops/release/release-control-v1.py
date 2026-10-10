@@ -418,12 +418,23 @@ class AppTarget:
                 or labels.get("com.docker.compose.service") != "atenea-backend-prod"
                 or labels.get("org.opencontainers.image.revision", source) != source):
             raise Rejected("APP_OBSERVATION_INVALID")
-        healthy = (backend["State"].get("Running") is True
-                   and backend["State"].get("Health", {}).get("Status") == "healthy")
+        state = backend["State"]
+        healthcheck = backend["Config"].get("Healthcheck")
+        # PROD may legitimately have no Docker probe: local Actuator is still
+        # mandatory. A configured probe must not disappear or be overridden
+        # by Actuator UP; malformed/pending/unhealthy Docker states fail closed.
+        no_docker_probe = (healthcheck is None or (isinstance(healthcheck, dict)
+                           and healthcheck.get("Test") in (None, [], ["NONE"])))
+        docker_healthy = no_docker_probe
+        if "Health" in state:
+            docker_healthy = (isinstance(state["Health"], dict)
+                              and state["Health"].get("Status") == "healthy")
+        healthy = state.get("Running") is True and docker_healthy
         try:
             with urllib.request.build_opener(NoRedirect).open(
                     "http://127.0.0.1:8081/actuator/health", timeout=3) as response:
-                healthy = healthy and response.status == 200 and json.loads(response.read(4096)).get("status") == "UP"
+                health = json.loads(response.read(4096))
+                healthy = healthy and response.status == 200 and isinstance(health, dict) and health.get("status") == "UP"
         except (OSError, ValueError):
             healthy = False
         # Detect replacement during observation; instanceId never leaves the publisher.

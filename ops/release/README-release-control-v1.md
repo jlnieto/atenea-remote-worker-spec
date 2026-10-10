@@ -24,6 +24,11 @@ Devuelve `atenea-app-observation/v1`, sin configuración, rutas ni secretos.
 Comprueba el hash del plan y vincula recibo, operación, commit e imagen;
 rechaza publicaciones ambiguas/en curso y cambios de runtime durante la lectura.
 No exige AX42 idle, no crea planes/recibos, no reconcilia ni ejecuta efectos.
+La salud exige contenedor en ejecución y HTTP 200 / `status=UP` del Actuator
+local fijo. Si no hay `HEALTHCHECK` Docker (o está explícitamente deshabilitado),
+no se inventa esa señal. Si está configurado, debe existir y estar `healthy`;
+`starting`, `unhealthy`, estados malformados o una señal ausente no se ocultan
+con un Actuator UP. Ninguna lectura ejecuta el comando del `HEALTHCHECK`.
 App debe comprobar por separado que ese commit contiene el merge de su ticket.
 Un recibo del operador no se convierte en una operación de publicación móvil.
 Instalar esta ampliación usa el installer del publicador VPS; no el target
