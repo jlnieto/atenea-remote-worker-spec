@@ -68,6 +68,36 @@ RETAINED_KEYS = {
     "attachments", "logs", "artifacts", "backups", "policyVolumes",
 }
 
+# Closed retirement of the one reviewed legacy owner retained by v4 rollout.
+# These are installed authority, never request parameters or moving main refs.
+WS19_SESSION = "6547081d-895e-4be1-a8fd-d115b7743cdf"
+WS19_COMMIT = "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5"
+WS19_CANONICAL_COMMIT = "07fdf9f56333ff8002450d7bc2719ac4000fe4a7"
+WS19_CONFIG_SHA256 = "c6d651e15fdd103df2cef306844f21384510c9f509f3b99cb26423e875266c0c"
+WS19_RETIRED_CONFIG_SHA256 = "50805b72b26e91bd7e5fea9a69a732a92339c89713b43e8d4ebb957e71a25d82"
+WS19_RECORD_SHA256 = "3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7"
+WS19_ALLOCATION_SHA256 = "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87"
+WS19_DRAFT_PATH = "android/core-console/src/main/java/com/atenea/android/coreconsole/AteneaShell.kt"
+WS19_DRAFT_SHA256 = "c50a9aa5b07cd394b85a51c65aff3a9eff37844cd071a9c53a070ff945e07563"
+
+
+def _ws19_proof() -> dict[str, str]:
+    return {"schemaVersion": "retained-ws19-retirement/v1", "sessionId": WS19_SESSION,
+            "ownerCommit": WS19_COMMIT, "canonicalCommit": WS19_CANONICAL_COMMIT,
+            "configurationSha256": WS19_CONFIG_SHA256, "retiredConfigurationSha256": WS19_RETIRED_CONFIG_SHA256,
+            "workspaceRecordSha256": WS19_RECORD_SHA256, "allocationSha256": WS19_ALLOCATION_SHA256,
+            "draftSha256": WS19_DRAFT_SHA256}
+
+
+def _retained_ws19(request: dict, projection: dict) -> bool:
+    proof = projection.get("retainedOwner")
+    if proof is None:
+        return False
+    if ("changeKey" in request or request["sessionId"] != WS19_SESSION
+            or request["commit"] != WS19_COMMIT or proof != _ws19_proof()):
+        _reject()
+    return True
+
 PROJECTION_KEYS = {
     "schemaVersion", "requestFingerprintSha256", "sessionId",
     "workspaceIdentity", "projectId", "workerId", "workspace", "registry",
@@ -205,6 +235,7 @@ def _validate_authoritative_roots(
     request: dict[str, str], projection: dict[str, Any]
 ) -> tuple[str, str, set[int]]:
     session = request["sessionId"]
+    retained_ws19 = _retained_ws19(request, projection)
     runtime = f"ws-{session.replace('-', '')}"
     session_root = f"/srv/atenea/workspaces/sessions/{session}"
     worktree = f"{session_root}/{PROJECT_ID}"
@@ -294,7 +325,7 @@ def _validate_authoritative_roots(
     })
     if registry != {
         "configurationPath": "/etc/atenea-worker/project-codex-v1.json",
-        "selectionEnabled": True,
+        "selectionEnabled": not retained_ws19,
         "executionEnabled": True,
         "workspaceIdentity": request["workspaceIdentity"],
         "sessionId": session,
@@ -564,7 +595,9 @@ def validate_release_preflight(
     """
 
     exact_request = _request_identity(request)
-    projection = _exact_dict(projection, PROJECTION_KEYS)
+    projection = _exact_dict(projection, PROJECTION_KEYS | (
+        {"retainedOwner"} if isinstance(projection, dict) and "retainedOwner" in projection else set()))
+    _retained_ws19(exact_request, projection)
     if (
         projection.get("schemaVersion") != SCHEMA
         or projection.get("requestFingerprintSha256") != canonical_hash(exact_request)
@@ -1267,6 +1300,13 @@ class FixedRootReleaseOperator:
             modes={0o644},
         )
         allocation_sha = hashlib.sha256(allocation_bytes).hexdigest()
+        retained_ws19 = (session == WS19_SESSION and exact["commit"] == WS19_COMMIT
+            and hashlib.sha256(_registry_bytes).hexdigest() == WS19_CONFIG_SHA256)
+        if retained_ws19:
+            if (hashlib.sha256(_workspace_bytes).hexdigest() != WS19_RECORD_SHA256
+                    or allocation_sha != WS19_ALLOCATION_SHA256):
+                _reject()
+            self.verify_ws19_source()
         record = registry.get("workspaces", {}).get(exact["workspaceIdentity"])
         runtime = f"ws-{session.replace('-', '')}"
         runtime_root = f"{session_root}/runtime/{runtime}"
@@ -1318,7 +1358,7 @@ class FixedRootReleaseOperator:
             or registry.get("projectId") != PROJECT_ID
             or registry.get("repository") != REPOSITORY
             or registry.get("branch") != BRANCH
-            or registry.get("commit") != exact["commit"]
+            or registry.get("commit") != (WS19_CANONICAL_COMMIT if retained_ws19 else exact["commit"])
             or registry.get("manifestSha256") != MANIFEST_SHA256
             or registry.get("runner")
             != "/usr/local/libexec/atenea/project-codex-runner-v1.py"
@@ -1326,7 +1366,7 @@ class FixedRootReleaseOperator:
                 "attachmentRoot" in registry
                 and registry.get("attachmentRoot") != "/srv/atenea/attachments-v1"
             )
-            or registry.get("selectionEnabled") is not True
+            or registry.get("selectionEnabled") is not (not retained_ws19)
             or registry.get("executionEnabled") is not True
             or registry.get("workspaces") != {exact["workspaceIdentity"]: record}
             or set(admission) != {"schemaVersion", "sessionId", "normal", "heavy"}
@@ -1427,7 +1467,7 @@ class FixedRootReleaseOperator:
             },
             "registry": {
                 "configurationPath": str(self.CONFIG),
-                "selectionEnabled": True,
+                "selectionEnabled": not retained_ws19,
                 "executionEnabled": True,
                 "workspaceIdentity": exact["workspaceIdentity"],
                 "sessionId": session,
@@ -1471,8 +1511,59 @@ class FixedRootReleaseOperator:
             **{category: [] for category in EPHEMERAL_CATEGORIES},
             "valuesExposed": False,
         }
+        if retained_ws19:
+            projection["retainedOwner"] = _ws19_proof()
         validate_release_preflight(exact, projection)
         return projection
+
+    def verify_ws19_source(self) -> None:
+        root = Path(f"/srv/atenea/workspaces/sessions/{WS19_SESSION}")
+        record, _, content = self._json_file(root / "workspace-v1.json", uid=self.worker_uid,
+                                            gid=self.worker_gid, modes={0o640})
+        if hashlib.sha256(content).hexdigest() != WS19_RECORD_SHA256:
+            _reject()
+        tree = self._physical(root / PROJECT_ID)
+        self._require_directory(tree, self.worker_uid)
+        if tree.resolve() != tree:
+            _reject()
+        draft = tree / WS19_DRAFT_PATH
+        try:
+            observed = draft.lstat()
+            if (not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1
+                    or observed.st_uid != self.worker_uid or observed.st_gid != self.worker_gid
+                    or stat.S_IMODE(observed.st_mode) != 0o660 or draft.resolve() != draft
+                    or hashlib.sha256(draft.read_bytes()).hexdigest() != WS19_DRAFT_SHA256):
+                _reject()
+        except OSError:
+            _reject()
+        if not self.test_mode:
+            def git(*args: str) -> str:
+                return self._run(["/usr/bin/git", "--no-optional-locks", "-c", f"safe.directory={tree}", "-c", "core.fsmonitor=false",
+                                 "-c", "core.hooksPath=/dev/null", "-C", str(tree), *args], 15).stdout.strip()
+            if (git("rev-parse", "--verify", "HEAD^{commit}") != WS19_COMMIT
+                    or git("symbolic-ref", "--quiet", "HEAD") != f"refs/heads/atenea/session-{WS19_SESSION}"
+                    or git("remote", "get-url", "origin") != REPOSITORY
+                    or git("rev-parse", "--path-format=absolute", "--git-common-dir") != "/srv/atenea/repositories/atenea.git"
+                    or git("rev-parse", "--show-toplevel") != str(tree)
+                    or git("status", "--porcelain=v1", "--untracked-files=all") != f"M {WS19_DRAFT_PATH}"):
+                _reject()
+
+    def verify_ws19_retirement(self, store: ReleaseJournalStore | None = None) -> dict[str, Any]:
+        """Read-only fixed-state verifier for installation after retirement."""
+        store = store or ReleaseJournalStore()
+        directory = store.root / WS19_SESSION
+        store._require_directory(directory)
+        path = directory / "journal-v1.json"
+        # load revalidates journal seal, request, stage evidence and ownership.
+        encoded = store._read(path)
+        request = encoded.get("immutableRequest")
+        journal = store.load(request)
+        if journal["state"] != "RELEASED" or not _retained_ws19(request, journal["preflightProjection"]):
+            _reject()
+        self.verify_retained(WS19_SESSION, journal["preflightProjection"])
+        result = WorkspaceReleaseFinalizer._result(request, validate_release_preflight(request, journal["preflightProjection"]), journal)
+        return {"state": "RELEASED", "sessionId": WS19_SESSION, "receiptSha256": result["receiptSha256"],
+                "configurationSha256": WS19_RETIRED_CONFIG_SHA256, "sourceRetained": True, "valuesExposed": False}
 
     def build_change_projection(self, request: dict[str, Any]) -> dict[str, Any]:
         exact = _request_identity(request)
@@ -2076,6 +2167,11 @@ class FixedRootReleaseOperator:
     ) -> None:
         if any(projection[category] for category in EPHEMERAL_CATEGORIES):
             raise PreflightRejected("WORKSPACE_RELEASE_BOUNDARY_UNAVAILABLE")
+        if _retained_ws19(request, projection):
+            config, _, content = self._json_file(self.CONFIG, uid=self.root_uid, gid=self.root_gid, modes={0o644})
+            if hashlib.sha256(content).hexdigest() != WS19_CONFIG_SHA256:
+                _reject()
+            self.verify_ws19_source()
         self._assert_no_ephemeral(request["sessionId"], projection["allocation"])
 
     def unregister_workspace(
@@ -2091,6 +2187,12 @@ class FixedRootReleaseOperator:
         if not isinstance(workspaces, dict):
             _reject()
         changed = workspace_identity in workspaces
+        preserve_v4 = (session == WS19_SESSION and workspace_identity == f"remote:{WORKER_ID}:work-session:{WS19_SESSION}"
+            and hashlib.sha256(content).hexdigest() in {WS19_CONFIG_SHA256, WS19_RETIRED_CONFIG_SHA256})
+        if preserve_v4:
+            self.verify_ws19_source()
+        elif config.get("selectionEnabled") is False and config.get("executionEnabled") is True:
+            _reject()
         if changed:
             record = workspaces.get(workspace_identity)
             if not isinstance(record, dict) or record.get("sessionId") != session:
@@ -2099,7 +2201,7 @@ class FixedRootReleaseOperator:
                 _reject()
             updated = dict(config)
             updated["selectionEnabled"] = False
-            updated["executionEnabled"] = False
+            updated["executionEnabled"] = preserve_v4
             updated["workspaces"] = {}
             self._atomic_json(
                 self.CONFIG,
@@ -2112,7 +2214,7 @@ class FixedRootReleaseOperator:
         elif (
             workspaces != {}
             or config.get("selectionEnabled") is not False
-            or config.get("executionEnabled") is not False
+            or config.get("executionEnabled") is not preserve_v4
         ):
             _reject()
         return {
@@ -2122,7 +2224,7 @@ class FixedRootReleaseOperator:
             "workspaceIdentity": workspace_identity,
             "registrationRemoved": changed,
             "selectionEnabled": False,
-            "executionEnabled": False,
+            "executionEnabled": preserve_v4,
             "remainingRegistrations": 0,
             "valuesExposed": False,
         }
@@ -2208,10 +2310,20 @@ class FixedRootReleaseOperator:
         )
         active = self._physical(session_root / "runtime-allocation-v1.json")
         retired = self._physical(session_root / RETIRED_ALLOCATION_NAME)
+        preserve_v4 = "retainedOwner" in projection
+        if preserve_v4:
+            if (session != WS19_SESSION or projection["retainedOwner"] != _ws19_proof()
+                    or hashlib.sha256(_config_bytes).hexdigest() != WS19_RETIRED_CONFIG_SHA256):
+                _reject()
+            self.verify_ws19_source()
+            _, _, content = self._json_file(session_root / RETIRED_ALLOCATION_NAME,
+                uid=self.worker_uid, gid=self.worker_gid, modes={0o600, 0o640})
+            if hashlib.sha256(content).hexdigest() != WS19_ALLOCATION_SHA256:
+                _reject()
         if (
             config.get("workspaces") != {}
             or config.get("selectionEnabled") is not False
-            or config.get("executionEnabled") is not False
+            or config.get("executionEnabled") is not preserve_v4
             or admission.get("normal", {}).get("state") != "released"
             or admission.get("heavy", {}).get("state") != "released"
             or active.exists()
@@ -2324,7 +2436,7 @@ class WorkspaceReleaseFinalizer:
 
         if journal["state"] == "EPHEMERAL_RELEASED":
             registration = self.boundary.unregister_workspace(exact_request)
-            registration = self._validate_registration(registration, exact_request)
+            registration = self._validate_registration(registration, exact_request, "retainedOwner" in stored_projection)
             journal = self.journal_store.advance(
                 exact_request,
                 "EPHEMERAL_RELEASED",
@@ -2369,6 +2481,8 @@ class WorkspaceReleaseFinalizer:
                 "RELEASED",
                 canonical_hash(retained),
             )
+        elif journal["state"] == "RELEASED" and "retainedOwner" in stored_projection:
+            self._validate_retained(self.boundary.verify_retained(exact_request, stored_projection), exact_request)
         return self._result(exact_request, preflight, journal)
 
     @staticmethod
@@ -2401,7 +2515,7 @@ class WorkspaceReleaseFinalizer:
 
     @staticmethod
     def _validate_registration(
-        result: Any, request: dict[str, str]
+        result: Any, request: dict[str, str], preserve_v4: bool = False
     ) -> dict[str, Any]:
         result = _exact_dict(result, {
             "schemaVersion", "state", "sessionId", "workspaceIdentity",
@@ -2415,7 +2529,7 @@ class WorkspaceReleaseFinalizer:
             or result.get("workspaceIdentity") != request["workspaceIdentity"]
             or type(result.get("registrationRemoved")) is not bool
             or result.get("selectionEnabled") is not False
-            or result.get("executionEnabled") is not False
+            or result.get("executionEnabled") is not preserve_v4
             or result.get("remainingRegistrations") != 0
             or result.get("valuesExposed") is not False
         ):
@@ -2557,6 +2671,13 @@ class WorkspaceReleaseFinalizer:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--verify-retained-ws19"]:
+        try:
+            print(json.dumps(FixedRootReleaseOperator().verify_ws19_retirement(), sort_keys=True))
+            return 0
+        except Exception:
+            print(json.dumps({"code": "WS19_RETIREMENT_EVIDENCE_REJECTED"}), file=sys.stderr)
+            return 65
     diagnose = sys.argv[1:] == ["--diagnose-capacity-owner"]
     diagnose_release = sys.argv[1:] == ["--diagnose-release-preflight"]
     diagnose_unactivated = sys.argv[1:] == ["--diagnose-unactivated"]

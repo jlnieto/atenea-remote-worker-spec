@@ -158,8 +158,16 @@ fi
     == "${WORKSPACE_RELEASER_SHA256}" ]] \
   || fail "Atenea workspace releaser fingerprint is stale"
 [[ "${WORKSPACE_RELEASER_SHA256}" \
-    == "aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4" ]] \
+    == "45378f57fc2ded6e9ff7bc076c0468bb1a97bce99784a7f00c53a4372e29ed1c" ]] \
   || fail "workspace releaser promotion fingerprint is not exact"
+[[ "$WORKSPACE_RELEASER_PREDECESSOR_SHA256" == "aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4" ]] \
+  || fail "workspace releaser upgrade does not pin the installed predecessor"
+[[ "$(declare -f apply_install)" == *'verify_workspace_activation_dependency true'* \
+    && "$(declare -f apply_install)" == *'"$SCRIPT_DIR/atenea-workspace-release-v1.py" "$WORKSPACE_RELEASER"'* ]] \
+  || fail "installer does not preflight and install the reviewed release upgrade"
+[[ "$(declare -f verify)" == *'verify_workspace_activation_dependency'* \
+    && "$(declare -f verify)" != *'verify_workspace_activation_dependency true'* ]] \
+  || fail "verify must require the current release component rather than the predecessor"
 PROMOTED_RELEASER="${TEST_ROOT}/libexec/atenea-workspace-release-v1.py"
 install -m 0755 "${SCRIPT_DIR}/atenea-workspace-release-v1.py" "${PROMOTED_RELEASER}"
 [[ "$(sha256sum "${PROMOTED_RELEASER}" | cut -d' ' -f1)" \
@@ -243,7 +251,7 @@ fi
 [[ "$(sha256sum "${SCRIPT_DIR}/session-runtime-allocation-v1.sh" | cut -d' ' -f1)" \
     == "${SESSION_ALLOCATION_SHA256}" ]] \
   || fail "allocation dependency fingerprint is stale"
-dependency_preflight_line="$(grep -n -m1 '^  verify_workspace_activation_dependency$' \
+dependency_preflight_line="$(grep -n -m1 '^  verify_workspace_activation_dependency true$' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" | cut -d: -f1)"
 service_stop_line="$(grep -n -m1 '^  systemctl stop "\$SERVICE"$' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" | cut -d: -f1)"
@@ -1514,6 +1522,39 @@ printf '\n' >>"$PROJECT_CONFIG"
 if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
   fail "mobile source support accepted changed registry bytes"
 fi
+cp "$MOBILE_SOURCE_AFTER" "$PROJECT_CONFIG"
+RETIRED_VERIFIER_DEFINITION="$(declare -f verify_project_ws19_retirement_evidence)"
+[[ "$RETIRED_VERIFIER_DEFINITION" == *'--verify-retained-ws19'* ]] \
+  || fail "installer does not require the closed retirement evidence verifier"
+WS19_RETIRED_PROOF="${TEST_ROOT}/ws19-retired-proof"
+verify_project_ws19_retirement_evidence() {
+  [[ -f "$WS19_RETIRED_PROOF" && "$(cat "$WS19_RETIRED_PROOF")" == REVIEWED_RELEASED_PROOF ]] \
+    || fail "fixture retirement proof is absent or partial"
+}
+WS19_RETIRED_CONFIG="${TEST_ROOT}/ws19-retired-config.json"
+jq -cS '.workspaces={}' "$MOBILE_SOURCE_AFTER" >"$WS19_RETIRED_CONFIG"
+PROJECT_WS19_RETIRED_CONFIG_SHA256="$(sha256sum "$WS19_RETIRED_CONFIG" | cut -d' ' -f1)"
+cp "$WS19_RETIRED_CONFIG" "$PROJECT_CONFIG"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "installer accepted retired configuration without durable proof"
+fi
+printf 'PARTIAL_PROOF\n' >"$WS19_RETIRED_PROOF"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "installer accepted partial WS19 retirement"
+fi
+printf 'REVIEWED_RELEASED_PROOF\n' >"$WS19_RETIRED_PROOF"
+RETIRED_PREFLIGHT="$(project_config_install_preflight)"
+[[ "$RETIRED_PREFLIGHT" == "mobile-source-retain:$PROJECT_WS19_RETIRED_CONFIG_SHA256" ]] \
+  || fail "installer did not retain retired WS19 with proven v4 state"
+project_config_install_finalize "$RETIRED_PREFLIGHT"
+cmp -s "$PROJECT_CONFIG" "$WS19_RETIRED_CONFIG" || fail "installer changed retired configuration"
+verify_project_runtime_state
+jq '.executionEnabled=false' "$PROJECT_CONFIG" >"${TEST_ROOT}/foreign-retired-config"
+cp "${TEST_ROOT}/foreign-retired-config" "$PROJECT_CONFIG"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "installer accepted retired WS19 with v4 disabled"
+fi
+eval "$RETIRED_VERIFIER_DEFINITION"
 cp "$MOBILE_SOURCE_AFTER" "$PROJECT_CONFIG"
 jq '.executions.active = {status: "RUNNING"}' "$STATE_DIR/executions.json" \
   >"$STATE_DIR/executions.changed"

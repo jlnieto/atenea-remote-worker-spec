@@ -81,6 +81,7 @@ PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT="847a2f240e3d64af2cf3f166ff3c70ad7cc849
 PROJECT_MOBILE_SOURCE_TARGET_COMMIT="07fdf9f56333ff8002450d7bc2719ac4000fe4a7"
 PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256="beb08afbab13a65d46ad6b80f8a8df2368391521daaaffc39d6cecb413d3baf0"
 PROJECT_MOBILE_SOURCE_TARGET_SHA256="c6d651e15fdd103df2cef306844f21384510c9f509f3b99cb26423e875266c0c"
+PROJECT_WS19_RETIRED_CONFIG_SHA256="50805b72b26e91bd7e5fea9a69a732a92339c89713b43e8d4ebb957e71a25d82"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
@@ -106,7 +107,8 @@ BEAUTIPS_PROJECT_RUNNER_PREDECESSOR_SHA256="60d54f1e6e6eaf1edea43e9bf3b0800226a4
 BEAUTIPS_PROJECT_RUNNER_DEPLOYED_SHA256="e3d5402fbdb4245ddfa47b1a190f8be5fa2599c81b3ab6206f70cab66bad138f"
 PLATFORM_INSTRUCTIONS_SHA256="44c578a286eb50b35612be0b6c38d59a503e6fee1ecf6cd0339415af018cdf0d"
 WORKSPACE_ACTIVATOR_SHA256="5ef544c478c17a0ae6ae88586915185572721ca89dc48dbbf15b65ad417aa889"
-WORKSPACE_RELEASER_SHA256="aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4"
+WORKSPACE_RELEASER_SHA256="45378f57fc2ded6e9ff7bc076c0468bb1a97bce99784a7f00c53a4372e29ed1c"
+WORKSPACE_RELEASER_PREDECESSOR_SHA256="aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4"
 SESSION_WORKSPACE_SHA256="09818d9b717ec8939137a8c5b7aac634f954d40596cf35d909fd04aa374df213"
 RUNTIME_ADMISSION_SHA256="a81366d3495bb2a7bf4702e9ea934a74e9b3edb30f728926e655a5c0a6a9f7ce"
 SESSION_ALLOCATION_SHA256="2efceeaaba78b349f1d6aa79bfba5d908d397a9e3a480cfa3b100bde52fb99d7"
@@ -343,6 +345,10 @@ workspace_activation_sudoers_content() {
 }
 
 verify_workspace_activation_dependency() {
+  local allow_predecessor="${1:-false}" observed_releaser_sha256
+  [[ "$#" -le 1 && ( "$allow_predecessor" == true || "$allow_predecessor" == false ) ]] \
+    || fail "workspace dependency verification accepts only a closed upgrade mode"
+  observed_releaser_sha256="$(sha256sum "$WORKSPACE_RELEASER" | cut -d' ' -f1)"
   [[ -f "$WORKSPACE_ACTIVATOR" && ! -L "$WORKSPACE_ACTIVATOR" \
       && "$(stat -c '%a:%U:%G' "$WORKSPACE_ACTIVATOR")" == "755:root:root" \
       && "$(sha256sum "$WORKSPACE_ACTIVATOR" | cut -d' ' -f1)" \
@@ -350,8 +356,8 @@ verify_workspace_activation_dependency() {
     || fail "Atenea workspace activator differs from the reviewed source"
   [[ -f "$WORKSPACE_RELEASER" && ! -L "$WORKSPACE_RELEASER" \
       && "$(stat -c '%a:%U:%G' "$WORKSPACE_RELEASER")" == "755:root:root" \
-      && "$(sha256sum "$WORKSPACE_RELEASER" | cut -d' ' -f1)" \
-        == "$WORKSPACE_RELEASER_SHA256" ]] \
+      && ( "$observed_releaser_sha256" == "$WORKSPACE_RELEASER_SHA256" \
+        || ( "$allow_predecessor" == true && "$observed_releaser_sha256" == "$WORKSPACE_RELEASER_PREDECESSOR_SHA256" ) ) ]] \
     || fail "Atenea workspace releaser differs from the reviewed source"
   [[ -d "$WORKSPACE_RELEASE_ROOT" && ! -L "$WORKSPACE_RELEASE_ROOT" \
       && "$(stat -c '%a:%U:%G' "$WORKSPACE_RELEASE_ROOT")" == "700:root:root" ]] \
@@ -879,6 +885,14 @@ verify_project_mobile_source_state() {
   local commit fingerprint expected
   commit="$(observe_project_commit)"
   fingerprint="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
+  if [[ "$commit" == "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" \
+      && "$fingerprint" == "$PROJECT_WS19_RETIRED_CONFIG_SHA256" ]]; then
+    [[ "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" == "$PROJECT_REPOSITORY" ]] \
+      || fail "retired WS19 canonical mirror remote is foreign"
+    verify_project_ws19_retirement_evidence
+    verify_no_non_terminal_project_operations
+    return 0
+  fi
   case "$commit" in
     "$PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT")
       expected="$PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256" ;;
@@ -895,6 +909,12 @@ verify_project_mobile_source_state() {
     || fail "mobile source registry or remote is not exact"
   verify_project_config_pinned_workspace_content "$commit" false true
   verify_no_non_terminal_project_operations
+}
+
+verify_project_ws19_retirement_evidence() {
+  # Read-only fixed-root verifier; no client-supplied paths or request body.
+  python3 "$SCRIPT_DIR/atenea-workspace-release-v1.py" --verify-retained-ws19 >/dev/null \
+    || fail "retired WS19 durable evidence or preserved draft is invalid"
 }
 
 project_source_sync_check() {
@@ -1449,7 +1469,7 @@ apply_install() {
   local retained_project_config_sha256
   retained_project_config_sha256="$(project_config_install_preflight)"
   verify_beautips_project_runner_upgrade
-  verify_workspace_activation_dependency
+  verify_workspace_activation_dependency true
   systemctl stop "$SERVICE"
 
   verify_validation_runtime_root allow-absent
@@ -1457,6 +1477,7 @@ apply_install() {
   verify_validation_runtime_root
   install -d -o root -g root -m 0755 /usr/local/libexec/atenea
   install -d -o root -g root -m 0755 /usr/local/share/atenea
+  install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-workspace-release-v1.py" "$WORKSPACE_RELEASER"
   install -o root -g root -m 0755 "$SCRIPT_DIR/agent-run-worker-v1.py" "$PROGRAM"
   install -o root -g root -m 0755 \
     "$SCRIPT_DIR/development-change-workspace-v1.py" \
