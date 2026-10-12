@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.yudri.es/contracts/change-only-resource-plan-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "state", "preservedChangeKey", "nonTerminalExecutions", "archiveCandidates", "blockers", "receiptEmitted", "mutationsPerformed"],
+  "properties": {
+    "schemaVersion": {"const": "change-only-resource-plan-v1"},
+    "operation": {"const": "change-only-20261012"},
+    "state": {"enum": ["BLOCKED", "READY_FOR_ARCHIVE"]},
+    "preservedChangeKey": {"const": "59315b6e-59bc-4884-9def-356e1ca86ef4"},
+    "nonTerminalExecutions": {"type": "integer", "minimum": 0},
+    "receiptEmitted": {"const": false},
+    "mutationsPerformed": {"const": false},
+    "archiveCandidates": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "id", "dirty"],
+        "properties": {
+          "kind": {"enum": ["sessions", "changes"]},
+          "id": {"type": "string", "format": "uuid"},
+          "dirty": {"type": "boolean"}
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["code", "kind", "id"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^[A-Z_]+$"},
+          "kind": {"type": ["string", "null"]},
+          "id": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}
