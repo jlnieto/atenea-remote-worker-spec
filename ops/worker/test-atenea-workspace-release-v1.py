@@ -1583,6 +1583,127 @@ class FixedRootReleaseOperatorTest(unittest.TestCase):
         self.assertEqual("reviewed-worker-host", operator.worker_host)
 
 
+class RetainedWs19RetirementTest(unittest.TestCase):
+    session = MODULE.WS19_SESSION
+    commit = MODULE.WS19_COMMIT
+    _write = staticmethod(FixedRootReleaseOperatorTest._write)
+    tearDown = FixedRootReleaseOperatorTest.tearDown
+
+    def setUp(self):
+        FixedRootReleaseOperatorTest.setUp(self)
+        self.config = self.root / "etc/atenea-worker/project-codex-v1.json"
+        config = json.loads(self.config.read_bytes())
+        config.update(commit=MODULE.WS19_CANONICAL_COMMIT, selectionEnabled=False, executionEnabled=True)
+        self._write(self.config, config, 0o644)
+        self.draft = self.worktree / MODULE.WS19_DRAFT_PATH
+        self.draft.parent.mkdir(parents=True)
+        self.draft.write_bytes(b"reviewed retained Android draft\n")
+        self.draft.chmod(0o660)
+        retired_config = dict(config, workspaces={})
+        hashes = {
+            "MANIFEST_SHA256": self.manifest_sha,
+            "WS19_CONFIG_SHA256": MODULE.hashlib.sha256(self.config.read_bytes()).hexdigest(),
+            "WS19_RETIRED_CONFIG_SHA256": MODULE.hashlib.sha256((json.dumps(retired_config,sort_keys=True,separators=(",", ":"))+"\n").encode()).hexdigest(),
+            "WS19_RECORD_SHA256": MODULE.hashlib.sha256((self.session_root/"workspace-v1.json").read_bytes()).hexdigest(),
+            "WS19_ALLOCATION_SHA256": MODULE.hashlib.sha256((self.session_root/"runtime-allocation-v1.json").read_bytes()).hexdigest(),
+            "WS19_DRAFT_SHA256": MODULE.hashlib.sha256(self.draft.read_bytes()).hexdigest(),
+        }
+        for name, value in hashes.items():
+            patcher = mock.patch.object(MODULE, name, value)
+            patcher.start(); self.addCleanup(patcher.stop)
+        self.operator = MODULE.FixedRootReleaseOperator(self.root, test_mode=True)
+        self.store = MODULE.ReleaseJournalStore(self.journal_root, test_mode=True)
+        self.finalizer = MODULE.WorkspaceReleaseFinalizer(self.store, MODULE.ReviewedReleaseBoundary(
+            self.operator, MODULE.AllocationRetirer(self.root/"srv/atenea/workspaces",test_mode=True)))
+
+    def test_exact_retirement_preserves_v4_and_source_with_same_durable_receipt(self):
+        before_draft = self.draft.read_bytes()
+        before_record = (self.session_root/"workspace-v1.json").read_bytes()
+        before = self.config.read_bytes()
+        projection = self.operator.build_projection(self.request)
+        diagnosis = self.operator.diagnose_release_preflight(self.request, self.store)
+        self.assertEqual("PREFLIGHT_ACCEPTED", diagnosis["state"])
+        self.assertEqual(before,self.config.read_bytes())
+        self.assertFalse((self.journal_root/self.session).exists())
+        first = self.finalizer.release(self.request, projection)
+        after = self.config.read_bytes()
+        second = self.finalizer.release(self.request, projection)
+        self.assertEqual(first,second)
+        self.assertEqual("RELEASED",first["state"])
+        with mock.patch.object(AGENT_MODULE,"PROJECT_MANIFEST_SHA256",self.manifest_sha):
+            AGENT_MODULE.validate_workspace_release_receipt(self.request,"ax42-01",first)
+        config = json.loads(after)
+        self.assertTrue(config["executionEnabled"])
+        self.assertFalse(config["selectionEnabled"])
+        self.assertEqual(MODULE.WS19_CANONICAL_COMMIT, config["commit"])
+        original = json.loads(before); original["workspaces"]={}
+        self.assertEqual(original,config)
+        self.assertEqual(after,self.config.read_bytes())
+        self.assertEqual(before_draft,self.draft.read_bytes())
+        self.assertEqual(before_record,(self.session_root/"workspace-v1.json").read_bytes())
+        self.assertEqual(0o660,stat.S_IMODE(self.draft.stat().st_mode))
+        self.assertFalse((self.session_root/"runtime-allocation-v1.json").exists())
+        self.assertEqual(MODULE.WS19_ALLOCATION_SHA256,MODULE.hashlib.sha256((self.session_root/MODULE.RETIRED_ALLOCATION_NAME).read_bytes()).hexdigest())
+        evidence = self.operator.verify_ws19_retirement(self.store)
+        self.assertEqual(first["receiptSha256"],evidence["receiptSha256"])
+        self.assertTrue(evidence["sourceRetained"])
+
+    def test_hash_drift_or_foreign_owner_rejected_before_journal_or_config_change(self):
+        for path in (self.config,self.draft,self.session_root/"workspace-v1.json",self.session_root/"runtime-allocation-v1.json"):
+            with self.subTest(path=path.name):
+                content=path.read_bytes()
+                try:
+                    path.write_bytes(content+b"\n")
+                    with self.assertRaises(MODULE.PreflightRejected): self.operator.build_projection(self.request)
+                    self.assertFalse((self.journal_root/self.session).exists())
+                finally: path.write_bytes(content)
+        request=dict(self.request,commit="f"*40)
+        with self.assertRaises(MODULE.PreflightRejected): self.operator.build_projection(request)
+        request=dict(self.request,command="arbitrary")
+        with self.assertRaises(MODULE.PreflightRejected): self.operator.build_projection(request)
+
+    def test_forged_internal_proof_and_wrong_permissions_are_rejected(self):
+        projection=self.operator.build_projection(self.request)
+        projection["retainedOwner"]["canonicalCommit"]="f"*40
+        with self.assertRaises(MODULE.PreflightRejected): MODULE.validate_release_preflight(self.request,projection)
+        projection["retainedOwner"] = None
+        with self.assertRaises(MODULE.PreflightRejected): MODULE.validate_release_preflight(self.request,projection)
+        self.draft.chmod(0o666)
+        with self.assertRaises(MODULE.PreflightRejected): self.operator.build_projection(self.request)
+
+    def test_missing_partial_or_modified_final_journal_is_not_retirement_evidence(self):
+        with self.assertRaises(MODULE.PreflightRejected): self.operator.verify_ws19_retirement(self.store)
+        projection=self.operator.build_projection(self.request)
+        self.store.prepare(self.request,projection)
+        with self.assertRaises(MODULE.PreflightRejected): self.operator.verify_ws19_retirement(self.store)
+        self.finalizer.release(self.request,projection)
+        path=self.journal_root/self.session/"journal-v1.json"
+        value=json.loads(path.read_bytes());value["revision"]=5
+        self._write(path,value,0o600)
+        with self.assertRaises(MODULE.PreflightRejected): self.operator.verify_ws19_retirement(self.store)
+
+    def test_after_finalization_draft_or_registry_drift_invalidates_replay_and_install_proof(self):
+        projection=self.operator.build_projection(self.request)
+        self.finalizer.release(self.request,projection)
+        for path in (self.draft,self.config):
+            original=path.read_bytes()
+            try:
+                path.write_bytes(original+b"\n")
+                with self.assertRaises(MODULE.PreflightRejected): self.finalizer.release(self.request,projection)
+                with self.assertRaises(MODULE.PreflightRejected): self.operator.verify_ws19_retirement(self.store)
+            finally: path.write_bytes(original)
+
+    def test_interruption_after_unregister_resumes_without_disabling_v4(self):
+        projection=self.operator.build_projection(self.request)
+        with mock.patch.object(self.operator,"release_admission",side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError): self.finalizer.release(self.request,projection)
+        self.assertEqual("UNREGISTERED",self.store.load(self.request)["state"])
+        self.assertTrue(json.loads(self.config.read_bytes())["executionEnabled"])
+        final=self.finalizer.release(self.request,projection)
+        self.assertEqual("RELEASED",final["state"])
+        self.assertTrue(self.operator.verify_ws19_retirement(self.store)["sourceRetained"])
+
+
 class ChangeOwnedReleaseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
