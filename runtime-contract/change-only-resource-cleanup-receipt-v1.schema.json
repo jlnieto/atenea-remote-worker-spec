@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.yudri.es/contracts/change-only-resource-cleanup-receipt-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "state", "preservedChangeKey", "trialSessionIds", "trialChangeKeys", "nonTerminalExecutions", "archiveSha256", "manifestSha256", "journalSha256"],
+  "properties": {
+    "schemaVersion": {"const": "change-only-resource-cleanup-receipt-v1"},
+    "operation": {"const": "change-only-20261012"},
+    "state": {"const": "RELEASED"},
+    "preservedChangeKey": {"const": "59315b6e-59bc-4884-9def-356e1ca86ef4"},
+    "trialSessionIds": {"const": [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20]},
+    "trialChangeKeys": {"const": ["707d87b1-2b04-4406-a3c5-a8f9f8c709e7", "80c6340d-07b1-4304-8460-d3d3bafdffc8", "97f9901e-bccb-4cd8-97d8-8a9cb15f1054", "a1d00112-6b4f-4923-bcf5-6048fdfbb308", "a4167871-9106-4041-b1c9-d6a2c101ca15"]},
+    "nonTerminalExecutions": {"const": 0},
+    "archiveSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "journalSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

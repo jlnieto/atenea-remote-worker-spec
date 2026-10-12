@@ -50,6 +50,10 @@ TOKEN_FILE="/etc/atenea-worker/agent-run-worker-v1.token"
 PROJECT_CONFIG="/etc/atenea-worker/project-codex-v1.json"
 SUDOERS_FILE="/etc/sudoers.d/atenea-project-codex-v1"
 STATE_DIR="/srv/atenea/worker/agent-runs-v1"
+CHANGE_ONLY_CLEANUP="/usr/local/libexec/atenea/change-only-resource-cleanup-v1.py"
+CHANGE_ONLY_PLAN="/usr/local/libexec/atenea/change-only-resource-plan-v1.py"
+CHANGE_ONLY_MANIFEST="/usr/local/libexec/atenea/change-only-resource-manifest-v1.json"
+CHANGE_ONLY_RECEIPT_SCHEMA="/usr/local/share/atenea/change-only-resource-cleanup-receipt-v1.schema.json"
 DEVELOPMENT_CHANGE_WORKSPACE_ROOT="/srv/atenea/workspaces/changes"
 ATTACHMENT_ROOT="/srv/atenea/attachments-v1"
 MATERIALIZATION_ROOT="/run/atenea/codex-images"
@@ -390,6 +394,25 @@ tailscale_ipv4() {
 }
 
 validate_inputs() {
+  for directory in /srv/atenea/backups /srv/atenea/backups/ax42; do
+    if [[ -e "$directory" || -L "$directory" ]]; then
+      [[ -d "$directory" && ! -L "$directory" \
+          && "$(stat -c '%u' "$directory")" == 0 \
+          && "$(stat -c '%a' "$directory")" =~ ^(700|750|755)$ ]] \
+        || fail "AX42 backup authority is unsafe; stop before worker changes"
+      if [[ "$directory" == /srv/atenea/backups/ax42 ]]; then
+        [[ "$(stat -c '%u:%g:%a' "$directory")" == '0:0:700' ]] \
+          || fail "AX42 archive authority is not root-private; stop before worker changes"
+      fi
+    fi
+  done
+  for source in change-only-resource-cleanup-v1.py change-only-resource-plan-v1.py change-only-resource-manifest-v1.json; do
+    [[ -f "$SCRIPT_DIR/$source" && ! -L "$SCRIPT_DIR/$source" ]] \
+      || fail "closed change-only cleanup source is missing or unsafe"
+  done
+  [[ -f "$SCRIPT_DIR/../../runtime-contract/change-only-resource-cleanup-receipt-v1.schema.json" \
+      && ! -L "$SCRIPT_DIR/../../runtime-contract/change-only-resource-cleanup-receipt-v1.schema.json" ]] \
+    || fail "closed change-only receipt schema is missing or unsafe"
   [[ -f "$SCRIPT_DIR/codex-release-runtime-access-v1.py" \
       && ! -L "$SCRIPT_DIR/codex-release-runtime-access-v1.py" \
       && "$(sha256sum "$SCRIPT_DIR/codex-release-runtime-access-v1.py" | cut -d' ' -f1)" \
@@ -1491,6 +1514,26 @@ apply_install() {
   verify_validation_runtime_root
   install -d -o root -g root -m 0755 /usr/local/libexec/atenea
   install -d -o root -g root -m 0755 /usr/local/share/atenea
+  install -o root -g root -m 0755 "$SCRIPT_DIR/change-only-resource-cleanup-v1.py" "$CHANGE_ONLY_CLEANUP"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/change-only-resource-plan-v1.py" "$CHANGE_ONLY_PLAN"
+  install -o root -g root -m 0644 "$SCRIPT_DIR/change-only-resource-manifest-v1.json" "$CHANGE_ONLY_MANIFEST"
+  install -o root -g root -m 0644 \
+    "$SCRIPT_DIR/../../runtime-contract/change-only-resource-cleanup-receipt-v1.schema.json" "$CHANGE_ONLY_RECEIPT_SCHEMA"
+  # No invocation or sudoers grant: the one-off cleanup remains operator-root
+  # only and requires its independent offline maintenance preconditions.
+  if [[ ! -e /srv/atenea/backups && ! -L /srv/atenea/backups ]]; then
+    install_exact_directory root root 0700 /srv/atenea/backups
+  fi
+  [[ -d /srv/atenea/backups && ! -L /srv/atenea/backups \
+      && "$(stat -c '%u' /srv/atenea/backups)" == 0 \
+      && "$(stat -c '%a' /srv/atenea/backups)" =~ ^(700|750|755)$ ]] \
+    || fail "AX42 backup parent is unsafe; do not change foreign permissions"
+  if [[ ! -e /srv/atenea/backups/ax42 && ! -L /srv/atenea/backups/ax42 ]]; then
+    install_exact_directory root root 0700 /srv/atenea/backups/ax42
+  fi
+  [[ -d /srv/atenea/backups/ax42 && ! -L /srv/atenea/backups/ax42 \
+      && "$(stat -c '%u:%g:%a' /srv/atenea/backups/ax42)" == '0:0:700' ]] \
+    || fail "AX42 cleanup archive parent is not root-private"
   install -o root -g root -m 0755 "$SCRIPT_DIR/atenea-workspace-release-v1.py" "$WORKSPACE_RELEASER"
   install -o root -g root -m 0755 "$SCRIPT_DIR/agent-run-worker-v1.py" "$PROGRAM"
   install -o root -g root -m 0755 \
@@ -1733,6 +1776,22 @@ verify() {
         == "$VALIDATION_MEDIATOR_SHA256" ]] \
     || fail "validation mediator differs from the reviewed source"
   verify_runtime_admission_file "$RUNTIME_ADMISSION" root:root
+  for pair in \
+      "change-only-resource-cleanup-v1.py:$CHANGE_ONLY_CLEANUP:755" \
+      "change-only-resource-plan-v1.py:$CHANGE_ONLY_PLAN:644" \
+      "change-only-resource-manifest-v1.json:$CHANGE_ONLY_MANIFEST:644"; do
+    IFS=: read -r source installed expected_mode <<<"$pair"
+    [[ -f "$installed" && ! -L "$installed" \
+        && "$(stat -c '%a:%U:%G' "$installed")" == "$expected_mode:root:root" \
+        && "$(sha256sum "$installed" | cut -d' ' -f1)" \
+          == "$(sha256sum "$SCRIPT_DIR/$source" | cut -d' ' -f1)" ]] \
+      || fail "installed closed change-only cleanup differs from reviewed source"
+  done
+  [[ -f "$CHANGE_ONLY_RECEIPT_SCHEMA" && ! -L "$CHANGE_ONLY_RECEIPT_SCHEMA" \
+      && "$(stat -c '%a:%U:%G' "$CHANGE_ONLY_RECEIPT_SCHEMA")" == '644:root:root' \
+      && "$(sha256sum "$CHANGE_ONLY_RECEIPT_SCHEMA" | cut -d' ' -f1)" \
+        == "$(sha256sum "$SCRIPT_DIR/../../runtime-contract/change-only-resource-cleanup-receipt-v1.schema.json" | cut -d' ' -f1)" ]] \
+    || fail "installed closed change-only receipt schema differs from reviewed source"
   [[ -f "$BACKEND_TEST_DOCKERFILE" && ! -L "$BACKEND_TEST_DOCKERFILE" \
       && "$(stat -c '%a:%U:%G' "$BACKEND_TEST_DOCKERFILE")" == "644:root:root" \
       && "$(sha256sum "$BACKEND_TEST_DOCKERFILE" | cut -d' ' -f1)" == "$BACKEND_TEST_DOCKERFILE_SHA256" ]] \

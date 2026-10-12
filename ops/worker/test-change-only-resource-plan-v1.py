@@ -33,6 +33,7 @@ class ResourcePlanTest(unittest.TestCase):
         self.assertEqual(25, len(self.roots))
 
     def test_unbound_roots_are_not_inferred_to_be_disposable(self):
+        self.manifest["reviewedRoots"][0]["disposition"] = "UNBOUND_REVIEW_REQUIRED"
         result = self.plan()
         self.assertEqual("BLOCKED", result["state"])
         self.assertIn("UNBOUND_ROOT_NOT_CORRELATED_WITH_PROD", self.codes(result))
@@ -44,14 +45,16 @@ class ResourcePlanTest(unittest.TestCase):
         self.assertNotIn(p.REAL_CHANGE, {r["id"] for r in result["archiveCandidates"]})
         self.assertEqual(p.REAL_CHANGE, result["preservedChangeKey"])
 
-    def test_wip_branch_is_not_silently_relabelled_or_deleted(self):
+    def test_exact_wip_branch_is_authorized_but_not_a_variant(self):
         for r in self.roots:
             if r["id"] == "2ac2a5fd-2981-49cf-8fac-8132e46a2d64":
                 r.update(head="b2f798e0ae3dec1b43bbfe4189aeadddd6287db8",
                          branch="refs/heads/ax42-beautips-wip-preservation-2ac2a5fd", dirty=False)
         result = self.plan()
-        self.assertIn("NON_SESSION_BRANCH_MUST_BE_PRESERVED", self.codes(result))
-        self.assertNotIn("2ac2a5fd-2981-49cf-8fac-8132e46a2d64", {r["id"] for r in result["archiveCandidates"]})
+        self.assertIn("2ac2a5fd-2981-49cf-8fac-8132e46a2d64", {r["id"] for r in result["archiveCandidates"]})
+        row = next(r for r in self.roots if r["id"] == "2ac2a5fd-2981-49cf-8fac-8132e46a2d64")
+        row["branch"] += "-foreign"
+        self.assertIn("WORKTREE_OBSERVATION_MOVED", self.codes(self.plan()))
 
     def test_active_runtime_and_non_terminal_execution_block_the_entire_release(self):
         result = self.plan(active=["synthetic-active"], resources=[

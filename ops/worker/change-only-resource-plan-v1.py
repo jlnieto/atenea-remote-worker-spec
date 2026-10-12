@@ -17,10 +17,11 @@ import subprocess
 OPERATION = "change-only-20261012"
 REAL_CHANGE = "59315b6e-59bc-4884-9def-356e1ca86ef4"
 WORKSPACES = Path("/srv/atenea/workspaces")
+MIRRORS = Path("/srv/atenea/repositories")
 CONFIG = Path("/etc/atenea-worker/project-codex-v1.json")
 EXECUTIONS = Path("/srv/atenea/worker/agent-runs-v1/executions.json")
 MANIFEST = Path(__file__).with_name("change-only-resource-manifest-v1.json")
-MANIFEST_SHA256 = "6fc6d26697bf27958440248e5f311e5d01966f588659a5b1210562feed221b51"
+MANIFEST_SHA256 = "206ae4412a91ffcb6dfd82fe77a6ddc995c345478b64153611b38e45c81c447b"
 ENGINES = ("unix:///run/user/1000/docker.sock",) + tuple(
     f"unix:///run/atenea-runtime/slot{i}/docker.sock" for i in range(1, 5))
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
@@ -102,10 +103,10 @@ def observe_roots(manifest):
             # config and gitdir have been verified. Unknown projects are held.
             project = expected["projectId"]
             tree = root / project
-            if project in manifest["mirrorConfigurationSha256"] and tree.is_dir():
-                mirror = Path("/srv/atenea/repositories") / (project + ".git")
+            if expected["mirrorName"] in manifest["mirrorConfigurationSha256"] and tree.is_dir():
+                mirror = MIRRORS / expected["mirrorName"]
                 config_bytes, _ = read_regular(mirror / "config")
-                require(digest(config_bytes) == manifest["mirrorConfigurationSha256"][project],
+                require(digest(config_bytes) == manifest["mirrorConfigurationSha256"][expected["mirrorName"]],
                         "MIRROR_CONFIGURATION_MOVED")
                 marker, _ = read_regular(tree / ".git")
                 require(marker.startswith(b"gitdir: "), "WORKTREE_AUTHORITY_MOVED")
@@ -170,9 +171,8 @@ def plan(manifest, roots, active, resources, config_hash):
                 old["head"], old["branch"], old["dirty"]):
             block("WORKTREE_OBSERVATION_MOVED", *key); continue
         if old["disposition"] == "TRIAL":
-            branch = "refs/heads/atenea/" + ("session-" if key[0] == "sessions" else "change-") + key[1]
-            if row.get("branch") != branch:
-                block("NON_SESSION_BRANCH_MUST_BE_PRESERVED", *key); continue
+            if not old.get("retirementAuthorized") or row.get("branch") != old["branch"]:
+                block("BRANCH_RETIREMENT_NOT_AUTHORIZED", *key); continue
             candidates.append({"kind": key[0], "id": key[1], "dirty": bool(row.get("dirty"))})
     for key in expected.keys() - seen:
         block("REVIEWED_ROOT_MISSING", *key)

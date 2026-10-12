@@ -24,6 +24,19 @@ fail() {
 source "${SCRIPT_DIR}/install-agent-run-worker-v1.sh"
 require_root() { :; }
 chown() { :; }
+[[ "$CHANGE_ONLY_CLEANUP" == /usr/local/libexec/atenea/change-only-resource-cleanup-v1.py \
+    && "$CHANGE_ONLY_PLAN" == /usr/local/libexec/atenea/change-only-resource-plan-v1.py \
+    && "$CHANGE_ONLY_MANIFEST" == /usr/local/libexec/atenea/change-only-resource-manifest-v1.json ]] \
+  || fail "change-only cleanup install paths are not fixed"
+[[ "$(declare -f apply_install)" == *'"$SCRIPT_DIR/change-only-resource-cleanup-v1.py" "$CHANGE_ONLY_CLEANUP"'* \
+    && "$(declare -f verify)" == *'"change-only-resource-cleanup-v1.py:$CHANGE_ONLY_CLEANUP:755"'* ]] \
+  || fail "installer does not install/verify the operator-only cleanup"
+if [[ "$(declare -f apply_install)" == *'"$CHANGE_ONLY_CLEANUP" --apply'* \
+    || "$(declare -f verify_project_runner_sudoers)" == *'change-only-resource-cleanup'* ]]; then
+  fail "installer invokes or delegates destructive cleanup"
+fi
+[[ -f "$SCRIPT_DIR/../../runtime-contract/change-only-resource-cleanup-receipt-v1.schema.json" ]] \
+  || fail "versioned cleanup receipt contract is absent"
 [[ "$CODEX_RUNTIME_ACCESS" == /usr/local/libexec/atenea/codex-release-runtime-access-v1.py \
     && "$(sha256sum "$SCRIPT_DIR/codex-release-runtime-access-v1.py" | cut -d' ' -f1)" \
       == "$CODEX_RUNTIME_ACCESS_SHA256" ]] || fail "closed runtime access procedure is not exact"
