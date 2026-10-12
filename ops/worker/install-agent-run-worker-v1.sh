@@ -81,7 +81,7 @@ PROJECT_MOBILE_SOURCE_PREDECESSOR_COMMIT="847a2f240e3d64af2cf3f166ff3c70ad7cc849
 PROJECT_MOBILE_SOURCE_TARGET_COMMIT="07fdf9f56333ff8002450d7bc2719ac4000fe4a7"
 PROJECT_MOBILE_SOURCE_PREDECESSOR_SHA256="beb08afbab13a65d46ad6b80f8a8df2368391521daaaffc39d6cecb413d3baf0"
 PROJECT_MOBILE_SOURCE_TARGET_SHA256="c6d651e15fdd103df2cef306844f21384510c9f509f3b99cb26423e875266c0c"
-PROJECT_WS19_RETIRED_CONFIG_SHA256="50805b72b26e91bd7e5fea9a69a732a92339c89713b43e8d4ebb957e71a25d82"
+PROJECT_CHANGE_ONLY_CONFIG_SHA256="50805b72b26e91bd7e5fea9a69a732a92339c89713b43e8d4ebb957e71a25d82"
 PROJECT_MIRROR="/srv/atenea/repositories/atenea.git"
 PROJECT_MIRROR_GROUP="atenea"
 PROJECT_MIRROR_SHARED_REPOSITORY="0660"
@@ -886,10 +886,10 @@ verify_project_mobile_source_state() {
   commit="$(observe_project_commit)"
   fingerprint="$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)"
   if [[ "$commit" == "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" \
-      && "$fingerprint" == "$PROJECT_WS19_RETIRED_CONFIG_SHA256" ]]; then
+      && "$fingerprint" == "$PROJECT_CHANGE_ONLY_CONFIG_SHA256" ]]; then
     [[ "$(git --git-dir="$PROJECT_MIRROR" config --get remote.origin.url)" == "$PROJECT_REPOSITORY" ]] \
-      || fail "retired WS19 canonical mirror remote is foreign"
-    verify_project_ws19_retirement_evidence
+      || fail "change-owned canonical mirror remote is foreign"
+    verify_project_change_only_configuration
     verify_no_non_terminal_project_operations
     return 0
   fi
@@ -911,10 +911,24 @@ verify_project_mobile_source_state() {
   verify_no_non_terminal_project_operations
 }
 
-verify_project_ws19_retirement_evidence() {
-  # Read-only fixed-root verifier; no client-supplied paths or request body.
-  python3 "$SCRIPT_DIR/atenea-workspace-release-v1.py" --verify-retained-ws19 >/dev/null \
-    || fail "retired WS19 durable evidence or preserved draft is invalid"
+verify_project_change_only_configuration() {
+  # The live root-owned v4-only authority is independent of retired test owners.
+  # No historic workspace, journal or draft may be needed to verify this state.
+  [[ "$#" -eq 0 ]] || fail "change-only verification accepts no arguments"
+  verify_project_config_file_identity
+  [[ "$(sha256sum "$PROJECT_CONFIG" | cut -d' ' -f1)" == "$PROJECT_CHANGE_ONLY_CONFIG_SHA256" ]] \
+    || fail "change-only configuration bytes are not the reviewed authority"
+  jq -e --arg commit "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" \
+    --arg repository "$PROJECT_REPOSITORY" --arg runner "$PROJECT_RUNNER" \
+    --arg attachment_root "$ATTACHMENT_ROOT" --arg manifest "$PROJECT_MANIFEST_SHA256" '
+      .schemaVersion == "project-codex-v1" and .projectId == "atenea" and
+      .repository == $repository and .branch == "main" and .commit == $commit and
+      .runner == $runner and .attachmentRoot == $attachment_root and
+      .manifestSha256 == $manifest and .selectionEnabled == false and
+      .executionEnabled == true and .workspaces == {}
+    ' "$PROJECT_CONFIG" >/dev/null || fail "change-only configuration is incoherent"
+  [[ "$(observe_project_commit)" == "$PROJECT_MOBILE_SOURCE_TARGET_COMMIT" ]] \
+    || fail "change-only canonical mirror moved"
 }
 
 project_source_sync_check() {

@@ -1523,38 +1523,36 @@ if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
   fail "mobile source support accepted changed registry bytes"
 fi
 cp "$MOBILE_SOURCE_AFTER" "$PROJECT_CONFIG"
-RETIRED_VERIFIER_DEFINITION="$(declare -f verify_project_ws19_retirement_evidence)"
-[[ "$RETIRED_VERIFIER_DEFINITION" == *'--verify-retained-ws19'* ]] \
-  || fail "installer does not require the closed retirement evidence verifier"
-WS19_RETIRED_PROOF="${TEST_ROOT}/ws19-retired-proof"
-verify_project_ws19_retirement_evidence() {
-  [[ -f "$WS19_RETIRED_PROOF" && "$(cat "$WS19_RETIRED_PROOF")" == REVIEWED_RELEASED_PROOF ]] \
-    || fail "fixture retirement proof is absent or partial"
-}
-WS19_RETIRED_CONFIG="${TEST_ROOT}/ws19-retired-config.json"
-jq -cS '.workspaces={}' "$MOBILE_SOURCE_AFTER" >"$WS19_RETIRED_CONFIG"
-PROJECT_WS19_RETIRED_CONFIG_SHA256="$(sha256sum "$WS19_RETIRED_CONFIG" | cut -d' ' -f1)"
-cp "$WS19_RETIRED_CONFIG" "$PROJECT_CONFIG"
-if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
-  fail "installer accepted retired configuration without durable proof"
+# Change-only installation cannot require an obsolete owner's source or journal.
+if declare -F verify_project_ws19_retirement_evidence >/dev/null; then
+  fail "installer still depends on the retired WS19 proof"
 fi
-printf 'PARTIAL_PROOF\n' >"$WS19_RETIRED_PROOF"
-if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
-  fail "installer accepted partial WS19 retirement"
-fi
-printf 'REVIEWED_RELEASED_PROOF\n' >"$WS19_RETIRED_PROOF"
-RETIRED_PREFLIGHT="$(project_config_install_preflight)"
-[[ "$RETIRED_PREFLIGHT" == "mobile-source-retain:$PROJECT_WS19_RETIRED_CONFIG_SHA256" ]] \
-  || fail "installer did not retain retired WS19 with proven v4 state"
-project_config_install_finalize "$RETIRED_PREFLIGHT"
-cmp -s "$PROJECT_CONFIG" "$WS19_RETIRED_CONFIG" || fail "installer changed retired configuration"
+CHANGE_ONLY_CONFIG="${TEST_ROOT}/change-only-config.json"
+jq -cS '.workspaces={}' "$MOBILE_SOURCE_AFTER" >"$CHANGE_ONLY_CONFIG"
+PROJECT_CHANGE_ONLY_CONFIG_SHA256="$(sha256sum "$CHANGE_ONLY_CONFIG" | cut -d' ' -f1)"
+cp "$CHANGE_ONLY_CONFIG" "$PROJECT_CONFIG"
+project_source_sync_check
+CHANGE_ONLY_PREFLIGHT="$(project_config_install_preflight)"
+[[ "$CHANGE_ONLY_PREFLIGHT" == "mobile-source-retain:$PROJECT_CHANGE_ONLY_CONFIG_SHA256" ]] \
+  || fail "installer did not retain the exact change-only authority"
+project_config_install_finalize "$CHANGE_ONLY_PREFLIGHT"
+cmp -s "$PROJECT_CONFIG" "$CHANGE_ONLY_CONFIG" || fail "installer changed current authority"
 verify_project_runtime_state
-jq '.executionEnabled=false' "$PROJECT_CONFIG" >"${TEST_ROOT}/foreign-retired-config"
-cp "${TEST_ROOT}/foreign-retired-config" "$PROJECT_CONFIG"
-if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
-  fail "installer accepted retired WS19 with v4 disabled"
+if ( verify_project_change_only_configuration /tmp/untrusted ) >/dev/null 2>&1; then
+  fail "change-only verifier accepted caller arguments"
 fi
-eval "$RETIRED_VERIFIER_DEFINITION"
+for field in selectionEnabled executionEnabled; do
+  jq --arg field "$field" '.[$field] = (if $field == "selectionEnabled" then true else false end)' \
+    "$CHANGE_ONLY_CONFIG" >"$PROJECT_CONFIG"
+  if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+    fail "installer accepted an incompatible change-only gate"
+  fi
+done
+cp "$CHANGE_ONLY_CONFIG" "$PROJECT_CONFIG"
+printf '\n' >>"$PROJECT_CONFIG"
+if ( verify_project_mobile_source_state ) >/dev/null 2>&1; then
+  fail "installer accepted unreviewed change-only bytes"
+fi
 cp "$MOBILE_SOURCE_AFTER" "$PROJECT_CONFIG"
 jq '.executions.active = {status: "RUNNING"}' "$STATE_DIR/executions.json" \
   >"$STATE_DIR/executions.changed"
