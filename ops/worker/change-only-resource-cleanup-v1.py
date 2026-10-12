@@ -446,6 +446,8 @@ class Cleanup:
             p.require(self.journal.get("operation") == OPERATION and self.journal.get("manifestSha256") == p.MANIFEST_SHA256, "RECOVERY_IDENTITY_MOVED")
         else:
             before = self.host.capture()
+            p.require(all(Path(path).stat().st_dev == self.archive.stat().st_dev for path in before["paths"]),
+                      "RETIREMENT_FILESYSTEM_REQUIRES_REVIEW")
             self.journal = {"schemaVersion": "change-only-resource-cleanup-journal-v1", "operation": OPERATION,
                             "manifestSha256": p.MANIFEST_SHA256, "state": "IN_PROGRESS", "before": before,
                             "archives": {}, "bundles": {}, "done": [], "pending": None,
