@@ -1666,6 +1666,8 @@ class RetainedWs19RetirementTest(unittest.TestCase):
         projection=self.operator.build_projection(self.request)
         projection["retainedOwner"]["canonicalCommit"]="f"*40
         with self.assertRaises(MODULE.PreflightRejected): MODULE.validate_release_preflight(self.request,projection)
+        projection["retainedOwner"] = None
+        with self.assertRaises(MODULE.PreflightRejected): MODULE.validate_release_preflight(self.request,projection)
         self.draft.chmod(0o666)
         with self.assertRaises(MODULE.PreflightRejected): self.operator.build_projection(self.request)
 

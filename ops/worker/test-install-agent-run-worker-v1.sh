@@ -158,7 +158,7 @@ fi
     == "${WORKSPACE_RELEASER_SHA256}" ]] \
   || fail "Atenea workspace releaser fingerprint is stale"
 [[ "${WORKSPACE_RELEASER_SHA256}" \
-    == "45378f57fc2ded6e9ff7bc076c0468bb1a97bce99784a7f00c53a4372e29ed1c" ]] \
+    == "5077cad0801ff7b7f8f33d2e9133dc57d529c2e918134550ca2a56fa0ab98eb1" ]] \
   || fail "workspace releaser promotion fingerprint is not exact"
 [[ "$WORKSPACE_RELEASER_PREDECESSOR_SHA256" == "aa02b2a7d2179c5607666e3f4a2150d917f37da12e3ab3f12965594ceabfc3f4" ]] \
   || fail "workspace releaser upgrade does not pin the installed predecessor"

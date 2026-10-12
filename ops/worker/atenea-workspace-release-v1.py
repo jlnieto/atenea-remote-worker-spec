@@ -90,9 +90,9 @@ def _ws19_proof() -> dict[str, str]:
 
 
 def _retained_ws19(request: dict, projection: dict) -> bool:
-    proof = projection.get("retainedOwner")
-    if proof is None:
+    if "retainedOwner" not in projection:
         return False
+    proof = projection["retainedOwner"]
     if ("changeKey" in request or request["sessionId"] != WS19_SESSION
             or request["commit"] != WS19_COMMIT or proof != _ws19_proof()):
         _reject()
