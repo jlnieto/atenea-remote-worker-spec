@@ -1,0 +1,980 @@
+{
+  "schemaVersion": "change-only-resource-manifest-v1",
+  "operation": "change-only-20261012",
+  "preservedChangeKey": "59315b6e-59bc-4884-9def-356e1ca86ef4",
+  "trialSessionIds": [
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    19,
+    20
+  ],
+  "trialRemoteSessionIds": {
+    "4": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64",
+    "6": "c750641d-3226-44c3-81dc-d9149aac0de1",
+    "7": "83356a20-421c-4d5f-8de6-05c98cce1c32",
+    "8": "4dd2b77d-bd2f-4569-a5bd-3cd788541cd1",
+    "9": "f8b7bd8d-5708-4c76-b206-e76d61fd8a89",
+    "10": "6e54c056-f55a-44a6-b5fb-4fefbf7b247f",
+    "11": "2d98d762-7d9b-4cc1-948f-5e6353dc8b76",
+    "12": "075a8163-fced-43b6-8a5f-4b09ee7ee341",
+    "13": "707c58a1-5105-45be-b7b7-bebd9bf8ab8e",
+    "14": "8497e4e4-951e-477a-b457-cf91d341eed8",
+    "15": "c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7",
+    "16": "7151dce0-69ab-4614-86e4-f93f1af825e4",
+    "17": "18c00753-6080-42f7-ac05-18c47b236cac",
+    "19": "6547081d-895e-4be1-a8fd-d115b7743cdf",
+    "20": "31f8c4bf-13bc-41ed-acd4-c7c7d45b92f5"
+  },
+  "trialChangeKeys": [
+    "707d87b1-2b04-4406-a3c5-a8f9f8c709e7",
+    "80c6340d-07b1-4304-8460-d3d3bafdffc8",
+    "97f9901e-bccb-4cd8-97d8-8a9cb15f1054",
+    "a1d00112-6b4f-4923-bcf5-6048fdfbb308",
+    "a4167871-9106-4041-b1c9-d6a2c101ca15"
+  ],
+  "projectConfigurationSha256": "50805b72b26e91bd7e5fea9a69a732a92339c89713b43e8d4ebb957e71a25d82",
+  "mirrorConfigurationSha256": {
+    "database-mariadb.git": "0962ac4fba2b647eb92bd33b22644bc9ae7d0e47c3b50d425c8631edb1400030",
+    "atenea.git": "ddef0dcca221dc6fbe3bb30ace074361e47049064ac1946dbe3286b38f6c61f9",
+    "database-postgresql.git": "8e0ad429d150c8f30c114ceabb7d0e37f376c10856851c18eec5482bfe53f91c",
+    "beautips.git": "54c8da586587dd85f2977e036cb1e18e31ecf400085c1ae35812b8d2f3a6a7fc",
+    "phase6-dummy-tomcat-80b54495-88cf-4354-b1e4-aada1921644a.git": "56222a37d6c6b4398bc03c4364e736c2d1929f9597df531517ae9db059914a60"
+  },
+  "reviewedRoots": [
+    {
+      "kind": "sessions",
+      "id": "0fd2c888-07f0-4a47-a762-0eae444a166a",
+      "projectId": "database-mariadb",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "9b4846f28beb31c124cb2c25d86338390a715b21cce600e14f7b8b07f4fbafc6",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "1e0ac9e42051cac6b768f09de8ad65507fd09791",
+      "branch": "refs/heads/worksession/phase7-mariadb-0fd2c888",
+      "dirty": false,
+      "mirrorName": "database-mariadb.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/0fd2c888-07f0-4a47-a762-0eae444a166a.json",
+        "/srv/atenea/artifacts/sessions/0fd2c888-07f0-4a47-a762-0eae444a166a",
+        "/srv/atenea/caches/sessions/0fd2c888-07f0-4a47-a762-0eae444a166a"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "18c00753-6080-42f7-ac05-18c47b236cac",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "97b41b63e425eb483175b96bce875ac3190300cedb089b176aa2fdaedd515cbb",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "615e539d1f2622a4ac2568ba7697b876d49ae33e",
+      "branch": "refs/heads/atenea/session-18c00753-6080-42f7-ac05-18c47b236cac",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/attachments-v1/work-sessions/18c00753-6080-42f7-ac05-18c47b236cac"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "1e452a4a-8b06-40a6-837e-952bcaa74c7e",
+      "projectId": "database-postgresql",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "4aaf21c490869d8d5a6ded317f07958fb8e428e681e18e7883f1031ed87cbdbb",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "102057745733de264b335a1ae77a0b6c3268c54d",
+      "branch": "refs/heads/worksession/phase7-postgresql-1e452a4a",
+      "dirty": false,
+      "mirrorName": "database-postgresql.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/1e452a4a-8b06-40a6-837e-952bcaa74c7e.json",
+        "/srv/atenea/artifacts/sessions/1e452a4a-8b06-40a6-837e-952bcaa74c7e",
+        "/srv/atenea/caches/sessions/1e452a4a-8b06-40a6-837e-952bcaa74c7e"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64",
+      "projectId": "beautips",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.json": {
+          "sha256": "cef83e77c18ffb0e47a0acd735481fc27a9df1c2d5f1425bacde1688aea8b924",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "f643cdc97fa313873381e77d955862b81adb27e85f59cd878f109b526eb73161",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "b2f798e0ae3dec1b43bbfe4189aeadddd6287db8",
+      "branch": "refs/heads/ax42-beautips-wip-preservation-2ac2a5fd",
+      "dirty": false,
+      "mirrorName": "beautips.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/2ac2a5fd-2981-49cf-8fac-8132e46a2d64.json",
+        "/srv/atenea/artifacts/sessions/2ac2a5fd-2981-49cf-8fac-8132e46a2d64",
+        "/srv/atenea/caches/sessions/2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "2d98d762-7d9b-4cc1-948f-5e6353dc8b76",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "4ca527500e94573324a082cad6803b565bfec82a1fb5b52885853503af4b255b",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "9ead502a0a9389dd8529cc25288fd7f334ebd40dd3666240f6d4ac84fa47b1ee",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "branch": "refs/heads/atenea/session-2d98d762-7d9b-4cc1-948f-5e6353dc8b76",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/2d98d762-7d9b-4cc1-948f-5e6353dc8b76.json",
+        "/srv/atenea/artifacts/sessions/2d98d762-7d9b-4cc1-948f-5e6353dc8b76",
+        "/srv/atenea/caches/sessions/2d98d762-7d9b-4cc1-948f-5e6353dc8b76"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "41c0ff95-e555-4773-b7b4-60903a3af1ad",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "c4e45ac8ff834d68cddd385ec95699702b1df0ec7d574154b6dc8654fd592f13",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "8ee6237d0eb4c3bba0b3ccdc8ec9c0fb49550180bfebf921dc1ad70d75e4928e",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "b6dc854d94ba5b1976926656c9a6aba330f671e2",
+      "branch": "refs/heads/atenea/session-41c0ff95-e555-4773-b7b4-60903a3af1ad",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/41c0ff95-e555-4773-b7b4-60903a3af1ad.json",
+        "/srv/atenea/artifacts/sessions/41c0ff95-e555-4773-b7b4-60903a3af1ad",
+        "/srv/atenea/caches/sessions/41c0ff95-e555-4773-b7b4-60903a3af1ad"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "4dd2b77d-bd2f-4569-a5bd-3cd788541cd1",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "a119f565fec33c808abe5a6751a30eca4c8c8fff23bda713a0d550a3b578228c",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "aed6cb4e5f9dfbd748e03dacb4e273d2781cd77a",
+      "branch": "refs/heads/atenea/session-4dd2b77d-bd2f-4569-a5bd-3cd788541cd1",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "sessions",
+      "id": "6375c738-99da-4ef3-91f5-21e30d3b27d3",
+      "projectId": "beautips",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "0e46cc38968509fbdd6585e3741f8c8e1eecb32f0161139400ec923780f49dbc",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "e5c90a84f1abfe612b461522f11e87ca8b45a536c85b1f0a0bce4c2a72e950a7",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "03f77b0389f5303153c47bc3f890b1e0e9e92eb8",
+      "branch": "refs/heads/atenea/session-6375c738-99da-4ef3-91f5-21e30d3b27d3",
+      "dirty": false,
+      "mirrorName": "beautips.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/6375c738-99da-4ef3-91f5-21e30d3b27d3.json",
+        "/srv/atenea/artifacts/sessions/6375c738-99da-4ef3-91f5-21e30d3b27d3",
+        "/srv/atenea/caches/sessions/6375c738-99da-4ef3-91f5-21e30d3b27d3",
+        "/srv/atenea/attachments-v1/work-sessions/6375c738-99da-4ef3-91f5-21e30d3b27d3"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "6547081d-895e-4be1-a8fd-d115b7743cdf",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "08db92551da4cdf7cc2d082cf43150b41cd118a7ed0602a54945747495f26d87",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "3cde263630712c311c2c951900ca3d5b4f3d35b54a54ad06bae9c5b7ba580ec7",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5",
+      "branch": "refs/heads/atenea/session-6547081d-895e-4be1-a8fd-d115b7743cdf",
+      "dirty": true,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/6547081d-895e-4be1-a8fd-d115b7743cdf.json",
+        "/srv/atenea/worker/workspace-release-v1/sessions/6547081d-895e-4be1-a8fd-d115b7743cdf",
+        "/srv/atenea/artifacts/sessions/6547081d-895e-4be1-a8fd-d115b7743cdf",
+        "/srv/atenea/caches/sessions/6547081d-895e-4be1-a8fd-d115b7743cdf",
+        "/srv/atenea/attachments-v1/work-sessions/6547081d-895e-4be1-a8fd-d115b7743cdf"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "707c58a1-5105-45be-b7b7-bebd9bf8ab8e",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "d5006a1c0707eb61af29999cb0291c3fae2078042cd3f6115e56b98d919d9df2",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "64a283d03546b3668fb3b18f95d478a2c0f91715a0d361c2edaf9d928eb16a4c",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "branch": "refs/heads/atenea/session-707c58a1-5105-45be-b7b7-bebd9bf8ab8e",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/707c58a1-5105-45be-b7b7-bebd9bf8ab8e.json",
+        "/srv/atenea/artifacts/sessions/707c58a1-5105-45be-b7b7-bebd9bf8ab8e",
+        "/srv/atenea/caches/sessions/707c58a1-5105-45be-b7b7-bebd9bf8ab8e",
+        "/srv/atenea/attachments-v1/work-sessions/707c58a1-5105-45be-b7b7-bebd9bf8ab8e"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "7151dce0-69ab-4614-86e4-f93f1af825e4",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "af69156b9a6935cb11c96e0b7bdd73b950ec97959281a97b870bdad0c691a80f",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "6014606bb884c808a8f9603b9eb86aa7fc65c785fae59bd45a4caf468f0e065c",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "615e539d1f2622a4ac2568ba7697b876d49ae33e",
+      "branch": "refs/heads/atenea/session-7151dce0-69ab-4614-86e4-f93f1af825e4",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/7151dce0-69ab-4614-86e4-f93f1af825e4.json",
+        "/srv/atenea/worker/workspace-release-v1/sessions/7151dce0-69ab-4614-86e4-f93f1af825e4",
+        "/srv/atenea/artifacts/sessions/7151dce0-69ab-4614-86e4-f93f1af825e4",
+        "/srv/atenea/caches/sessions/7151dce0-69ab-4614-86e4-f93f1af825e4"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "80b54495-88cf-4354-b1e4-aada1921644a",
+      "projectId": "dummy-tomcat",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "a2db380d9491706e5a73f9a40bd211221770e70ad0176d47684292b77633ff80",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "426ec3642e5e9e6c39d58f938309570b499bdaad",
+      "branch": "refs/heads/atenea/session-80b54495-88cf-4354-b1e4-aada1921644a",
+      "dirty": false,
+      "mirrorName": "phase6-dummy-tomcat-80b54495-88cf-4354-b1e4-aada1921644a.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/80b54495-88cf-4354-b1e4-aada1921644a.json",
+        "/srv/atenea/artifacts/sessions/80b54495-88cf-4354-b1e4-aada1921644a",
+        "/srv/atenea/caches/sessions/80b54495-88cf-4354-b1e4-aada1921644a"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "83356a20-421c-4d5f-8de6-05c98cce1c32",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "c4425a8ca00247e97c33ca1718606c5c0d7310ee82cb57ee56b0c6ddac3da3f1",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "489d41e00cf210d23c8dc2733fb5810c7b46dbaebb54e4a7a93bc2ccd38af127",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "ec867f75bd4bb58f582607cf0025a003400f02c8",
+      "branch": "refs/heads/atenea/session-83356a20-421c-4d5f-8de6-05c98cce1c32",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/83356a20-421c-4d5f-8de6-05c98cce1c32.json",
+        "/srv/atenea/artifacts/sessions/83356a20-421c-4d5f-8de6-05c98cce1c32",
+        "/srv/atenea/caches/sessions/83356a20-421c-4d5f-8de6-05c98cce1c32"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "8497e4e4-951e-477a-b457-cf91d341eed8",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "ebc691bec22ab966e887915e59817a014a2a6e7703eeaa27d8fa3a92b489fa86",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "dbd375bd1b6e69b88c2b6a6c7a297554957b2796fe2af0b0d6a31c31c993d284",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "branch": "refs/heads/atenea/session-8497e4e4-951e-477a-b457-cf91d341eed8",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/8497e4e4-951e-477a-b457-cf91d341eed8.json",
+        "/srv/atenea/artifacts/sessions/8497e4e4-951e-477a-b457-cf91d341eed8",
+        "/srv/atenea/caches/sessions/8497e4e4-951e-477a-b457-cf91d341eed8",
+        "/srv/atenea/attachments-v1/work-sessions/8497e4e4-951e-477a-b457-cf91d341eed8"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "c20f3cde-9a64-4c7b-a674-7b63f94ca475",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.json": {
+          "sha256": "bd45cac9d22f03ccdf2ef0d2759d850e6200c094953e8d37f419160c5e961e29",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "3461a3b3215c4273c8974e932c19cf418d68ea07216d62a3e465a59d8f15e9fe",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "0230c6b973692205ed9a17f8015cd151269d8080",
+      "branch": "refs/heads/atenea/session-c20f3cde-9a64-4c7b-a674-7b63f94ca475",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/c20f3cde-9a64-4c7b-a674-7b63f94ca475.json",
+        "/srv/atenea/artifacts/sessions/c20f3cde-9a64-4c7b-a674-7b63f94ca475",
+        "/srv/atenea/caches/sessions/c20f3cde-9a64-4c7b-a674-7b63f94ca475",
+        "/srv/atenea/attachments-v1/work-sessions/c20f3cde-9a64-4c7b-a674-7b63f94ca475"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "c750641d-3226-44c3-81dc-d9149aac0de1",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "f143453718f4c8758665a02986ce44c607feff3f44cc0971100fb63ab4ac1cac",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "fef987207c42ea02cc9dc666b8978d5619cc155a128182e9cb3a18a5ff158261",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "d5ea39e7b575b63c6fff3a66a0400c5af5e9ff2b",
+      "branch": "refs/heads/atenea/session-c750641d-3226-44c3-81dc-d9149aac0de1",
+      "dirty": true,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/c750641d-3226-44c3-81dc-d9149aac0de1.json",
+        "/srv/atenea/artifacts/sessions/c750641d-3226-44c3-81dc-d9149aac0de1",
+        "/srv/atenea/caches/sessions/c750641d-3226-44c3-81dc-d9149aac0de1"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "89fe98bfb3afb0d4d2c0007c22c5636669f0d3b77bfc588732992bbdb95a2a35",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "5b0c23e79d62d75473090c00ec9e550eb111c5cc2673020895449212d089f558",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "branch": "refs/heads/atenea/session-c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7.json",
+        "/srv/atenea/artifacts/sessions/c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7",
+        "/srv/atenea/caches/sessions/c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7",
+        "/srv/atenea/attachments-v1/work-sessions/c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7"
+      ]
+    },
+    {
+      "kind": "sessions",
+      "id": "f8b7bd8d-5708-4c76-b206-e76d61fd8a89",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "runtime-allocation-v1.retired.json": {
+          "sha256": "114c73b1e11891f7b7034c3ad9530e9065823c4064d3d138e4a06ccdbeac2419",
+          "uid": 999,
+          "mode": "0o640"
+        },
+        "workspace-v1.json": {
+          "sha256": "dd92c92d6a5a4b185fe5e423776d429a94e2c0f1a23afd2b3fae6dcc01cd2212",
+          "uid": 999,
+          "mode": "0o640"
+        }
+      },
+      "head": "3615d29b8ddf20830289051bb7539c223296fbf7",
+      "branch": "refs/heads/atenea/session-f8b7bd8d-5708-4c76-b206-e76d61fd8a89",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": [
+        "/srv/atenea/worker/runtime-admission-v1/records/f8b7bd8d-5708-4c76-b206-e76d61fd8a89.json",
+        "/srv/atenea/artifacts/sessions/f8b7bd8d-5708-4c76-b206-e76d61fd8a89",
+        "/srv/atenea/caches/sessions/f8b7bd8d-5708-4c76-b206-e76d61fd8a89"
+      ]
+    },
+    {
+      "kind": "changes",
+      "id": "310b7ac7-8b88-49e9-8fa9-5428a7c90c97",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "f0c5febba30236b6438c7c6e6b0f549a8fea1bc040c70a467f2f415ba0663c68",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "4baa91edd89d28a9686933db03473460a82d9312",
+      "branch": "refs/heads/atenea/change-310b7ac7-8b88-49e9-8fa9-5428a7c90c97",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "changes",
+      "id": "59315b6e-59bc-4884-9def-356e1ca86ef4",
+      "projectId": "atenea",
+      "disposition": "PRESERVE",
+      "records": {
+        "branch-publication-v1.json": {
+          "sha256": "beaa65864edb0fdd3e56c4ff566f359d72f9108145376d56ab23c02a69ecd1b9",
+          "uid": 999,
+          "mode": "0o600"
+        },
+        "source-finalization-v1.json": {
+          "sha256": "779accbbcf226f46a698c66aab8d224513879667693472ce9590669789570220",
+          "uid": 999,
+          "mode": "0o600"
+        },
+        "source-main-recovery-af9f294d-60a4-4fdc-af68-1708c38d6616-07fdf9f56333ff8002450d7bc2719ac4000fe4a7-d364ccef201526821b65600dd7301a90586eeb9a-v1.json": {
+          "sha256": "0c4620d8b05244aec543d46b5ea19a7c783ccb9f2df672ae601ae186b912cfe4",
+          "uid": 999,
+          "mode": "0o600"
+        },
+        "source-update-v1.json": {
+          "sha256": "e92ee81e430bca0f145b9f46924b920247e62204469ac92b45acd972c77bbbde",
+          "uid": 999,
+          "mode": "0o600"
+        },
+        "workspace-v1.json": {
+          "sha256": "f8bfec8dc81547a99c2f06536792a24f95ff46e8ddba928d3ad0b3727daac225",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "9880dbcb9aefa2da9a1b1d688b55a8e5d2da5b87",
+      "branch": "refs/heads/atenea/change-59315b6e-59bc-4884-9def-356e1ca86ef4",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": false,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "changes",
+      "id": "707d87b1-2b04-4406-a3c5-a8f9f8c709e7",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "branch-publication-v1.json": {
+          "sha256": "e7f8e2fbc99c8ebbad6378eeb35fd4faaba612b8904c75e58ca7cb67470717ed",
+          "uid": 999,
+          "mode": "0o600"
+        },
+        "workspace-v1.json": {
+          "sha256": "149233dbdce5a548ac5860cb96c187c47b725277082d46c9cb8eea174eb5e871",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "3d5f1569d6ecd50275a663995726da737a2f7cfc",
+      "branch": "refs/heads/atenea/change-707d87b1-2b04-4406-a3c5-a8f9f8c709e7",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "changes",
+      "id": "80c6340d-07b1-4304-8460-d3d3bafdffc8",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "a013fb2f8002ffc76f79a7da3f2b2bf72974ec75c606f42e8bedd22ad340bbc8",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5",
+      "branch": "refs/heads/atenea/change-80c6340d-07b1-4304-8460-d3d3bafdffc8",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "changes",
+      "id": "89850ce1-c217-4b0e-b02b-4216864d3541",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "29e40437f478e4d9d1520dcb7e56c75f475862a42ee6ff49bcec355f72d5d244",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "4baa91edd89d28a9686933db03473460a82d9312",
+      "branch": "refs/heads/atenea/change-89850ce1-c217-4b0e-b02b-4216864d3541",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "changes",
+      "id": "97f9901e-bccb-4cd8-97d8-8a9cb15f1054",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "73eaff9a2e1e7eb75e364138691b70580797d4f0b354c582315dd22511f85f15",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5",
+      "branch": "refs/heads/atenea/change-97f9901e-bccb-4cd8-97d8-8a9cb15f1054",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    },
+    {
+      "kind": "changes",
+      "id": "b65ddd19-5e7e-4ef5-ab1e-e75af1e83608",
+      "projectId": "atenea",
+      "disposition": "TRIAL",
+      "records": {
+        "workspace-v1.json": {
+          "sha256": "f3b763b1a7bd57b5a1cf0babd87827cbbf3b8d984979cca2658ccc2564951931",
+          "uid": 999,
+          "mode": "0o600"
+        }
+      },
+      "head": "c3ebc2e9d252abe86ff85cb45e97e458b3a826e7",
+      "branch": "refs/heads/atenea/change-b65ddd19-5e7e-4ef5-ab1e-e75af1e83608",
+      "dirty": false,
+      "mirrorName": "atenea.git",
+      "retirementAuthorized": true,
+      "ancillaryPaths": []
+    }
+  ],
+  "retireBranchRefs": {
+    "atenea.git": {
+      "refs/heads/atenea/change-310b7ac7-8b88-49e9-8fa9-5428a7c90c97": "4baa91edd89d28a9686933db03473460a82d9312",
+      "refs/heads/atenea/change-707d87b1-2b04-4406-a3c5-a8f9f8c709e7": "3d5f1569d6ecd50275a663995726da737a2f7cfc",
+      "refs/heads/atenea/change-80c6340d-07b1-4304-8460-d3d3bafdffc8": "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5",
+      "refs/heads/atenea/change-89850ce1-c217-4b0e-b02b-4216864d3541": "4baa91edd89d28a9686933db03473460a82d9312",
+      "refs/heads/atenea/change-97f9901e-bccb-4cd8-97d8-8a9cb15f1054": "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5",
+      "refs/heads/atenea/change-b65ddd19-5e7e-4ef5-ab1e-e75af1e83608": "c3ebc2e9d252abe86ff85cb45e97e458b3a826e7",
+      "refs/heads/atenea/session-18c00753-6080-42f7-ac05-18c47b236cac": "615e539d1f2622a4ac2568ba7697b876d49ae33e",
+      "refs/heads/atenea/session-2d98d762-7d9b-4cc1-948f-5e6353dc8b76": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "refs/heads/atenea/session-41c0ff95-e555-4773-b7b4-60903a3af1ad": "b6dc854d94ba5b1976926656c9a6aba330f671e2",
+      "refs/heads/atenea/session-4dd2b77d-bd2f-4569-a5bd-3cd788541cd1": "aed6cb4e5f9dfbd748e03dacb4e273d2781cd77a",
+      "refs/heads/atenea/session-6547081d-895e-4be1-a8fd-d115b7743cdf": "e4287dbc9a6a3545e6e1d0eda3b488e4a8e8edd5",
+      "refs/heads/atenea/session-707c58a1-5105-45be-b7b7-bebd9bf8ab8e": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "refs/heads/atenea/session-7151dce0-69ab-4614-86e4-f93f1af825e4": "615e539d1f2622a4ac2568ba7697b876d49ae33e",
+      "refs/heads/atenea/session-83356a20-421c-4d5f-8de6-05c98cce1c32": "ec867f75bd4bb58f582607cf0025a003400f02c8",
+      "refs/heads/atenea/session-8497e4e4-951e-477a-b457-cf91d341eed8": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "refs/heads/atenea/session-c20f3cde-9a64-4c7b-a674-7b63f94ca475": "0230c6b973692205ed9a17f8015cd151269d8080",
+      "refs/heads/atenea/session-c750641d-3226-44c3-81dc-d9149aac0de1": "d5ea39e7b575b63c6fff3a66a0400c5af5e9ff2b",
+      "refs/heads/atenea/session-c80c1e72-e34f-46b9-ba34-5a9a0c0ad2d7": "8d5acdf9d593a2b0bafbf00fbef1ab2cc11cad9d",
+      "refs/heads/atenea/session-f8b7bd8d-5708-4c76-b206-e76d61fd8a89": "3615d29b8ddf20830289051bb7539c223296fbf7"
+    },
+    "beautips.git": {
+      "refs/heads/atenea/session-2ac2a5fd-2981-49cf-8fac-8132e46a2d64": "e9e0b3c319c518363d4135f5378ebbddced96dfb",
+      "refs/heads/atenea/session-6375c738-99da-4ef3-91f5-21e30d3b27d3": "03f77b0389f5303153c47bc3f890b1e0e9e92eb8",
+      "refs/heads/ax42-beautips-wip-preservation-2ac2a5fd": "b2f798e0ae3dec1b43bbfe4189aeadddd6287db8"
+    },
+    "database-mariadb.git": {
+      "refs/heads/worksession/phase7-mariadb-0fd2c888": "1e0ac9e42051cac6b768f09de8ad65507fd09791"
+    },
+    "database-postgresql.git": {
+      "refs/heads/worksession/phase7-postgresql-1e452a4a": "102057745733de264b335a1ae77a0b6c3268c54d"
+    },
+    "phase6-dummy-tomcat-80b54495-88cf-4354-b1e4-aada1921644a.git": {
+      "refs/heads/atenea/session-80b54495-88cf-4354-b1e4-aada1921644a": "426ec3642e5e9e6c39d58f938309570b499bdaad"
+    }
+  },
+  "beautipsRegistryRetirement": {
+    "before": "87ba464a62af351912407f7fe9fd225d7b9826b1d5c5c6fbe791326f1b5fd0ad",
+    "after": "4fec23ca2c91b912a6859d4f364d7eb0aaaa23924ce45ce5210b49f0b7ba5d7a",
+    "final": {
+      "schemaVersion": "project-codex-v1",
+      "selectionEnabled": false,
+      "executionEnabled": false,
+      "projectId": "beautips",
+      "repository": "https://github.com/jlnieto/beautips.git",
+      "branch": "main",
+      "commit": "e9e0b3c319c518363d4135f5378ebbddced96dfb",
+      "manifestSha256": "365f1c66c51c9018c2c6f48deddbaa619b4588cae2dd463dcd916cde884e2e82",
+      "runner": "/usr/local/libexec/atenea/beautips-project-codex-runner-v1.py",
+      "workspaces": {}
+    }
+  },
+  "changeOnlyVerifierSha256": "4f7813e88abb6f9d8f434012689e6bfc70be39356d1448ab529a5f0559f8f27a",
+  "workerStateSha256": "ba0a539a6c956bf21bdb5cff6658166e719575f92ccef5e42e38613ee1c74b61",
+  "supplementalTrialPaths": [
+    "/srv/atenea/attachments-v1/work-sessions/96061",
+    "/srv/atenea/artifacts/sessions/018f47a2-6b0c-7a31-9c2d-4f5a6b7c8d31",
+    "/srv/atenea/artifacts/sessions/018f47a2-6b0c-7a31-9c2d-4f5a6b7c8d32",
+    "/srv/atenea/artifacts/sessions/018f47a2-6b0c-7a31-9c2d-4f5a6b7c8d33",
+    "/srv/atenea/artifacts/sessions/018f47a2-6b0c-7a31-9c2d-4f5a6b7c8d54",
+    "/srv/atenea/worker/workspace-release-v1/sessions/dd40ea77-523a-4d4d-9a14-08ce4ab83141",
+    "/srv/atenea/worker/workspace-release-v1/sessions/95232b9c-1caf-436e-8fae-9a50baffb8e2",
+    "/srv/atenea/worker/workspace-release-v1/sessions/31f8c4bf-13bc-41ed-acd4-c7c7d45b92f5",
+    "/srv/atenea/worker/session-preview-v1/previews/eeaa6195-322f-43ff-b84b-06fe9d55c430"
+  ],
+  "runtimeResources": [
+    {
+      "driver": "local",
+      "id": "ws-41c0ff95e5554773b7b460903a3af1ad-volume-db-data",
+      "kind": "volume",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "atenea",
+        "com.atenea.runtime": "ws-41c0ff95e5554773b7b460903a3af1ad",
+        "com.atenea.service": "db",
+        "com.atenea.session": "41c0ff95-e555-4773-b7b4-60903a3af1ad"
+      },
+      "mountpoint": "/var/lib/atenea-slots/slot2/.local/share/docker/volumes/ws-41c0ff95e5554773b7b460903a3af1ad-volume-db-data/_data",
+      "name": "ws-41c0ff95e5554773b7b460903a3af1ad-volume-db-data",
+      "options": null,
+      "slot": 2
+    },
+    {
+      "driver": "local",
+      "id": "ws-c20f3cde9a644c7ba6747b63f94ca475-volume-db-data",
+      "kind": "volume",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "atenea",
+        "com.atenea.runtime": "ws-c20f3cde9a644c7ba6747b63f94ca475",
+        "com.atenea.service": "db",
+        "com.atenea.session": "c20f3cde-9a64-4c7b-a674-7b63f94ca475"
+      },
+      "mountpoint": "/var/lib/atenea-slots/slot3/.local/share/docker/volumes/ws-c20f3cde9a644c7ba6747b63f94ca475-volume-db-data/_data",
+      "name": "ws-c20f3cde9a644c7ba6747b63f94ca475-volume-db-data",
+      "options": null,
+      "slot": 3
+    },
+    {
+      "id": "761f9eac7bb2766f76dcb208a7cf0f3de765c5db0276b142ebb5151181502ec5",
+      "image": "sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20",
+      "kind": "container",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "postgres",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mounts": [
+        {
+          "Destination": "/var/lib/postgresql/data",
+          "Name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-postgres-data",
+          "RW": true,
+          "Source": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-postgres-data/_data",
+          "Type": "volume"
+        }
+      ],
+      "name": "/ws-2ac2a5fd298149cf8fac8132e46a2d64-compose-postgres-1",
+      "ports": {
+        "5432/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "25727"
+          }
+        ]
+      },
+      "slot": 4
+    },
+    {
+      "id": "7cad272492e93090e03afee2a0fec530a64ed345c581577f499f2cac1a110522",
+      "image": "sha256:595cc6f2bb3af6e03347b90deb6123c6aa2c81dea05ce08128de8a174b6ac67b",
+      "kind": "container",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "redis",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mounts": [
+        {
+          "Destination": "/data",
+          "Name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-redis-data",
+          "RW": true,
+          "Source": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-redis-data/_data",
+          "Type": "volume"
+        }
+      ],
+      "name": "/ws-2ac2a5fd298149cf8fac8132e46a2d64-compose-redis-1",
+      "ports": {
+        "6379/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "26441"
+          }
+        ]
+      },
+      "slot": 4
+    },
+    {
+      "id": "c082eb937e2a1c11870a9b551fb5569907a35bf35af4da05d4261d191b09a28c",
+      "image": "sha256:afb366761a8dcaa9f209673ff9463b48d9e231e887922c06c63980ef07c60854",
+      "kind": "container",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "app",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mounts": [
+        {
+          "Destination": "/app/data/assets",
+          "Name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-assets-data",
+          "RW": true,
+          "Source": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-assets-data/_data",
+          "Type": "volume"
+        },
+        {
+          "Destination": "/app/data/imports",
+          "Name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-imports-data",
+          "RW": true,
+          "Source": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-imports-data/_data",
+          "Type": "volume"
+        }
+      ],
+      "name": "/ws-2ac2a5fd298149cf8fac8132e46a2d64-compose-app-1",
+      "ports": {
+        "8080/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "25378"
+          }
+        ]
+      },
+      "slot": 4
+    },
+    {
+      "containers": [
+        "761f9eac7bb2766f76dcb208a7cf0f3de765c5db0276b142ebb5151181502ec5",
+        "7cad272492e93090e03afee2a0fec530a64ed345c581577f499f2cac1a110522",
+        "c082eb937e2a1c11870a9b551fb5569907a35bf35af4da05d4261d191b09a28c"
+      ],
+      "driver": "bridge",
+      "id": "4a7a78000a599b28871cf9a63392fca0f0d3ff42d1fc344ef0e18eff21851274",
+      "kind": "network",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "runtime",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-network",
+      "slot": 4
+    },
+    {
+      "driver": "local",
+      "id": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-assets-data",
+      "kind": "volume",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "assets",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mountpoint": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-assets-data/_data",
+      "name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-assets-data",
+      "options": null,
+      "slot": 4
+    },
+    {
+      "driver": "local",
+      "id": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-imports-data",
+      "kind": "volume",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "imports",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mountpoint": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-imports-data/_data",
+      "name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-imports-data",
+      "options": null,
+      "slot": 4
+    },
+    {
+      "driver": "local",
+      "id": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-postgres-data",
+      "kind": "volume",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "postgres",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mountpoint": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-postgres-data/_data",
+      "name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-postgres-data",
+      "options": null,
+      "slot": 4
+    },
+    {
+      "driver": "local",
+      "id": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-redis-data",
+      "kind": "volume",
+      "labels": {
+        "com.atenea.engine": "atenea-runtime-engine-v1",
+        "com.atenea.project": "beautips",
+        "com.atenea.runtime": "ws-2ac2a5fd298149cf8fac8132e46a2d64",
+        "com.atenea.service": "redis",
+        "com.atenea.session": "2ac2a5fd-2981-49cf-8fac-8132e46a2d64"
+      },
+      "mountpoint": "/var/lib/atenea-slots/slot4/.local/share/docker/volumes/ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-redis-data/_data",
+      "name": "ws-2ac2a5fd298149cf8fac8132e46a2d64-volume-redis-data",
+      "options": null,
+      "slot": 4
+    }
+  ]
+}
