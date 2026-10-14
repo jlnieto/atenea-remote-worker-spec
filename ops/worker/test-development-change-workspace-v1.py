@@ -278,6 +278,173 @@ class DevelopmentChangeWorkspaceMediatorTest(unittest.TestCase):
         )
         self.assertEqual(2, listed.count("worktree "))
 
+    def advanced_main(self, name: str = "advanced.txt") -> str:
+        (self.source / name).write_text("approved main\n", encoding="utf-8")
+        self._git("-C", str(self.source), "add", name)
+        self._git("-C", str(self.source), "commit", "-m", "advance approved main")
+        head = self._git("-C", str(self.source), "rev-parse", "HEAD", capture=True).strip()
+        self._git("-C", str(self.source), "push", str(self.remote), "main")
+        return head
+
+    def creation_at(self, head: str, operation: str = "PROVISION") -> dict:
+        request = self.request(operation)
+        request.update(baseCommit=head, sourceCommit=head)
+        request.pop("requestFingerprintSha256")
+        request["requestFingerprintSha256"] = mediator_module.canonical_sha256(request)
+        return request
+
+    def test_missing_approved_base_is_imported_without_moving_refs_or_fetch_head(self) -> None:
+        head = self.advanced_main()
+        refs = self._git(f"--git-dir={self.mirror}", "show-ref", capture=True)
+        fetch_head = self.mirror / "FETCH_HEAD"
+        fetch_head.write_text("retained fetch evidence\n", encoding="utf-8")
+        request = self.creation_at(head)
+        with mock.patch.object(mediator_module.subprocess, "run", wraps=subprocess.run) as run:
+            response = self.mediator.execute(request, "PROVISION")
+        self.assertEqual("OWNED", response["state"])
+        self.assertEqual(head, response["sourceCommit"])
+        self.assertEqual(set(refs.splitlines()) | {f"{head} refs/heads/{request['workspaceBranch']}"},
+                         set(self._git(f"--git-dir={self.mirror}", "show-ref", capture=True).splitlines()))
+        self.assertEqual("retained fetch evidence\n", fetch_head.read_text())
+        fetches = [call for call in run.call_args_list if "fetch" in call.args[0]]
+        self.assertEqual(1, len(fetches))
+        argv = fetches[0].args[0]
+        self.assertEqual([self.mediator.publication_transport, head], argv[-2:])
+        for option in ("--no-tags", "--no-write-fetch-head", "--refmap=", "--no-recurse-submodules"):
+            self.assertIn(option, argv)
+        self.assertNotIn("origin", argv)
+        self.assertIn("GIT_SSH_COMMAND", fetches[0].kwargs["env"])
+        self.assertEqual([], list(self.publication_runtime.iterdir()))
+        record = self.workspaces / self.change_key / "source-admission-v1.json"
+        self.assertEqual(0o600, record.stat().st_mode & 0o777)
+        admission = json.loads(record.read_text())
+        self.assertEqual("APPROVED", admission["state"])
+        self.assertEqual(head, admission["baseCommit"])
+        self.assertEqual(head, admission["observedMainCommit"])
+        self.assertEqual(self.base_commit, admission["retainedMirrorCommit"])
+        self.assertEqual(request["operationId"], admission["operationId"])
+        seal = admission.pop("recordSha256")
+        self.assertEqual(mediator_module.canonical_sha256(admission), seal)
+
+    def test_creation_uses_its_captured_base_when_main_already_advanced_again(self) -> None:
+        captured = self.advanced_main()
+        latest = self.advanced_main("later.txt")
+        response = self.mediator.execute(self.creation_at(captured), "PROVISION")
+        self.assertEqual(captured, response["sourceCommit"])
+        admission = json.loads((self.workspaces / self.change_key / "source-admission-v1.json").read_text())
+        self.assertEqual(latest, admission["observedMainCommit"])
+        self.assertNotEqual(captured, latest)
+        self.assertEqual(self.base_commit, self._git(f"--git-dir={self.mirror}", "rev-parse",
+                                                    "refs/remotes/origin/main", capture=True).strip())
+
+    def test_imported_creation_is_idempotent_without_network_or_evidence_rewrite(self) -> None:
+        request = self.creation_at(self.advanced_main())
+        first = self.mediator.execute(request, "PROVISION")
+        path = self.workspaces / self.change_key / "source-admission-v1.json"
+        before = (path.read_bytes(), path.stat().st_ino)
+        with mock.patch.object(self.mediator, "_creation_main", side_effect=AssertionError("no network")):
+            self.assertEqual(first, self.mediator.execute(request, "PROVISION"))
+        self.assertEqual(before, (path.read_bytes(), path.stat().st_ino))
+
+    def test_inspect_and_reconcile_do_not_import_missing_base(self) -> None:
+        head = self.advanced_main()
+        with mock.patch.object(self.mediator, "_creation_main", side_effect=AssertionError("read only")):
+            self.assertEqual("ABSENT", self.mediator.execute(self.creation_at(head, "INSPECT"), "INSPECT")["state"])
+            request = self.creation_at(head, "RECONCILE")
+            request["predecessorOperationId"] = str(uuid.uuid4())
+            request.pop("requestFingerprintSha256")
+            request["requestFingerprintSha256"] = mediator_module.canonical_sha256(request)
+            self.assertEqual("ABSENT", self.mediator.execute(request, "RECONCILE")["state"])
+        self.assertNotEqual(0, self.mediator._git_result("cat-file", "-e", head, git_dir=True).returncode)
+
+    def test_unknown_base_is_not_provisioned_or_adopted(self) -> None:
+        request = self.creation_at("f" * 40)
+        with self.assertRaises(mediator_module.ContractError):
+            self.mediator.execute(request, "PROVISION")
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+        self.assertFalse(self.mediator._branch_exists(request))
+        self.assertEqual([], list(self.publication_runtime.iterdir()))
+
+    def test_cached_non_main_commit_is_still_rejected(self) -> None:
+        self._git("-C", str(self.source), "checkout", "-b", "unmerged")
+        (self.source / "topic.txt").write_text("unapproved topic\n", encoding="utf-8")
+        self._git("-C", str(self.source), "add", "topic.txt")
+        self._git("-C", str(self.source), "commit", "-m", "unmerged topic")
+        topic = self._git("-C", str(self.source), "rev-parse", "HEAD", capture=True).strip()
+        self._git(f"--git-dir={self.mirror}", "fetch", str(self.source), topic)
+        request = self.creation_at(topic)
+        with self.assertRaises(mediator_module.ContractError):
+            self.mediator.execute(request, "PROVISION")
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+        self.assertFalse(self.mediator._branch_exists(request))
+
+    def test_main_move_during_import_retains_only_objects_and_rechecks_cached_base(self) -> None:
+        head = self.advanced_main()
+        request = self.creation_at(head)
+        with mock.patch.object(self.mediator, "_creation_main", side_effect=[head, "b" * 40]):
+            with self.assertRaisesRegex(mediator_module.ContractError, "canonical source moved"):
+                self.mediator.execute(request, "PROVISION")
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+        self.assertFalse(self.mediator._branch_exists(request))
+        self.assertEqual(0, self.mediator._git_result("cat-file", "-e", head, git_dir=True).returncode)
+        with mock.patch.object(self.mediator, "_creation_main", wraps=self.mediator._creation_main) as observe:
+            self.assertEqual("OWNED", self.mediator.execute(request, "PROVISION")["state"])
+        self.assertEqual(2, observe.call_count)
+
+    def test_foreign_identity_or_partial_workspace_never_imports_source(self) -> None:
+        request = self.creation_at(self.advanced_main())
+        with mock.patch.object(self.mediator, "_creation_main", side_effect=AssertionError("no network")):
+            crossed = {**request, "repository": "https://foreign.invalid/repo.git"}
+            with self.assertRaises(mediator_module.ContractError):
+                self.mediator.execute(crossed, "PROVISION")
+            self.mediator._root(self.change_key).mkdir(mode=0o700)
+            self.assertEqual("FOREIGN", self.mediator.execute(request, "PROVISION")["state"])
+
+    def test_ambiguous_canonical_main_fails_before_fetch(self) -> None:
+        request = self.creation_at(self.advanced_main())
+        real = self.mediator._safe_update_git
+        def ambiguous(*args, **kwargs):
+            if "ls-remote" in args:
+                return b"a" * 40 + b"\trefs/heads/main\nb" * 2
+            return real(*args, **kwargs)
+        with mock.patch.object(self.mediator, "_safe_update_git", side_effect=ambiguous):
+            with self.assertRaisesRegex(mediator_module.ContractError, "ambiguous"):
+                self.mediator.execute(request, "PROVISION")
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+
+    def test_initial_source_revision_cannot_be_invented_by_provision(self) -> None:
+        for overrides in ({"sourceRevision": 1}, {"sourceCommit": "a" * 40},
+                          {"sourceFingerprintSha256": "b" * 64}):
+            request = {**self.creation_at(self.base_commit), **overrides}
+            request.pop("requestFingerprintSha256")
+            request["requestFingerprintSha256"] = mediator_module.canonical_sha256(request)
+            with self.assertRaisesRegex(mediator_module.ContractError, "immutable creation base"):
+                self.mediator.execute(request, "PROVISION")
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+
+    def test_source_import_rejects_local_redirect_or_command_configuration_before_network(self) -> None:
+        request = self.creation_at(self.advanced_main())
+        for key, value in (("url.ssh://foreign.invalid/.insteadOf", "git@github.com:"),
+                           ("core.sshCommand", "/client/command"),
+                           ("filter.client.clean", "/client/filter"),
+                           ("remote.origin.uploadpack", "/client/uploadpack")):
+            with self.subTest(key=key):
+                self._git(f"--git-dir={self.mirror}", "config", key, value)
+                with mock.patch.object(self.mediator, "_creation_main", side_effect=AssertionError("no network")):
+                    with self.assertRaisesRegex(mediator_module.ContractError, "external Git configuration"):
+                        self.mediator.execute(request, "PROVISION")
+                self._git(f"--git-dir={self.mirror}", "config", "--unset", key)
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+
+    def test_missing_import_credential_fails_closed_without_partial_workspace(self) -> None:
+        request = self.creation_at(self.advanced_main())
+        self.private_key.unlink()
+        with self.assertRaisesRegex(mediator_module.ContractError, "publication authentication"):
+            self.mediator.execute(request, "PROVISION")
+        self.assertFalse(self.mediator._root(self.change_key).exists())
+        self.assertFalse(self.mediator._branch_exists(request))
+        self.assertEqual([], list(self.publication_runtime.iterdir()))
+
     def test_inspect_absent_is_read_only(self) -> None:
         key = "f1c6f155-6eb5-4e03-a7ec-08db0bc2961e"
         response = self.mediator.execute(self.request("INSPECT", change_key=key), "INSPECT")
@@ -797,7 +964,7 @@ json.dump(out,sys.stdout,sort_keys=True,separators=(',',':'))
         self.assertEqual(1, service.count("RuntimeDirectory=atenea-publication"))
         self.assertEqual(1, service.count("RuntimeDirectoryMode=0700"))
 
-    def test_worker_projects_systemd_credentials_only_to_publication_mediator(self) -> None:
+    def test_worker_ordinary_subprocesses_do_not_receive_systemd_credentials(self) -> None:
         credential_directory = "/run/credentials/atenea-agent-run-worker-v1.service"
         with mock.patch.dict(
             worker_module.os.environ,
@@ -811,6 +978,37 @@ json.dump(out,sys.stdout,sort_keys=True,separators=(',',':'))
         self.assertEqual(
             credential_directory, publication["CREDENTIALS_DIRECTORY"]
         )
+
+    def test_credentials_and_bounded_network_timeout_only_for_trusted_provision_mediator(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="atenea-creation-boundary-") as temporary:
+            root = Path(temporary)
+            mediator = root / "mediator.py"
+            mediator.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            mediator.chmod(0o755)
+            state = worker_module.WorkerState(root / "state", "ax42-01",
+                development_change_workspace_mediator=mediator)
+            for operation in ("PROVISION", "INSPECT", "RECONCILE"):
+                request = self._request()
+                request.update(operation=operation,
+                    effect="CREATE_IF_ABSENT_EXACT" if operation == "PROVISION" else "OBSERVE_ONLY")
+                response = {key: request[key] for key in worker_module.DEVELOPMENT_CHANGE_WORKSPACE_RESPONSE_KEYS
+                            if key in request}
+                response.update(state="ABSENT", sourceCommit=None, sourceFingerprintSha256=None,
+                                workspaceDirty=None, retainedDraft=None, valuesExposed=False)
+                with mock.patch.dict(worker_module.os.environ,
+                        {"CREDENTIALS_DIRECTORY": "/run/credentials/atenea-agent-run-worker-v1.service"}), \
+                     mock.patch.object(worker_module.subprocess, "run",
+                        return_value=subprocess.CompletedProcess([], 0, json.dumps(response), "")) as run:
+                    state.execute_development_change_workspace(request, operation)
+                invocation = run.call_args
+                self.assertEqual([str(mediator), operation.lower()], invocation.args[0])
+                if operation == "PROVISION":
+                    self.assertEqual("/run/credentials/atenea-agent-run-worker-v1.service",
+                                     invocation.kwargs["env"]["CREDENTIALS_DIRECTORY"])
+                    self.assertEqual(135.0, invocation.kwargs["timeout"])
+                else:
+                    self.assertNotIn("CREDENTIALS_DIRECTORY", invocation.kwargs["env"])
+                    self.assertEqual(45.0, invocation.kwargs["timeout"])
 
     def _request(self) -> dict:
         key = "8bf60472-3c0e-49aa-99bf-6dc3c7e60eaf"

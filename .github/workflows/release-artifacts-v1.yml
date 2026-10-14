@@ -26,6 +26,7 @@ jobs:
           bash ops/worker/test-install-agent-run-worker-v1.sh
           python3 ops/worker/test-atenea-workspace-release-v1.py
           python3 ops/worker/test-atenea-project-source-sync-v1.py
+          python3 ops/worker/test-development-change-workspace-v1.py
           python3 ops/worker/test-atenea-backend-test-v2.py
           python3 ops/worker/test-atenea-validation-v1.py
           python3 ops/worker/test-project-codex-runner-v1.py ReviewedDeploymentMetadataTest

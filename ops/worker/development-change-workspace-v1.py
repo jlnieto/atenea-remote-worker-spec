@@ -1563,6 +1563,11 @@ class WorkspaceMediator:
         branch_exists = self._branch_exists(request)
         if root.exists() or root.is_symlink() or branch_exists:
             return
+        if (request["sourceCommit"] != request["baseCommit"]
+                or request["sourceRevision"] != 0
+                or request["sourceFingerprintSha256"] is not None):
+            raise ContractError("new workspace source is not the immutable creation base")
+        admission = self._admit_creation_base(request)
         self._git("cat-file", "-e", f"{request['baseCommit']}^{{commit}}", git_dir=True)
         try:
             previous_umask = os.umask(0o007)
@@ -1578,12 +1583,68 @@ class WorkspaceMediator:
                     request["baseCommit"],
                     git_dir=True,
                 )
+                if admission is not None:
+                    self._write_record(root / "source-admission-v1.json", admission)
             finally:
                 os.umask(previous_umask)
             self._write_record(self._record_path(request["changeKey"]), self._expected_record(request))
         except (OSError, ContractError):
             # A partial resource is deliberately retained for fail-closed diagnosis.
             raise
+
+    def _admit_creation_base(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        # A change has its own immutable base. Import Git objects, not mutable
+        # refs or the root-owned legacy registry: both remain byte-exact.
+        pinned = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}",
+                                      git_dir=True).decode().strip()
+        if self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor",
+                            request["baseCommit"], pinned, git_dir=True,
+                            env_extra=self._update_git_environment()).returncode == 0:
+            return None
+        refs_before = self._safe_update_git("for-each-ref", "--format=%(refname) %(objectname)",
+                                            git_dir=True)
+        keys = self._safe_update_git("config", "--local", "--includes", "--name-only", "--list",
+                                      git_dir=True).decode().lower().splitlines()
+        if any(key.startswith(("include.", "includeif.", "url.", "filter.", "alias.",
+                               "credential.", "http."))
+               or key in {"core.sshcommand", "core.gitproxy", "core.fsmonitor", "core.hookspath"}
+               or (key.startswith("remote.") and key.endswith((".vcs", ".uploadpack")))
+               for key in keys):
+            raise ContractError("creation source external Git configuration is forbidden")
+        observed = self._creation_main()
+        # Fetch the observed object ID, never a ref that may move during fetch.
+        # The transport, credential, trust store and ref are worker-owned.
+        if self._git_result("cat-file", "-e", f"{observed}^{{commit}}", git_dir=True).returncode != 0:
+            self._safe_update_git("-c", "fetch.fsckObjects=true", "-c", "gc.auto=0",
+                                  "-c", "maintenance.auto=false", "-c", "fetch.writeCommitGraph=false",
+                                  "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=",
+                                  "--no-recurse-submodules", "--", self.publication_transport, observed,
+                                  git_dir=True, publication=True)
+        self._safe_update_git("cat-file", "-e", f"{request['baseCommit']}^{{commit}}", git_dir=True)
+        self._safe_update_git("merge-base", "--is-ancestor", pinned, observed, git_dir=True)
+        self._safe_update_git("merge-base", "--is-ancestor", request["baseCommit"], observed,
+                              git_dir=True)
+        if (self._creation_main() != observed
+                or self._safe_update_git("for-each-ref", "--format=%(refname) %(objectname)",
+                                          git_dir=True) != refs_before):
+            raise ContractError("canonical source moved during creation admission")
+        body = {"protocol": "development-change-source-admission/v1", "state": "APPROVED",
+                "operationId": request["operationId"], "idempotencyKey": request["idempotencyKey"],
+                "changeKey": request["changeKey"], "databaseProjectId": request["databaseProjectId"],
+                "projectId": PROJECT_ID, "workerId": WORKER_ID, "baseCommit": request["baseCommit"],
+                "observedMainCommit": observed, "retainedMirrorCommit": pinned,
+                "requestFingerprintSha256": request["requestFingerprintSha256"]}
+        return {**body, "recordSha256": canonical_sha256(body)}
+
+    def _creation_main(self) -> str:
+        raw = self._safe_update_git("ls-remote", "--exit-code", "--refs", "--",
+                                    self.publication_transport, "refs/heads/main",
+                                    publication=True).decode().strip()
+        fields = raw.split()
+        if (len(fields) != 2 or fields[1] != "refs/heads/main"
+                or not GIT_COMMIT.fullmatch(fields[0])):
+            raise ContractError("canonical source observation is ambiguous")
+        return fields[0]
 
     def _observe(self, request: dict[str, Any]) -> dict[str, Any]:
         root = self._root(request["changeKey"])

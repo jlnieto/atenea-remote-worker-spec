@@ -49,6 +49,7 @@ CODEX_RECOVERY_CANDIDATE_DIGEST = "56da3312ccb2109a2f4e0d71b003f08d33244ec6f5863
 CODEX_RECOVERY_CATALOG_REVISION = "125b9437e38f83e04cb10996fc70d3ab44c32082009b8e897cb08bb340b13187"
 CODEX_RECOVERY_VERSION = "0.145.0"
 DEVELOPMENT_CHANGE_WORKSPACE_CAPABILITY = "development-change-workspace/v1"
+DEVELOPMENT_CHANGE_CREATION_TIMEOUT_SECONDS = 135.0
 DEVELOPMENT_CHANGE_WORKSPACE_PATH_PREFIX = "/v1/development-changes/workspaces/"
 DEVELOPMENT_CHANGE_PUBLICATION_CAPABILITY = "development-change-branch-publication/v1"
 DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
@@ -1404,8 +1405,10 @@ class WorkerState:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    env=subprocess_environment(),
-                    timeout=self.development_change_workspace_timeout,
+                    env=subprocess_environment(systemd_credentials=operation == "PROVISION"),
+                    timeout=max(self.development_change_workspace_timeout,
+                                DEVELOPMENT_CHANGE_CREATION_TIMEOUT_SECONDS)
+                            if operation == "PROVISION" else self.development_change_workspace_timeout,
                     check=False,
                 )
         except subprocess.TimeoutExpired as error:
