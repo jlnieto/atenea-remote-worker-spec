@@ -33,6 +33,38 @@ TEST_COMMIT = "1" * 40
 
 
 class ProjectCodexContractTest(unittest.TestCase):
+    def test_managed_change_guidance_preserves_reviewed_repository_bytes(self):
+        original = MODULE.ReviewedInstructionBundle("exact platform and repository contract", b"exact AGENTS.md bytes")
+        result = MODULE.managed_change_instruction_bundle(original)
+        self.assertEqual(original.project_bytes, result.project_bytes)
+        self.assertTrue(result.developer_instructions.startswith(original.developer_instructions))
+        self.assertIn("ATENEA_MANAGED_CHANGE", result.developer_instructions)
+        self.assertIn("Validar cambio once", result.developer_instructions)
+        self.assertIn("NOT REQUESTED from tests FAILED", result.developer_instructions)
+        self.assertIn("Ayuda con este cambio", result.developer_instructions)
+        self.assertEqual(original.developer_instructions, "exact platform and repository contract")
+
+    def test_guidance_is_derived_after_verified_change_ownership_not_a_request_field(self):
+        source = Path(MODULE.__file__).read_text()
+        main = source[source.index("def main("):]
+        self.assertLess(main.index("validate_change_worktree(request, worktree)"),
+                        main.index("managed_change_instruction_bundle(instruction_bundle)"))
+        self.assertLess(main.index("validate_instruction_bundle(worktree"),
+                        main.index("managed_change_instruction_bundle(instruction_bundle)"))
+        self.assertIn('if workload["kind"] == CHANGE_CAPABILITY:\n        instruction_bundle = managed_change_instruction_bundle', main)
+        for keys in (MODULE.REQUEST_KEYS, MODULE.CHANGE_REQUEST_KEYS, MODULE.CHANGE_WORKLOAD_KEYS):
+            for field in ("executionContext", "developerInstructions", "workflowMode", "gitRemote", "command"):
+                self.assertNotIn(field, keys)
+
+    def test_guidance_keeps_git_ownership_and_production_restrictions(self):
+        text = MODULE.MANAGED_CHANGE_GUIDANCE
+        self.assertIn("Do not create aliases, move refs, fetch, push or change Git", text)
+        self.assertIn("Keep all repository ownership, validation and production restrictions", text)
+        self.assertIn("genuine authority conflict", text)
+        self.assertIn("does not prove", text)
+        self.assertNotIn("/etc/", text)
+        self.assertNotIn("sudo ", text)
+
     def test_runner_uses_only_managed_current_codex(self):
         self.assertEqual(
             "/srv/atenea/worker/codex-releases-v1/current/bin/codex",

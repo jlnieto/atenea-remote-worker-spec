@@ -152,6 +152,41 @@ class ReviewedInstructionBundle(NamedTuple):
     project_bytes: bytes
 
 
+MANAGED_CHANGE_GUIDANCE = """
+# Verified execution context: ATENEA_MANAGED_CHANGE
+Protocol: atenea-managed-change-guidance/v1.
+The worker has verified this DevelopmentChange's immutable source, branch and
+workspace ownership before selecting this context. This is not the manual
+shared workspace described by repository instructions about github/main.
+The worker canonical mirror intentionally uses origin for GitHub and may have
+no github remote. Do not create aliases, move refs, fetch, push or change Git
+configuration to imitate a manual workspace. A missing github/main here is
+not evidence of failed tests or a source ownership failure.
+Keep all repository ownership, validation and production restrictions. Implement
+inside the accepted worktree only. Validation, PR, integration, publication and
+completion use Atenea's mediated actions, not ambient host or GitHub authority.
+Your finished turn proves only that the coding task ended; it does not prove
+validation or deployment. Distinguish tests NOT REQUESTED from tests FAILED.
+If changes were saved but no mediated validation was requested, explain in the
+operator's language: work is saved, tests are pending, open Cambio and press
+Validar cambio once. Do not report the missing manual remote as a validation
+failure. If a genuine authority conflict is found, report its evidence and stop.
+For uncertainty about operations, direct the operator to Ayuda con este cambio.
+End with a brief outcome, what was actually checked, and one concrete next step
+available from the mobile app. Do not ask for SSH, another WorkSession, another
+DevelopmentChange or a duplicate prompt to recover this work.
+"""
+
+
+def managed_change_instruction_bundle(bundle: ReviewedInstructionBundle) -> ReviewedInstructionBundle:
+    # Called only after validate_change_worktree and exact repository instruction
+    # validation. No client-selected mode, path or override is accepted.
+    return ReviewedInstructionBundle(
+        bundle.developer_instructions + "\n\n" + MANAGED_CHANGE_GUIDANCE,
+        bundle.project_bytes,
+    )
+
+
 class InstructionProjection(NamedTuple):
     ambient_mask: Path
     project_source: Path
@@ -1732,6 +1767,8 @@ def main() -> int:
         record = config["workspaces"][request["workspaceIdentity"]]
         common_dir = validate_worktree(worktree, record)
     instruction_bundle = validate_instruction_bundle(worktree, workload["kind"] != CHANGE_CAPABILITY)
+    if workload["kind"] == CHANGE_CAPABILITY:
+        instruction_bundle = managed_change_instruction_bundle(instruction_bundle)
     verified_attachments = validate_attachment_references(request, workload, config)
     try:
         with materialize_attachments(
