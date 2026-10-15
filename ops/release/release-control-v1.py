@@ -237,6 +237,17 @@ class GitHubArtifacts:
 
 
 class PlatformTarget:
+    def observe_current(self):
+        """Read installed identity without acquiring workload admission or requiring idle."""
+        value=json.loads(trusted(CURRENT,0o600).read_bytes())
+        if (set(value)!={"sourceCommit","installedFiles","artifactPlanId"} or not HEX.fullmatch(value["sourceCommit"])
+                or set(value["installedFiles"])!={"agent-run-worker-v1.py","atenea-validation-v1.py","project-codex-runner-v1.py"}):
+            raise Rejected("PLATFORM_OBSERVATION_EVIDENCE_MISMATCH")
+        identity(value["artifactPlanId"])
+        for name,expected in value["installedFiles"].items():
+            if file_digest(trusted(Path("/usr/local/libexec/atenea")/name,0o755))!=expected:
+                raise Rejected("PLATFORM_OBSERVATION_MOVED")
+        return value
     @staticmethod
     def protected_state():
         # Code installation must not select a Codex release, re-stage a
@@ -685,6 +696,12 @@ class Controller:
             "versionCode", "versionName", "createdAt", "expiresAt", "finishedAt", "effectiveSourceCommit", "resultSha256")}
 
     def dispatch(self, request):
+        if request.get("operation") == "OBSERVE_PLATFORM":
+            exact(request, {"operation"})
+            return self.observe_platform()
+        if request.get("operation") == "OBSERVE_ANDROID":
+            exact(request, {"operation"})
+            return self.observe_android()
         if request.get("operation") == "OBSERVE_APP":
             exact(request, {"operation"})
             return self.observe_app()
@@ -753,6 +770,107 @@ class Controller:
                         "healthy": before["healthy"], "observedAt": int(time.time()),
                         "planId": record["planId"], "operationId": record["operationId"],
                         "receiptSha256": receipt_sha, "finishedAt": record["finishedAt"]}
+        finally:
+            self.execution_lock.release()
+
+    def observe_android(self):
+        """Read the signed channel and its existing durable receipt, never publish."""
+        if "ANDROID_STABLE" not in self.targets:
+            raise Rejected("TARGET_REJECTED")
+        if not self.execution_lock.acquire(blocking=False):
+            raise Rejected("ANDROID_OBSERVATION_BUSY")
+        try:
+            with self.lock:
+                target = self.targets["ANDROID_STABLE"]
+                before = target.inspect()
+                plans = self.root / "plans"
+                trusted_directory(plans, 0o700)
+                entries = list(itertools.islice(plans.iterdir(), 2001))
+                if len(entries) > 2000:
+                    raise Rejected("ANDROID_OBSERVATION_BOUND_EXCEEDED")
+                matches = []
+                def evidence(path):
+                    trusted(path, 0o600)
+                    if path.stat().st_size > 262144:
+                        raise Rejected("ANDROID_OBSERVATION_BOUND_EXCEEDED")
+                    return json.loads(path.read_bytes())
+                for entry in entries:
+                    identity(entry.name)
+                    trusted_directory(entry, 0o700)
+                    record = evidence(entry / "operation.json")
+                    if record.get("target") != "ANDROID_STABLE":
+                        continue
+                    if (record.get("protocol") != PROTOCOL or record.get("planId") != entry.name
+                            or record.get("state") not in TERMINAL | {"PREPARING", "READY", "ACCEPTED", "APPLYING", "ROLLING_BACK"}):
+                        raise Rejected("ANDROID_OBSERVATION_EVIDENCE_MISMATCH")
+                    if record["state"] in {"ACCEPTED", "APPLYING", "ROLLING_BACK", "ROLLBACK_FAILED"}:
+                        raise Rejected("ANDROID_OBSERVATION_BUSY")
+                    if record["state"] != "SUCCEEDED" or record.get("sourceCommit") != before["sourceCommit"]:
+                        continue
+                    receipt = evidence(entry / "receipt.json")
+                    plan_hash = digest({key: record[key] for key in
+                        ("protocol", "planId", "target", "sourceCommit", "artifact", "predecessor", "expiresAt")})
+                    if (record.get("planSha256") != plan_hash or record.get("errorCode") is not None
+                            or record.get("effectiveSourceCommit") != before["sourceCommit"]
+                            or receipt != before or record.get("resultSha256") != before["manifest"]["sha256"]
+                            or record["artifact"].get("versionCode") != before["versionCode"]
+                            or not isinstance(record.get("finishedAt"), int) or isinstance(record["finishedAt"], bool)
+                            or not 0 < record["finishedAt"] <= int(time.time()) + 5):
+                        raise Rejected("ANDROID_OBSERVATION_EVIDENCE_MISMATCH")
+                    identity(record.get("operationId"))
+                    matches.append((record, digest(receipt)))
+                if not matches:
+                    raise Rejected("ANDROID_OBSERVATION_NOT_VERIFIED")
+                record, receipt_sha = max(matches, key=lambda item: (item[0]["finishedAt"], item[0]["planId"]))
+                if target.inspect() != before:
+                    raise Rejected("ANDROID_OBSERVATION_MOVED")
+                manifest = before["manifest"]
+                return {"protocol": "atenea-android-observation/v1", "target": "ANDROID_STABLE", "state": "OBSERVED",
+                        "sourceCommit": before["sourceCommit"], "versionCode": before["versionCode"],
+                        "versionName": manifest["versionName"], "apkSha256": manifest["sha256"],
+                        "certificateSha256": before["certificateSha256"], "observedAt": int(time.time()),
+                        "planId": record["planId"], "operationId": record["operationId"],
+                        "receiptSha256": receipt_sha, "finishedAt": record["finishedAt"]}
+        finally:
+            self.execution_lock.release()
+
+    def observe_platform(self):
+        if "AX42_PLATFORM" not in self.targets:
+            raise Rejected("TARGET_REJECTED")
+        if not self.execution_lock.acquire(blocking=False):
+            raise Rejected("PLATFORM_OBSERVATION_BUSY")
+        try:
+            with self.lock:
+                target=self.targets["AX42_PLATFORM"]
+                before=target.observe_current()
+                plans=self.root/"plans";trusted_directory(plans,0o700)
+                entries=list(itertools.islice(plans.iterdir(),2001))
+                if len(entries)>2000:raise Rejected("PLATFORM_OBSERVATION_BOUND_EXCEEDED")
+                def evidence(path):
+                    trusted(path,0o600)
+                    if path.stat().st_size>262144:raise Rejected("PLATFORM_OBSERVATION_BOUND_EXCEEDED")
+                    return json.loads(path.read_bytes())
+                for entry in entries:
+                    identity(entry.name);trusted_directory(entry,0o700)
+                    record=evidence(entry/"operation.json") if (entry/"operation.json").exists() else None
+                    if record and record.get("target")=="AX42_PLATFORM" and record.get("state") not in TERMINAL | {"READY","PREPARING"}:
+                        raise Rejected("PLATFORM_OBSERVATION_BUSY")
+                    if record and record.get("target")=="AX42_PLATFORM" and record.get("state")=="ROLLBACK_FAILED":
+                        raise Rejected("PLATFORM_OBSERVATION_BUSY")
+                path=self.path(before["artifactPlanId"])
+                record=evidence(path/"operation.json");receipt=evidence(path/"receipt.json")
+                fingerprint=digest({key:record[key] for key in ("protocol","planId","target","sourceCommit","artifact","predecessor","expiresAt")})
+                if (record.get("protocol")!=PROTOCOL or record.get("target")!="AX42_PLATFORM" or record.get("state")!="SUCCEEDED"
+                        or record.get("planId")!=before["artifactPlanId"] or record.get("planSha256")!=fingerprint
+                        or record.get("sourceCommit")!=before["sourceCommit"] or record.get("effectiveSourceCommit")!=before["sourceCommit"]
+                        or record.get("errorCode") is not None or receipt!=before
+                        or type(record.get("finishedAt")) is not int or not 0<record["finishedAt"]<=int(time.time())+5):
+                    raise Rejected("PLATFORM_OBSERVATION_EVIDENCE_MISMATCH")
+                identity(record.get("operationId"))
+                if target.observe_current()!=before:raise Rejected("PLATFORM_OBSERVATION_MOVED")
+                return {"protocol":"atenea-platform-observation/v1","target":"AX42_PLATFORM","state":"OBSERVED",
+                        "sourceCommit":before["sourceCommit"],"installationSha256":digest(before),"observedAt":int(time.time()),
+                        "planId":record["planId"],"operationId":record["operationId"],"receiptSha256":digest(receipt),"finishedAt":record["finishedAt"]}
         finally:
             self.execution_lock.release()
 
@@ -1034,6 +1152,9 @@ def main():
     peer_lock = threading.RLock()
 
     def dispatch(request):
+        if peer and request.get("operation") == "OBSERVE_PLATFORM":
+            exact(request,{"operation"})
+            return peer.request(request)  # read only: never adds peer plan IDs or rewrites receipts
         if peer and (request.get("target") == "AX42_PLATFORM" or request.get("planId") in peer_plans):
             result = peer.request(request)
             if request.get("operation") == "PLAN":

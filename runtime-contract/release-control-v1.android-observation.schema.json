@@ -1,0 +1,16 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/release-control-v1.android-observation.schema.json",
+  "title":"Read-only signed Android stable channel, no execution authority",
+  "type":"object","additionalProperties":false,
+  "required":["protocol","target","state","sourceCommit","versionCode","versionName","apkSha256","certificateSha256","observedAt","planId","operationId","receiptSha256","finishedAt"],
+  "properties":{
+    "protocol":{"const":"atenea-android-observation/v1"},"target":{"const":"ANDROID_STABLE"},"state":{"const":"OBSERVED"},
+    "sourceCommit":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "versionCode":{"type":"integer","minimum":1},"versionName":{"type":"string","pattern":"^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "apkSha256":{"$ref":"#/$defs/sha"},"certificateSha256":{"$ref":"#/$defs/sha"},"receiptSha256":{"$ref":"#/$defs/sha"},
+    "observedAt":{"type":"integer","minimum":1},"finishedAt":{"type":"integer","minimum":1},
+    "planId":{"$ref":"#/$defs/id"},"operationId":{"$ref":"#/$defs/id"}
+  },
+  "$defs":{"sha":{"type":"string","pattern":"^[0-9a-f]{64}$"},"id":{"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}}
+}

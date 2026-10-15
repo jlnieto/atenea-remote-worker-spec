@@ -100,6 +100,8 @@ apply_install() {
 
 verify() {
   require_root
+  cmp --silent "$SCRIPT_DIR/worksession-attachment-worker-v1.py" "$PROGRAM" \
+    || fail "installed attachment program differs from reviewed source"
   local bind
   bind="$(tailscale_ipv4)"
   systemctl is-enabled "$SERVICE"

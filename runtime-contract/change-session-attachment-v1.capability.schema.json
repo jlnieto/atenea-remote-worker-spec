@@ -1,0 +1,12 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/change-session-attachment-v1.capability.schema.json",
+  "title":"Private App-to-worker change-owned image storage capability",
+  "type":"object","additionalProperties":false,
+  "required":["protocolVersion","workerId","healthy","projectIdentities","storageScopes","serverTime"],
+  "properties":{
+    "protocolVersion":{"const":"change-session-attachment/v1"},"workerId":{"const":"ax42-01"},
+    "healthy":{"type":"boolean"},"projectIdentities":{"const":["atenea"]},
+    "storageScopes":{"const":["REAL_SESSION"]},"serverTime":{"type":"string","format":"date-time"}
+  }
+}

@@ -172,6 +172,12 @@ operator's language: work is saved, tests are pending, open Cambio and press
 Validar cambio once. Do not report the missing manual remote as a validation
 failure. If a genuine authority conflict is found, report its evidence and stop.
 For uncertainty about operations, direct the operator to Ayuda con este cambio.
+Repository files only prove what code is in this worktree. They do not prove
+which backend or APK is currently published, or what version is installed on
+the phone. Never infer delivery from a Git merge or a completed coding turn.
+For APK/version/publication questions use Ayuda con este cambio and its live
+Publicaciones view; do not invent menu paths or ask to validate a diagnostic
+question just to read publication history.
 End with a brief outcome, what was actually checked, and one concrete next step
 available from the mobile app. Do not ask for SSH, another WorkSession, another
 DevelopmentChange or a duplicate prompt to recover this work.
