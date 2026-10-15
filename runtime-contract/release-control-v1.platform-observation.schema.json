@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/release-control-v1.platform-observation.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["protocol","target","state","sourceCommit","installationSha256","observedAt","planId","operationId","receiptSha256","finishedAt"],
+  "properties":{
+    "protocol":{"const":"atenea-platform-observation/v1"},"target":{"const":"AX42_PLATFORM"},"state":{"const":"OBSERVED"},
+    "sourceCommit":{"type":"string","pattern":"^[0-9a-f]{40}$"},"installationSha256":{"$ref":"#/$defs/sha"},
+    "receiptSha256":{"$ref":"#/$defs/sha"},"observedAt":{"type":"integer","minimum":1},"finishedAt":{"type":"integer","minimum":1},
+    "planId":{"$ref":"#/$defs/id"},"operationId":{"$ref":"#/$defs/id"}
+  },
+  "$defs":{"sha":{"type":"string","pattern":"^[0-9a-f]{64}$"},"id":{"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}}
+}

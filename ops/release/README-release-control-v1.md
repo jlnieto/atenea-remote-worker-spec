@@ -13,7 +13,7 @@ Nada de este documento se ejecuta por implementar o integrar el código.
 | AX42_PLATFORM | `jlnieto/atenea-remote-worker-spec`, `platform.tar` | Installer worker `apply` y `verify` |
 | ANDROID_STABLE | `jlnieto/atenea`, `app-unsigned.apk` | Firmar con la identidad instalada y actualizar el canal interno |
 
-Las solicitudes son PLAN, INSPECT, EXECUTE, OBSERVE_APP y OBSERVE_ANDROID. Ninguna acepta rutas, comandos,
+Las solicitudes son PLAN, INSPECT, EXECUTE, OBSERVE_APP, OBSERVE_ANDROID y OBSERVE_PLATFORM. Ninguna acepta rutas, comandos,
 hosts, versiones, claves de firma, servicios o enlaces. Los schemas cerrados
 están en `runtime-contract/release-control-v1.*.schema.json`.
 
@@ -43,6 +43,15 @@ autoridad de ejecución. No crea planes ni recibos ni publica. App prueba por
 separado la inclusión del merge del Cambio y calcula los destinos requeridos
 desde el diff exacto de su PR. Un backend sano no demuestra una APK publicada.
 Esta extensión requiere el installer del publicador VPS, no AX42_PLATFORM.
+
+`OBSERVE_PLATFORM` acepta sólo `{"operation":"OBSERVE_PLATFORM"}`. El VPS
+reenvía la lectura a su peer AX42 fijo sin crear un peer-plan. AX42 comprueba los
+tres binarios instalados frente a su baseline root-owned y el recibo SUCCEEDED
+de ese mismo artifactPlanId. Rechaza drift o una publicación ambigua. La lectura
+no usa admission ni requiere que Codex esté idle. No declara salud: App consulta
+por separado la salud autenticada del worker. Sirve a la vista global Novedades,
+sin dar autoridad de publicación a esa pantalla. Requiere actualizar ambos
+publicadores mediante sus installers soportados.
 
 El artefacto debe ser del último run push/main exitoso de
 `.github/workflows/release-artifacts-v1.yml`, para el SHA exacto de main y el

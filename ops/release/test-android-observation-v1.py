@@ -53,4 +53,36 @@ class AndroidObservationTest(unittest.TestCase):
         record=self.c.read(self.plan);record["state"]="APPLYING";m.save(self.c.path(self.plan)/"operation.json",record)
         with self.assertRaises(m.Rejected):self.c.dispatch({"operation":"OBSERVE_ANDROID"})
 
+    def platform_fixture(self):
+        self.current={"sourceCommit":self.source,"artifactPlanId":self.plan,
+                      "installedFiles":{name:"b"*64 for name in ("agent-run-worker-v1.py","atenea-validation-v1.py","project-codex-runner-v1.py")}}
+        self.target.observe_current.side_effect=lambda:json.loads(json.dumps(self.current))
+        self.c.targets={"AX42_PLATFORM":self.target}
+        record=self.c.read(self.plan);record.update(target="AX42_PLATFORM",resultSha256=None)
+        record["planSha256"]=m.digest({k:record[k] for k in ("protocol","planId","target","sourceCommit","artifact","predecessor","expiresAt")})
+        m.save(self.c.path(self.plan)/"operation.json",record);m.save(self.c.path(self.plan)/"receipt.json",self.current)
+
+    def test_platform_observation_is_read_only_closed_and_does_not_require_idle(self):
+        self.platform_fixture();before={p:p.read_bytes() for p in self.root.rglob("*.json")}
+        value=self.c.dispatch({"operation":"OBSERVE_PLATFORM"})
+        schema=json.loads((Path(__file__).parents[2]/"runtime-contract/release-control-v1.platform-observation.schema.json").read_bytes())
+        Draft202012Validator.check_schema(schema);Draft202012Validator(schema).validate(value)
+        self.assertEqual(self.source,value["sourceCommit"])
+        self.assertEqual(before,{p:p.read_bytes() for p in self.root.rglob("*.json")})
+        self.target.guard.assert_not_called();self.target.inspect.assert_not_called()
+
+    def test_platform_observation_rejects_moved_installation_and_arbitrary_arguments(self):
+        self.platform_fixture()
+        for field in ("target","path","command","sourceCommit"):
+            with self.subTest(field=field),self.assertRaises(m.Rejected):self.c.dispatch({"operation":"OBSERVE_PLATFORM",field:"foreign"})
+        self.current["installedFiles"]["project-codex-runner-v1.py"]="c"*64
+        with self.assertRaises(m.Rejected):self.c.dispatch({"operation":"OBSERVE_PLATFORM"})
+
+    def test_real_platform_observation_checks_the_fixed_installed_files(self):
+        self.platform_fixture();current=self.root/"current.json";m.save(current,self.current)
+        with patch.object(m,"CURRENT",current),patch.object(m,"file_digest",return_value="b"*64):
+            self.assertEqual(self.current,m.PlatformTarget().observe_current())
+        with patch.object(m,"CURRENT",current),patch.object(m,"file_digest",return_value="c"*64):
+            with self.assertRaises(m.Rejected):m.PlatformTarget().observe_current()
+
 if __name__=="__main__":unittest.main()
