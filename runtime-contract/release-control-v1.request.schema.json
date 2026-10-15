@@ -4,6 +4,8 @@
   "title": "Atenea fixed-target release request v1",
   "oneOf": [
     {"type":"object","additionalProperties":false,"required":["operation"],
+     "properties":{"operation":{"const":"OBSERVE_ANDROID"}}},
+    {"type":"object","additionalProperties":false,"required":["operation"],
      "properties":{"operation":{"const":"OBSERVE_APP"}}},
     {"type":"object","additionalProperties":false,"required":["operation","planId","target","sourceCommit"],
      "properties":{"operation":{"const":"PLAN"},"planId":{"$ref":"#/$defs/id"},

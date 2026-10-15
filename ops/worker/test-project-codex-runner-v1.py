@@ -33,6 +33,12 @@ TEST_COMMIT = "1" * 40
 
 
 class ProjectCodexContractTest(unittest.TestCase):
+    def test_guidance_does_not_infer_live_apk_delivery_from_the_worktree(self):
+        text = MODULE.MANAGED_CHANGE_GUIDANCE
+        self.assertIn("do not prove", text)
+        self.assertIn("APK is currently published", text)
+        self.assertIn("do not invent menu paths", text)
+        self.assertIn("Ayuda con este cambio", text)
     def test_managed_change_guidance_preserves_reviewed_repository_bytes(self):
         original = MODULE.ReviewedInstructionBundle("exact platform and repository contract", b"exact AGENTS.md bytes")
         result = MODULE.managed_change_instruction_bundle(original)

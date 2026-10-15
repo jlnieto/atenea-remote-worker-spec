@@ -18,6 +18,8 @@ jobs:
         run: |
           python3 -m pip install jsonschema==4.23.0
           python3 ops/release/test-release-control-v1.py
+          python3 -B ops/release/test-android-observation-v1.py
+          python3 -B ops/worker/test-worksession-attachment-worker-v1.py
           python3 ops/release/test-release-admission-v1.py
           python3 ops/release/test-release-targets-v1.py
           python3 ops/release/test-release-artifacts-v1.py

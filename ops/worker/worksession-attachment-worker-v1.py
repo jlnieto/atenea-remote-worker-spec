@@ -10,6 +10,7 @@ import json
 import os
 import re
 import signal
+import stat
 import tempfile
 import threading
 import uuid
@@ -22,6 +23,8 @@ from urllib.parse import urlparse
 
 PROTOCOL = "worksession-attachment/v1"
 REAL_PROJECT_PROTOCOL = "real-project-attachment/v1"
+CHANGE_PROJECT_PROTOCOL = "change-session-attachment/v1"
+CHANGE_WORKSPACE_ROOT = Path("/srv/atenea/workspaces/changes")
 REAL_PROJECT_IDENTITIES = ("atenea",)
 REAL_STORAGE_SCOPES = ("REAL_SESSION",)
 MAX_FILE_BYTES = 16 * 1024 * 1024
@@ -92,6 +95,67 @@ class AttachmentStore:
             "serverTime": utc_now(),
         }
 
+    def change_project_capability(self) -> dict[str, Any]:
+        return {**self.real_project_capability(), "protocolVersion": CHANGE_PROJECT_PROTOCOL}
+
+    def _change_owner(self, workspace: str) -> None:
+        prefix = f"remote:{self.worker_id}:change:"
+        change = self._uuid(workspace[len(prefix):], "invalid_change_id")
+        root = CHANGE_WORKSPACE_ROOT / change
+        try:
+            for path in (CHANGE_WORKSPACE_ROOT, root, root / "atenea"):
+                observed = path.lstat()
+                if (not stat.S_ISDIR(observed.st_mode) or observed.st_uid != os.geteuid()
+                        or observed.st_gid != os.getegid() or observed.st_mode & 0o002):
+                    raise ValueError("foreign directory")
+            path = root / "workspace-v1.json"
+            observed = path.lstat()
+            if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+                    or observed.st_nlink != 1 or stat.S_IMODE(observed.st_mode) != 0o600
+                    or observed.st_size > 16384):
+                raise ValueError("foreign record")
+            record = json.loads(path.read_bytes())
+            required = {"schemaVersion", "protocolVersion", "changeKey", "databaseProjectId", "projectId",
+                        "baseCommit", "workspaceBranch", "workspaceIdentity", "workerId"}
+            legacy = required | {"repository", "repositoryBranch", "initialSourceFingerprintSha256", "recordSha256"}
+            if (set(record) not in (required, legacy) or record.get("schemaVersion") != 1
+                    or record.get("protocolVersion") != "development-change-workspace/v1"
+                    or record.get("changeKey") != change or record.get("databaseProjectId") != 1
+                    or record.get("projectId") != "atenea" or record.get("workerId") != self.worker_id
+                    or record.get("workspaceIdentity") != workspace
+                    or record.get("workspaceBranch") != f"atenea/change-{change}"):
+                raise ValueError("foreign identity")
+        except (OSError, ValueError, TypeError) as error:
+            raise ProtocolError(HTTPStatus.CONFLICT, "change_attachment_ownership_conflict",
+                                "change workspace authority is missing or conflicting") from error
+
+    def _claim_change_session(self, session: str, ownership: dict[str, str]) -> None:
+        """Authenticated App owns the session binding; make it immutable in storage too."""
+        if not ownership.get("workspaceIdentity", "").startswith(f"remote:{self.worker_id}:change:"):
+            return
+        self._change_owner(ownership["workspaceIdentity"])
+        directory = self.sessions / session
+        self._prepare_directory(directory, 0o700)
+        path = directory / "owner-v1.json"
+        expected = {"protocolVersion": CHANGE_PROJECT_PROTOCOL, "sessionId": session,
+                    "workerId": self.worker_id, **ownership}
+        for retained in directory.glob("*/metadata.json"):
+            metadata = self._read_json(retained)
+            if any(metadata.get(key)!=value for key,value in ownership.items()):
+                raise ProtocolError(HTTPStatus.CONFLICT, "change_attachment_binding_conflict",
+                                    "retained attachments have another owner")
+        if path.exists() or path.is_symlink():
+            observed = path.lstat()
+            if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+                    or observed.st_nlink != 1 or stat.S_IMODE(observed.st_mode) != 0o600
+                    or observed.st_size > 4096 or json.loads(path.read_bytes()) != expected):
+                raise ProtocolError(HTTPStatus.CONFLICT, "change_attachment_binding_conflict",
+                                    "remote session already has another immutable attachment owner")
+            return
+        # Storage is a single service process; its lock serializes the first claim.
+        self._atomic_json(path, expected)
+        self._fsync_directory(directory)
+
     def put(
         self,
         session_id: str,
@@ -114,6 +178,7 @@ class AttachmentStore:
         self._inside(content_path)
 
         with self.lock:
+            self._claim_change_session(session_identity, private_ownership)
             if metadata_path.exists() or content_path.exists():
                 return self._existing(
                     session_identity,
@@ -366,7 +431,10 @@ class AttachmentStore:
         expected_workspace = f"remote:{self.worker_id}:work-session:{session_id}"
         if (
             metadata["projectIdentity"] != "atenea"
-            or metadata["workspaceIdentity"] != expected_workspace
+            or (metadata["workspaceIdentity"] != expected_workspace and not (
+                self.worker_id == "ax42-01" and isinstance(metadata["workspaceIdentity"], str)
+                and re.fullmatch(r"remote:ax42-01:change:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                                 metadata["workspaceIdentity"])))
             or metadata["storageScope"] != "REAL_SESSION"
         ):
             raise ProtocolError(
@@ -564,6 +632,9 @@ class AttachmentHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     self.server.store.real_project_capability(),
                 )
+                return
+            if path == "/v1/capabilities/change-session-attachment":
+                self._json(HTTPStatus.OK, self.server.store.change_project_capability())
                 return
             session_id, attachment_id, operation = self._route(path)
             if operation == "metadata":

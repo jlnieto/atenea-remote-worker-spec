@@ -31,6 +31,62 @@ class AttachmentStoreTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def change_fixture(self):
+        self.store = MODULE.AttachmentStore(self.root, "ax42-01")
+        self.session_id = str(uuid.uuid4())
+        change = str(uuid.uuid4())
+        changes = Path(self.temporary.name) / "changes"
+        root = changes / change
+        (root / "atenea").mkdir(parents=True)
+        owner = {"schemaVersion": 1, "protocolVersion": "development-change-workspace/v1",
+                 "changeKey": change, "databaseProjectId": 1, "projectId": "atenea", "baseCommit": "1" * 40,
+                 "workspaceBranch": "atenea/change-" + change, "workspaceIdentity": "remote:ax42-01:change:" + change,
+                 "workerId": "ax42-01"}
+        record = root / "workspace-v1.json"
+        record.write_text(json.dumps(owner)); record.chmod(0o600)
+        patcher = mock.patch.object(MODULE, "CHANGE_WORKSPACE_ROOT", changes)
+        patcher.start(); self.addCleanup(patcher.stop)
+        return self.metadata(syntheticFixture=False, projectIdentity="atenea", storageScope="REAL_SESSION",
+                             workspaceIdentity=owner["workspaceIdentity"]), record
+
+    def test_change_owned_images_use_exact_existing_workspace_and_replay_without_new_owner(self):
+        metadata, _ = self.change_fixture()
+        first, created = self.put(metadata=metadata)
+        second, replayed = self.put(metadata=metadata)
+        self.assertTrue(created); self.assertFalse(replayed); self.assertEqual(first, second)
+        owner = json.loads((self.store.sessions / self.session_id / "owner-v1.json").read_bytes())
+        self.assertEqual(metadata["workspaceIdentity"], owner["workspaceIdentity"])
+        self.assertEqual(MODULE.CHANGE_PROJECT_PROTOCOL, owner["protocolVersion"])
+        self.assertNotIn("workspaceIdentity", first)
+        self.assertEqual(self.content, self.store.content(self.session_id, self.attachment_id)[1].read_bytes())
+
+    def test_change_capability_matches_closed_versioned_schema(self):
+        from jsonschema import Draft202012Validator
+        self.change_fixture()
+        schema = json.loads((Path(__file__).parents[2]/"runtime-contract/change-session-attachment-v1.capability.schema.json").read_bytes())
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(self.store.change_project_capability())
+
+    def test_change_owner_wrong_project_or_symlink_is_rejected_without_retention(self):
+        metadata, record = self.change_fixture()
+        value = json.loads(record.read_bytes()); value["databaseProjectId"] = 2
+        record.write_text(json.dumps(value))
+        with self.assertRaises(MODULE.ProtocolError): self.put(metadata=metadata)
+        self.assertFalse((self.store.sessions / self.session_id).exists())
+        value["databaseProjectId"] = 1; record.write_text(json.dumps(value))
+        original = record.with_name("foreign.json"); record.rename(original); record.symlink_to(original)
+        with self.assertRaises(MODULE.ProtocolError): self.put(metadata=metadata)
+
+    def test_session_cannot_be_rebound_to_another_change(self):
+        metadata, record = self.change_fixture(); self.put(metadata=metadata)
+        other = str(uuid.uuid4()); value = json.loads(record.read_bytes())
+        root = record.parent.parent / other; (root / "atenea").mkdir(parents=True)
+        value.update(changeKey=other, workspaceIdentity="remote:ax42-01:change:" + other, workspaceBranch="atenea/change-" + other)
+        owner = root / "workspace-v1.json"; owner.write_text(json.dumps(value)); owner.chmod(0o600)
+        crossed = {**metadata, "workspaceIdentity": value["workspaceIdentity"]}
+        with self.assertRaises(MODULE.ProtocolError): self.put(metadata=crossed)
+        self.assertEqual(metadata["workspaceIdentity"],json.loads((self.store.sessions/self.session_id/"owner-v1.json").read_bytes())["workspaceIdentity"])
+
     def metadata(self, content=None, **overrides):
         content = self.content if content is None else content
         value = {
