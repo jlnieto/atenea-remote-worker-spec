@@ -306,10 +306,12 @@ class AuthorityTest(unittest.TestCase):
             with patch.object(release,"configuration",return_value={"mode":"AX42"}),\
                  patch.object(release,"ROOT",root),\
                  patch.object(release,"trusted_directory"),\
+                 patch.object(release,"plans_authority") as plans,\
                  patch.object(release,"trusted",side_effect=lambda p,mode=None:p),\
                  patch.object(sys,"argv",["release-control-v1.py","--preflight-install"]):
                 with self.assertRaises(release.Rejected) as error: release.main()
                 self.assertEqual("RELEASE_IN_PROGRESS",error.exception.code)
+                plans.assert_called_once_with(legacy=True, absent=True)
 
     def test_all_release_schemas_are_closed_draft_2020_12(self):
         import jsonschema
