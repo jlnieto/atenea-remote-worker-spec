@@ -1053,9 +1053,50 @@ def configuration():
     return config
 
 
+def plans_authority(*, legacy=False, absent=False):
+    """The fixed journal directory, never a caller-selected path or adoption."""
+    trusted_directory(ROOT, 0o700)
+    path = ROOT / "plans"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        if absent:
+            return path
+        raise Rejected("INSTALLED_AUTHORITY_INVALID")
+    modes = {0o700, 0o755} if legacy else {0o700}
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) not in modes):
+        raise Rejected("INSTALLED_AUTHORITY_INVALID")
+    return path
+
+
+def prepare_plans():
+    # An early root bootstrap could create the intermediate plans directory
+    # as 0755. ROOT was and remains 0700. Only this exact root-owned legacy
+    # mode may be tightened; do not recurse, adopt or rewrite any journal.
+    path = plans_authority(legacy=True, absent=True)
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if (info.st_uid != 0 or info.st_gid != 0
+                or stat.S_IMODE(info.st_mode) not in {0o700, 0o755}):
+            raise Rejected("INSTALLED_AUTHORITY_INVALID")
+        if stat.S_IMODE(info.st_mode) == 0o755:
+            os.fchmod(descriptor, 0o700)
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    plans_authority()
+
+
 def prepare_runtime(config):
     ROOT.mkdir(mode=0o700, parents=False, exist_ok=True)
     trusted_directory(ROOT, 0o700)
+    prepare_plans()
     SOCKET.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     trusted_directory(SOCKET.parent, 0o755)
     if config["mode"] == "AX42":
@@ -1113,6 +1154,7 @@ def main():
     if arguments == ["--preflight-install"]:
         if ROOT.exists() or ROOT.is_symlink():
             trusted_directory(ROOT,0o700)
+            plans_authority(legacy=True, absent=True)
             for path in (ROOT / "plans").glob("*/operation.json"):
                 record=json.loads(trusted(path,0o600).read_bytes())
                 if record["state"] == "PREPARING" or (record["operationId"] and record["state"] not in TERMINAL):
@@ -1133,6 +1175,7 @@ def main():
         return
     if arguments == ["--verify-runtime"]:
         trusted_directory(ROOT, 0o700)
+        plans_authority()
         trusted_directory(SOCKET.parent, 0o755)
         if config["mode"] == "AX42":
             trusted(ADMISSION, 0o640)

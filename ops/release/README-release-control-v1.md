@@ -67,6 +67,14 @@ y confirmado. El daemon guarda sus registros root:root 0600 bajo
 `/srv/atenea/release-v1/plans/<UUID>/`. Su respuesta pública contiene sólo
 identidades, estado, commits, versión y hashes.
 
+El installer materializa explícitamente `plans/` como root:root 0700 y lo
+comprueba en `verify`. Únicamente permite corregir el directorio root:root
+0755 de un bootstrap inicial, dentro de la raíz privada 0700 ya verificada.
+La corrección ocurre sólo en `apply`, mediante descriptor sin seguir enlaces;
+`plan` no modifica nada. No cambia propietarios, no recorre contenidos ni
+reescribe planes, recibos o baseline. Cualquier otro modo/owner/symlink se
+rechaza. Así la observación de Platform y la autoridad instalada coinciden.
+
 PLAN pasa PREPARING→READY y espera hasta 45 minutos si el build main sigue
 en curso; READY caduca a los 10 minutos. PREPARING puede descargar/stagear
 artefactos, cargar una imagen inactiva o firmar un APK privado, pero no
