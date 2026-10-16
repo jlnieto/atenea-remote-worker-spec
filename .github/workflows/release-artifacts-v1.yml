@@ -18,6 +18,8 @@ jobs:
         run: |
           python3 -m pip install jsonschema==4.23.0
           python3 ops/release/test-release-control-v1.py
+          python3 ops/release/test-release-rescue-v1.py
+          python3 ops/release/test-managed-validation-policy-v1.py
           python3 -B ops/release/test-android-observation-v1.py
           python3 -B ops/worker/test-worksession-attachment-worker-v1.py
           python3 ops/release/test-release-admission-v1.py
@@ -30,6 +32,8 @@ jobs:
           python3 ops/worker/test-atenea-workspace-release-v1.py
           python3 ops/worker/test-atenea-project-source-sync-v1.py
           python3 ops/worker/test-development-change-workspace-v1.py
+          python3 -B ops/worker/test-development-change-validation-recovery-v1.py
+          python3 -B ops/worker/test-atenea-android-validation-v2.py
           python3 ops/worker/test-atenea-backend-test-v2.py
           python3 ops/worker/test-atenea-validation-v1.py
           python3 ops/worker/test-project-codex-runner-v1.py ReviewedDeploymentMetadataTest

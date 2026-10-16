@@ -1,0 +1,15 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/release-rescue-v1.operation.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["protocol","operationId","state","sourceCommit","createdAt","finishedAt","errorCode"],
+  "properties":{
+    "protocol":{"const":"atenea-rescue/v1"},
+    "operationId":{"type":"string","format":"uuid"},
+    "state":{"enum":["READY","ACCEPTED","APPLYING","SUCCEEDED","FAILED","BLOCKED","ATTENTION"]},
+    "sourceCommit":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "createdAt":{"type":"integer","minimum":1},
+    "finishedAt":{"type":["integer","null"],"minimum":1},
+    "errorCode":{"type":["string","null"],"pattern":"^[A-Z_]{1,80}$"}
+  }
+}

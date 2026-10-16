@@ -103,7 +103,7 @@ class AppTargetTest(unittest.TestCase):
             return b""
         patcher=patch.object(r,"command",side_effect=command); patcher.start(); self.addCleanup(patcher.stop)
         r.save(self.stage/"image.json",{"imageId":"sha256:"+"2"*64})
-        self.plan={"operationId":str(uuid.uuid4()),"sourceCommit":NEW,"predecessor":{"sourceCommit":OLD,"override":copy.deepcopy(self.old)}}
+        self.plan={"operationId":str(uuid.uuid4()),"sourceCommit":NEW,"artifact":{"flywayVersion":84},"predecessor":{"sourceCommit":OLD,"override":copy.deepcopy(self.old)}}
     def test_apply_preserves_flags_and_updates_only_backend_after_pg16_backup(self):
         self.target.apply(self.plan,self.stage)
         final=json.loads(self.override.read_bytes())

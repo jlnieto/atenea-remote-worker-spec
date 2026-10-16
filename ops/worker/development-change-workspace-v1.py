@@ -49,6 +49,28 @@ SOURCE_CONTINUATION_PROTOCOL = "development-change-source-update/v2"
 SOURCE_UPDATE_OPERATIONS = {"PREPARE", "INSPECT", "RECONCILE", "RECOVER"}
 SOURCE_FINALIZATION_PROTOCOL = "development-change-source-finalization/v1"
 SOURCE_FINALIZATION_OPERATIONS = {"FINALIZE", "INSPECT", "RECOVER"}
+VALIDATION_RECOVERY_PROTOCOL = "development-change-validation-recovery/v1"
+VALIDATION_RECOVERY_OPERATIONS = {"DIAGNOSE", "PREPARE", "APPLY", "INSPECT"}
+# One reviewed migration, not a package-supplied patch or a generic file editor.
+# Whole-file hashes reject additional Gradle logic, dependencies or later edits.
+VALIDATION_RECOVERY_RECIPE = "atenea-explicit-android-version-v1"
+VALIDATION_RECOVERY_FILE = "android/app/build.gradle.kts"
+VALIDATION_RECOVERY_BEFORE_SHA256 = "add52c72d55dba76638f3b1c5e52ab24208530b2f346540928dae84084c82a97"
+VALIDATION_RECOVERY_AFTER_SHA256 = "119446c0437cf2fa9f49b2fdb3f847201fe97cdd8fa8fd773437bb653179de75"
+VALIDATION_RECOVERY_POLICY = Path("/usr/local/libexec/atenea/atenea-android-inputs-v2.json")
+VALIDATION_RECOVERY_POLICY_SHA256 = "913142dde01538c9de2a6e4926292870de3677dcf7667af6f60cddf55162ea95"
+VALIDATION_RECOVERY_BEFORE = b'''        val stableBuild = providers.gradleProperty("ATENEA_STABLE_BUILD_NUMBER").orNull?.let {
+            require(it.matches(Regex("[1-9][0-9]{0,8}"))) { "Invalid stable CI build number" }
+            it.toInt()
+        }
+        // Fixed main workflow counter; retries of one build retain the same version.
+        versionCode = stableBuild?.let { 1_000_000 + it } ?: 156
+        versionName = stableBuild?.let { "0.6.$it" } ?: "0.5.123"
+'''
+VALIDATION_RECOVERY_AFTER = b'''        // Product release version, reviewed in Git; CI run numbers are not app versions.
+        versionCode = 156
+        versionName = "0.5.123"
+'''
 REQUEST_KEYS = {
     "schemaVersion",
     "protocolVersion",
@@ -120,6 +142,11 @@ PUBLICATION_RECORD_KEYS = PUBLICATION_REQUEST_KEYS | {
 }
 SOURCE_UPDATE_REQUEST_KEYS = PUBLICATION_REQUEST_KEYS | {
     "targetMainCommit", "publicationReceiptSha256",
+}
+VALIDATION_RECOVERY_REQUEST_KEYS = PUBLICATION_REQUEST_KEYS | {"validationOperationId"}
+VALIDATION_RECOVERY_RECORD_KEYS = VALIDATION_RECOVERY_REQUEST_KEYS | {
+    "state", "intentSha256", "ownerRecordSha256", "recipeId", "resultFingerprintSha256",
+    "protectedFingerprintSha256", "recordSha256",
 }
 SOURCE_UPDATE_RECORD_KEYS = SOURCE_UPDATE_REQUEST_KEYS | {
     "state", "intentSha256", "ownerRecordSha256", "preparedTreeSha",
@@ -359,6 +386,27 @@ def validate_source_update_request(value: dict[str, Any], operation: str) -> dic
 def source_update_intent(request: dict[str, Any]) -> str:
     return canonical_sha256({key: value for key, value in request.items()
                              if key not in {"operation", "effect", "requestFingerprintSha256"}})
+
+
+def validate_validation_recovery_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
+    effects = {"DIAGNOSE": "OBSERVE_ONLY", "INSPECT": "OBSERVE_ONLY",
+               "PREPARE": "PREPARE_EXACT_REPAIR", "APPLY": "APPLY_EXACT_REPAIR"}
+    if (operation not in VALIDATION_RECOVERY_OPERATIONS or set(value) != VALIDATION_RECOVERY_REQUEST_KEYS
+            or type(value.get("schemaVersion")) is not int
+            or value.get("protocolVersion") != VALIDATION_RECOVERY_PROTOCOL
+            or value.get("operation") != operation or value.get("effect") != effects[operation]
+            or not SHA256.fullmatch(str(value.get("sourceFingerprintSha256")))
+            or canonical_sha256({k: v for k, v in value.items() if k != "requestFingerprintSha256"})
+                != value.get("requestFingerprintSha256")):
+        raise ContractError("validation recovery request is invalid")
+    canonical_uuid(value.get("validationOperationId"))
+    publication = {k: value[k] for k in PUBLICATION_REQUEST_KEYS}
+    publication.update(protocolVersion=PUBLICATION_PROTOCOL_VERSION,
+                       operation="PUBLISH", effect="PUBLISH_EXACT_CHANGE_BRANCH")
+    publication["requestFingerprintSha256"] = canonical_sha256({k: v for k, v in publication.items()
+                                                              if k != "requestFingerprintSha256"})
+    validate_publication_request(publication)
+    return dict(value)
 
 
 def sealed_source_record(path: Path, keys: set[str], uid: int, gid: int) -> dict[str, Any]:
@@ -606,6 +654,177 @@ class WorkspaceMediator:
         with self.lock():
             self._validate_roots()
             return self._publish_exact(exact)
+
+    def recover_validation(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
+        exact = validate_validation_recovery_request(request, operation)
+        with self.lock():
+            self._validate_roots()
+            root = self._root(exact["changeKey"])
+            worktree = self._worktree(exact["changeKey"])
+            self._source_update_owner(exact, require_publication=False)
+            # This repair is for an unpublished draft, never a second source
+            # authority for an existing PR, merge preparation or publication.
+            if any((root / name).exists() or (root / name).is_symlink() for name in (
+                    "branch-publication-v1.json", "source-update-v1.json", "source-update-active-v1.json")):
+                raise ContractError("validation recovery published source is unsupported")
+            owner_hash = canonical_sha256(self._read_record(self._record_path(exact["changeKey"])))
+            target = worktree / VALIDATION_RECOVERY_FILE
+            parent = worktree
+            for part in Path(VALIDATION_RECOVERY_FILE).parts[:-1]:
+                parent = parent / part
+                regular_directory(parent, os.geteuid())
+            info = target.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) not in {0o644, 0o664} or info.st_size > 65536):
+                raise ContractError("validation recovery source file is unsafe")
+            raw = target.read_bytes()
+            actual_hash = hashlib.sha256(raw).hexdigest()
+            replacement = raw.replace(VALIDATION_RECOVERY_BEFORE, VALIDATION_RECOVERY_AFTER)
+            eligible = (actual_hash == VALIDATION_RECOVERY_BEFORE_SHA256
+                        and raw.count(VALIDATION_RECOVERY_BEFORE) == 1
+                        and hashlib.sha256(replacement).hexdigest() == VALIDATION_RECOVERY_AFTER_SHA256
+                        and self._validation_recovery_inputs_approved(worktree, replacement))
+            observation = self._workspace_observation_for_publication(exact)
+            if observation["state"] != "OWNED" or observation["sourceCommit"] != exact["sourceCommit"]:
+                raise ContractError("validation recovery ownership changed")
+            path = root / ("validation-recovery-" + exact["operationId"] + "-v1.json")
+            record = self._read_sealed_record(path, VALIDATION_RECOVERY_RECORD_KEYS) if path.exists() or path.is_symlink() else None
+            intent = source_update_intent(exact)
+            if record is not None and (record["intentSha256"] != intent or record["ownerRecordSha256"] != owner_hash
+                    or record["recipeId"] != VALIDATION_RECOVERY_RECIPE or record["state"] not in {"READY", "APPLYING", "APPLIED"}):
+                raise ContractError("validation recovery retained intent changed")
+            def response(state: str, receipt: dict[str, Any] | None = record) -> dict[str, Any]:
+                return {**exact, "state": state, "recipeId": VALIDATION_RECOVERY_RECIPE if state != "UNSUPPORTED" else None,
+                        "resultFingerprintSha256": receipt["resultFingerprintSha256"] if receipt else None,
+                        "receiptSha256": receipt["recordSha256"] if receipt else None, "valuesExposed": False}
+            if operation == "INSPECT":
+                return response(record["state"] if record else "ABSENT")
+            if operation == "DIAGNOSE":
+                if observation["sourceFingerprintSha256"] != exact["sourceFingerprintSha256"]:
+                    raise ContractError("validation recovery source changed")
+                return response("AVAILABLE" if eligible else "UNSUPPORTED")
+            if record is not None and record["state"] == "APPLIED":
+                return response("APPLIED")
+            self._source_update_idle()
+            self._require_validation_recovery_failure(exact)
+            protected = self._validation_recovery_protected(worktree)
+            if record is None:
+                if operation != "PREPARE" or not eligible:
+                    raise ContractError("validation recovery requires an exact prepared recipe")
+                if observation["sourceFingerprintSha256"] != exact["sourceFingerprintSha256"]:
+                    raise ContractError("validation recovery source changed")
+                result = raw.replace(VALIDATION_RECOVERY_BEFORE, VALIDATION_RECOVERY_AFTER)
+                if raw.count(VALIDATION_RECOVERY_BEFORE) != 1 or hashlib.sha256(result).hexdigest() != VALIDATION_RECOVERY_AFTER_SHA256:
+                    raise ContractError("validation recovery recipe is inconsistent")
+                journal = self._journal_request(exact, "PREPARE", "PREPARE_EXACT_REPAIR")
+                record = {**journal, "state": "READY", "intentSha256": intent, "ownerRecordSha256": owner_hash,
+                          "recipeId": VALIDATION_RECOVERY_RECIPE, "resultFingerprintSha256": None,
+                          "protectedFingerprintSha256": protected}
+                self._save_source_update(path, record)
+            if operation == "PREPARE":
+                return response(record["state"], record)
+            if protected != record["protectedFingerprintSha256"]:
+                raise ContractError("validation recovery later edit requires attention")
+            if actual_hash == VALIDATION_RECOVERY_BEFORE_SHA256:
+                if not eligible:
+                    raise ContractError("validation recovery dependency policy changed")
+                if observation["sourceFingerprintSha256"] != exact["sourceFingerprintSha256"]:
+                    raise ContractError("validation recovery source changed")
+                result = raw.replace(VALIDATION_RECOVERY_BEFORE, VALIDATION_RECOVERY_AFTER)
+                if raw.count(VALIDATION_RECOVERY_BEFORE) != 1 or hashlib.sha256(result).hexdigest() != VALIDATION_RECOVERY_AFTER_SHA256:
+                    raise ContractError("validation recovery recipe is inconsistent")
+                record["state"] = "APPLYING"
+                self._save_source_update(path, record)
+                descriptor, temporary = tempfile.mkstemp(prefix=".atenea-validation-repair-", dir=target.parent)
+                try:
+                    with os.fdopen(descriptor, "wb") as stream:
+                        stream.write(result); stream.flush(); os.fsync(stream.fileno())
+                    os.chmod(temporary, stat.S_IMODE(info.st_mode))
+                    os.chown(temporary, info.st_uid, info.st_gid)
+                    # All worker admissions and the workspace mutation lock are
+                    # held. Reject direct operator edits instead of overwriting.
+                    current = target.lstat()
+                    fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns")
+                    if any(getattr(current, key) != getattr(info, key) for key in fields) or target.read_bytes() != raw:
+                        raise ContractError("validation recovery source changed")
+                    os.replace(temporary, target)
+                    directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+                    try: os.fsync(directory)
+                    finally: os.close(directory)
+                finally:
+                    if os.path.exists(temporary): os.unlink(temporary)
+            elif actual_hash != VALIDATION_RECOVERY_AFTER_SHA256 or record["state"] != "APPLYING":
+                raise ContractError("validation recovery later edit requires attention")
+            if self._validation_recovery_protected(worktree) != record["protectedFingerprintSha256"]:
+                raise ContractError("validation recovery later edit requires attention")
+            final = self._workspace_observation_for_publication(exact)
+            if final["state"] != "OWNED" or not SHA256.fullmatch(str(final["sourceFingerprintSha256"])):
+                raise ContractError("validation recovery final observation is invalid")
+            record.update(state="APPLIED", resultFingerprintSha256=final["sourceFingerprintSha256"])
+            self._save_source_update(path, record)
+            return response("APPLIED", record)
+
+    def _validation_recovery_inputs_approved(self, worktree: Path, replacement: bytes) -> bool:
+        policy_info = VALIDATION_RECOVERY_POLICY.lstat()
+        raw = VALIDATION_RECOVERY_POLICY.read_bytes()
+        if (not stat.S_ISREG(policy_info.st_mode) or policy_info.st_nlink != 1
+                or (not self.test_mode and (policy_info.st_uid != 0 or policy_info.st_gid != 0
+                                           or stat.S_IMODE(policy_info.st_mode) != 0o644))
+                or hashlib.sha256(raw).hexdigest() != VALIDATION_RECOVERY_POLICY_SHA256):
+            raise ContractError("validation recovery input policy is unsafe")
+        policy = strict_json(raw)
+        roots = ("android", "android/app", "android/api", "android/secure", "android/core-console", "android/voice-runtime")
+        forbidden = [worktree / root / name for root in roots for name in (
+            "build.gradle", "settings.gradle", "buildSrc", "gradle.lockfile")]
+        forbidden += [worktree / "android/gradle" / name for name in ("verification-metadata.xml", "dependency-locks")]
+        if any(item.exists() or item.is_symlink() for item in forbidden): return False
+        normalized = replacement
+        for pattern, value in (
+            (rb"(?m)^        versionCode = [1-9][0-9]{0,8}$", b"        versionCode = 1"),
+            (rb'(?m)^        versionName = "[0-9]{1,4}\.[0-9]{1,6}\.[0-9]{1,6}"$', b'        versionName = "0.0.0"'),
+        ):
+            normalized, count = re.subn(pattern, value, normalized)
+            if count != 1: return False
+        for bundle in policy["bundles"]:
+            for name, expected in {**policy["common"], **bundle["files"]}.items():
+                path = worktree / name
+                if (any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file()
+                        or path.stat().st_size > 256 * 1024): break
+                data = normalized if name == VALIDATION_RECOVERY_FILE else path.read_bytes()
+                if hashlib.sha256(data).hexdigest() != expected: break
+            else: return True
+        return False
+
+    def _require_validation_recovery_failure(self, request: dict[str, Any]) -> None:
+        # _source_update_idle has already checked authority and structure.
+        state = strict_json((self.lock_file.parent / "executions.json").read_bytes())
+        failed = state["validations"].get(request["validationOperationId"], {})
+        if (failed.get("state") != "POLICY_FAILED" or failed.get("validationDefinition") != "ANDROID_BUILD"
+                or failed.get("workspaceIdentity") != request["workspaceIdentity"]
+                or failed.get("sourceTreeFingerprintSha256") != request["sourceFingerprintSha256"]
+                or failed.get("summary") != "ANDROID_BUILD/TOOLCHAIN: UNSUPPORTED_DEPENDENCY_MANIFEST"):
+            raise ContractError("validation recovery exact failure is unavailable")
+
+    def _validation_recovery_protected(self, worktree: Path) -> str:
+        digest = hashlib.sha256()
+        def add(value: bytes) -> None:
+            digest.update(len(value).to_bytes(8, "big")); digest.update(value)
+        exclude = ["--", ".", ":(exclude)" + VALIDATION_RECOVERY_FILE]
+        add(self._safe_update_git("ls-files", "--stage", "-z", cwd=worktree))
+        add(self._safe_update_git("status", "--porcelain=v2", "-z", "--untracked-files=all", *exclude, cwd=worktree))
+        add(self._safe_update_git("diff", "--binary", "--no-ext-diff", "HEAD", *exclude, cwd=worktree))
+        names = self._safe_update_git("ls-files", "--others", "--exclude-standard", "-z", *exclude, cwd=worktree)
+        total = 0
+        for name in sorted(part.decode("utf-8") for part in names.split(b"\0") if part):
+            item = worktree / name
+            metadata = item.lstat()
+            if stat.S_ISREG(metadata.st_mode): data = item.read_bytes()
+            elif stat.S_ISLNK(metadata.st_mode): data = os.readlink(item).encode()
+            else: raise ContractError("validation recovery protected file is unsafe")
+            total += len(data)
+            if total > MAX_GIT_OUTPUT_BYTES: raise ContractError("validation recovery projection exceeds bound")
+            add(name.encode()); add(data)
+        return digest.hexdigest()
 
     def finalize_source(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
         exact = validate_source_finalization_request(request, operation)
@@ -959,7 +1178,8 @@ class WorkspaceMediator:
                        for item in state["validations"].values())):
             raise ContractError("source update execution or validation is active")
 
-    def _source_update_owner(self, request: dict[str, Any], *, expected_head: str | None = None) -> None:
+    def _source_update_owner(self, request: dict[str, Any], *, expected_head: str | None = None,
+                             require_publication: bool = True) -> None:
         worktree = self._worktree(request["changeKey"])
         root = regular_directory(self._root(request["changeKey"]), os.geteuid())
         if stat.S_IMODE(root.st_mode) not in {0o700, 0o770}:
@@ -992,7 +1212,8 @@ class WorkspaceMediator:
                             request["baseCommit"], request["sourceCommit"], git_dir=True,
                             env_extra=self._update_git_environment()).returncode != 0:
             raise ContractError("source update creation base is not an ancestor")
-        require_source_publication(self._root(request["changeKey"]), request, owner, os.geteuid(), root.st_gid)
+        if require_publication:
+            require_source_publication(self._root(request["changeKey"]), request, owner, os.geteuid(), root.st_gid)
 
     @staticmethod
     def _journal_request(request: dict[str, Any], operation: str, effect: str) -> dict[str, Any]:
@@ -2116,7 +2337,8 @@ class WorkspaceMediator:
 def main() -> int:
     updates = {f"{operation.lower()}-update": operation for operation in SOURCE_UPDATE_OPERATIONS}
     finalizations = {f"{operation.lower()}-source": operation for operation in SOURCE_FINALIZATION_OPERATIONS}
-    if len(sys.argv) != 2 or sys.argv[1].upper() not in OPERATIONS | {PUBLICATION_OPERATION} and sys.argv[1] not in updates | finalizations:
+    recoveries = {f"{operation.lower()}-validation": operation for operation in VALIDATION_RECOVERY_OPERATIONS}
+    if len(sys.argv) != 2 or sys.argv[1].upper() not in OPERATIONS | {PUBLICATION_OPERATION} and sys.argv[1] not in updates | finalizations | recoveries:
         print("DEVELOPMENT_CHANGE_WORKSPACE_REJECTED", file=sys.stderr)
         return 65
     try:
@@ -2126,7 +2348,9 @@ def main() -> int:
         request = strict_json(raw)
         operation = sys.argv[1].upper()
         mediator = WorkspaceMediator()
-        if sys.argv[1] in finalizations:
+        if sys.argv[1] in recoveries:
+            response = mediator.recover_validation(request, recoveries[sys.argv[1]])
+        elif sys.argv[1] in finalizations:
             response = mediator.finalize_source(request, finalizations[sys.argv[1]])
         elif sys.argv[1] in updates:
             response = mediator.update_source(request, updates[sys.argv[1]])

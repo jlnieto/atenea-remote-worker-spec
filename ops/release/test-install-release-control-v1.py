@@ -22,6 +22,8 @@ class InstallerTest(unittest.TestCase):
         source=SCRIPT.read_text()
         self.assertIn("--preflight-install",source)
         self.assertIn("systemctl restart atenea-release-control-v1.service",source)
+        self.assertIn('install -o root -g root -m 0755 "${SCRIPT_DIR}/release-rescue-v1.py" "$RESCUE"',source)
+        self.assertIn('cmp --silent "${SCRIPT_DIR}/release-rescue-v1.py" "$RESCUE"',source)
 
     def test_ax42_unit_grants_only_its_installer_fixed_paths(self):
         unit=subprocess.check_output(["/bin/bash","-c",'source "$1"; unit_content AX42',"unit-test",str(SCRIPT)],text=True)
