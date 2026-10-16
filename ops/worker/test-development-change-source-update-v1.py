@@ -30,7 +30,7 @@ class SourceUpdateTest(unittest.TestCase):
     request = fixtures.DevelopmentChangeWorkspaceMediatorTest.request
     publication_request = fixtures.DevelopmentChangeWorkspaceMediatorTest.publication_request
 
-    def prepare_fixture(self, *, conflict=True):
+    def prepare_fixture(self, *, conflict=True, stale_mirror=False):
         self.mediator.execute(self.request(), "PROVISION")
         self.worktree = self.workspaces / self.change_key / "atenea"
         (self.worktree / "ticket.txt").write_text("ticket change\n")
@@ -45,7 +45,8 @@ class SourceUpdateTest(unittest.TestCase):
         self._git("-C", str(self.source), "commit", "-m", "main advance")
         self.target = self._git("-C", str(self.source), "rev-parse", "HEAD", capture=True).strip()
         self._git("-C", str(self.source), "push", str(self.remote), "main:main")
-        self._git(f"--git-dir={self.mirror}", "fetch", str(self.remote), "main:refs/remotes/origin/main")
+        if not stale_mirror:
+            self._git(f"--git-dir={self.mirror}", "fetch", str(self.remote), "main:refs/remotes/origin/main")
         self.head = published["publishedHeadSha"]
         self.path = self.workspaces / self.change_key / "source-update-v1.json"
         self.owner = (self.workspaces / self.change_key / "workspace-v1.json").read_bytes()
@@ -157,6 +158,11 @@ class SourceUpdateTest(unittest.TestCase):
         (self.worktree / "main.txt").write_bytes(self.mediator._safe_update_git("cat-file", "blob", blob, git_dir=True))
         result = self.mediator.update_source(self.observe(request, "RECONCILE"), "RECONCILE")
         self.assertEqual("NEEDS_RESOLUTION", result["state"])
+        pin_path=self.path.parent / f"source-target-{request['operationId']}-v1.json"
+        schema=json.loads((SOURCE.parent.parent / "runtime-contract/development-change-source-target-v1.record.schema.json").read_bytes())
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema,format_checker=FormatChecker()).validate(json.loads(pin_path.read_bytes()))
+        self.assertEqual(0o600,stat.S_IMODE(pin_path.stat().st_mode))
         self.assert_retained()
 
     def test_reconcile_does_not_overwrite_unattributed_later_edit(self):
@@ -179,13 +185,125 @@ class SourceUpdateTest(unittest.TestCase):
         self.assertEqual(before, self.path.read_bytes())
         self.assert_retained()
 
-    def test_moved_mirror_main_is_rejected_before_worktree_effect(self):
+    def test_lagging_mirror_uses_private_exact_target_without_moving_canonical(self):
         request = self.prepare_fixture()
         self._git(f"--git-dir={self.mirror}", "update-ref", "refs/remotes/origin/main", self.base_commit)
-        with self.assertRaisesRegex(mediator_module.ContractError, "main or published head moved"):
-            self.mediator.update_source(request, "PREPARE")
+        result = self.mediator.update_source(request, "PREPARE")
+        self.assertEqual("NEEDS_RESOLUTION", result["state"])
+        self.assertEqual(self.base_commit, self._git(f"--git-dir={self.mirror}", "rev-parse", "refs/remotes/origin/main", capture=True).strip())
+        self.assertEqual(self.target, self._git(f"--git-dir={self.mirror}", "rev-parse", self.mediator._source_target_ref(request), capture=True).strip())
+        self.assert_retained()
+
+    def test_missing_target_is_fetched_only_to_owned_private_ref(self):
+        request = self.prepare_fixture(stale_mirror=True)
+        for name in ("README.md", "ticket.txt"):
+            (self.worktree / name).chmod(0o660)  # actual managed-draft permissions
+        missing = subprocess.run(["/usr/bin/git", f"--git-dir={self.mirror}", "cat-file", "-e", self.target], capture_output=True)
+        self.assertNotEqual(0, missing.returncode)
+        config = (self.mirror / "config").read_bytes()
+        before_refs = self._git(f"--git-dir={self.mirror}", "for-each-ref", "--format=%(refname) %(objectname)", capture=True)
+        with mock.patch.object(self.mediator, "_safe_update_git", wraps=self.mediator._safe_update_git) as calls:
+            result = self.mediator.update_source(request, "PREPARE")
+        fetch = [call for call in calls.call_args_list if "fetch" in call.args]
+        self.assertEqual(1, len(fetch))
+        self.assertIn("--no-write-fetch-head", fetch[0].args)
+        self.assertIn("--refmap=", fetch[0].args)
+        self.assertEqual((self.remote.as_posix(), self.target), fetch[0].args[-2:])
+        self.assertTrue(fetch[0].kwargs["publication"])
+        self.assertEqual(config, (self.mirror / "config").read_bytes())
+        self.assertEqual(self.base_commit, self._git(f"--git-dir={self.mirror}", "rev-parse", "refs/remotes/origin/main", capture=True).strip())
+        for line in before_refs.splitlines():
+            name, value = line.split()
+            self.assertEqual(value, self._git(f"--git-dir={self.mirror}", "rev-parse", name, capture=True).strip())
+        self.assertEqual("NEEDS_RESOLUTION", result["state"])
+        self.assert_retained()
+
+    def test_fetch_failure_keeps_workspace_and_canonical_untouched(self):
+        request = self.prepare_fixture(stale_mirror=True)
+        original = self.mediator._safe_update_git
+        def fail(*args, **kwargs):
+            if "fetch" in args: raise mediator_module.ContractError("synthetic transport failure")
+            return original(*args, **kwargs)
+        with mock.patch.object(self.mediator, "_safe_update_git", side_effect=fail):
+            with self.assertRaisesRegex(mediator_module.ContractError, "synchronization is unavailable"):
+                self.mediator.update_source(request, "PREPARE")
         self.assertFalse(self.path.exists())
         self.assertEqual("ticket README\n", (self.worktree / "README.md").read_text())
+        self.assertEqual(self.base_commit, self._git(f"--git-dir={self.mirror}", "rev-parse", "refs/remotes/origin/main", capture=True).strip())
+
+    def test_interruption_after_private_pin_recovers_same_intent_and_gc_root(self):
+        request = self.prepare_fixture(stale_mirror=True)
+        original = self.mediator._save_source_update
+        def interrupt(path, record):
+            if path.name.startswith("source-target-"): raise mediator_module.ContractError("synthetic lost pin receipt")
+            return original(path, record)
+        with mock.patch.object(self.mediator, "_save_source_update", side_effect=interrupt):
+            with self.assertRaisesRegex(mediator_module.ContractError, "lost pin receipt"):
+                self.mediator.update_source(request, "PREPARE")
+        self.assertFalse(self.path.exists())
+        self._git(f"--git-dir={self.mirror}", "gc", "--prune=now")
+        self.assertEqual("ABSENT", self.mediator.update_source(self.observe(request), "INSPECT")["state"])
+        first = self.mediator.update_source(request, "PREPARE")
+        self.assertEqual(first, self.mediator.update_source(request, "PREPARE"))
+        self.assertEqual(1, len(list(self.path.parent.glob("source-target-*-v1.json"))))
+        self.assert_retained()
+
+    def test_foreign_private_ref_and_tampered_pin_receipt_are_rejected(self):
+        request = self.prepare_fixture()
+        ref = self.mediator._source_target_ref(request)
+        self._git(f"--git-dir={self.mirror}", "update-ref", ref, self.base_commit)
+        with self.assertRaisesRegex(mediator_module.ContractError, "target authority"):
+            self.mediator.update_source(request, "PREPARE")
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.base_commit, self._git(f"--git-dir={self.mirror}", "rev-parse", ref, capture=True).strip())
+
+    def test_tampered_or_symlinked_source_target_receipt_cannot_authorize_recovery(self):
+        request=self.prepare_fixture()
+        self.mediator.update_source(request,"PREPARE")
+        path=self.path.parent / f"source-target-{request['operationId']}-v1.json"
+        record=json.loads(path.read_bytes());record["targetMainCommit"]=self.base_commit
+        path.write_text(json.dumps(record))
+        recover=self.exact(request,operation="RECOVER",effect="RESUME_PINNED_SOURCE")
+        with self.assertRaisesRegex(mediator_module.ContractError,"target authority"):
+            self.mediator.update_source(recover,"RECOVER")
+        path.unlink();path.symlink_to(self.path)
+        with self.assertRaisesRegex(mediator_module.ContractError,"target authority"):
+            self.mediator.update_source(recover,"RECOVER")
+
+    def test_fetch_redirects_and_repository_supplied_commands_are_rejected_before_retrieval(self):
+        request=self.prepare_fixture(stale_mirror=True)
+        for key,value in (("url.file:///unreviewed/.insteadOf",self.remote.as_posix()),
+                          ("remote.origin.uploadpack","unreviewed-command"),("core.sshCommand","unreviewed-command"),
+                          ("fetch.bundleURI","https://unreviewed.invalid/bundle")):
+            with self.subTest(key=key):
+                self._git(f"--git-dir={self.mirror}","config",key,value)
+                with self.assertRaises(mediator_module.ContractError):
+                    self.mediator.update_source(request,"PREPARE")
+                self._git(f"--git-dir={self.mirror}","config","--unset",key)
+                self.assertFalse(self.path.exists())
+                self.assertFalse(list(self.path.parent.glob("source-target-*.json")))
+
+    def test_main_advance_during_fetch_never_retargets_the_approved_operation(self):
+        request=self.prepare_fixture(stale_mirror=True)
+        approved=self.target
+        original=self.mediator._safe_update_git
+        def advance(*args,**kwargs):
+            result=original(*args,**kwargs)
+            if "fetch" in args:
+                (self.source / "later.txt").write_text("not this operation\n")
+                self._git("-C",str(self.source),"add",".")
+                self._git("-C",str(self.source),"commit","-m","concurrent main")
+                self._git("-C",str(self.source),"push",str(self.remote),"main:main")
+            return result
+        with mock.patch.object(self.mediator,"_safe_update_git",side_effect=advance):
+            with self.assertRaisesRegex(mediator_module.ContractError,"main or published head moved"):
+                self.mediator.update_source(request,"PREPARE")
+        self.assertFalse(self.path.exists())
+        self.assertEqual("ticket README\n",(self.worktree / "README.md").read_text())
+        result=self.mediator.update_source(self.exact(request,operation="RECOVER",effect="RESUME_PINNED_SOURCE"),"RECOVER")
+        self.assertEqual(approved,result["targetMainCommit"])
+        self.assertFalse((self.worktree / "later.txt").exists())
+        self.assertEqual(self.base_commit,self._git(f"--git-dir={self.mirror}","rev-parse","refs/remotes/origin/main",capture=True).strip())
 
     def test_moved_remote_main_is_rejected_before_worktree_effect(self):
         request = self.prepare_fixture()
@@ -270,8 +388,9 @@ class SourceUpdateTest(unittest.TestCase):
                              for call in calls.call_args_list))
         private_ref = f"refs/atenea/source-updates/{self.change_key}/{request['operationId']}"
         updates = [call.args for call in calls.call_args_list if "update-ref" in call.args]
-        self.assertEqual(1, len(updates))
-        self.assertEqual(private_ref, updates[0][updates[0].index("update-ref") + 1])
+        self.assertEqual({private_ref, self.mediator._source_target_ref(request),
+                          self.mediator._source_observation_ref(request, self.target)},
+                         {args[args.index("update-ref") + 1] for args in updates})
         self.assert_retained()
 
     def test_symlink_in_retained_workspace_is_not_followed(self):

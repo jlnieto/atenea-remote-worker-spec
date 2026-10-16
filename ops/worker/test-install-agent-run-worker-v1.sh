@@ -107,7 +107,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "0c94905538fdedb05e9271b5be371b77dbfb6759e4b95ea6aee8277646885795" ]] \
+    == "5caaca7d791c1a263bdfcccdabc82e0f5ad0dfb0d63b2a472324e253dd42569b" ]] \
   || fail "worker validation admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
@@ -349,7 +349,7 @@ grep -F -- '--arg development_change_source_update_capability "development-chang
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "source update capability is not versioned"
 [[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
-    == "c45c15d4bf9e09d7fe3798a7d35903108c7b357cdd8ffb0f4d53e43ec8b2a61a" ]] \
+    == "604007cf4a32eb53feca4f058ec227fdc1dd7d6ebdd40b8bac0cd9b79f976476" ]] \
   || fail "source update mediator provenance is not exact"
 grep -F -- '--arg development_change_source_finalization_capability "development-change-source-finalization/v1"' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
