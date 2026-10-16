@@ -106,6 +106,33 @@ class ValidationRecoveryTest(unittest.TestCase):
         self.assertEqual([], list(self.worktree.parent.glob("validation-recovery-*.json")))
         self.assertEqual(self.before, self.target.read_bytes())
 
+    def test_group_only_managed_file_mode_is_repairable_and_preserved(self):
+        command = self.prepare()
+        # Real managed drafts use group access without world-read permission.
+        self.target.chmod(0o660)
+        before = self.target.stat()
+        result = self.mediator.recover_validation(self.act(command, "DIAGNOSE"), "DIAGNOSE")
+        self.assertEqual("AVAILABLE", result["state"])
+        self.assertEqual(self.before, self.target.read_bytes())
+        self.assertEqual([], list(self.worktree.parent.glob("validation-recovery-*.json")))
+        self.assertEqual("READY", self.mediator.recover_validation(command, "PREPARE")["state"])
+        self.assertEqual("APPLIED", self.mediator.recover_validation(self.act(command, "APPLY"), "APPLY")["state"])
+        after = self.target.stat()
+        self.assertEqual((before.st_uid, before.st_gid, 0o660),
+                         (after.st_uid, after.st_gid, after.st_mode & 0o7777))
+        self.assertEqual(self.after, self.target.read_bytes())
+        self.assertEqual("keep this real draft\n", (self.worktree / "ticket.txt").read_text())
+
+    def test_world_writable_or_executable_file_modes_remain_rejected(self):
+        command = self.prepare()
+        for mode in (0o666, 0o606, 0o770, 0o1660):
+            with self.subTest(mode=oct(mode)):
+                self.target.chmod(mode)
+                with self.assertRaisesRegex(m.ContractError, "source file is unsafe"):
+                    self.mediator.recover_validation(self.act(command, "DIAGNOSE"), "DIAGNOSE")
+                self.assertEqual(self.before, self.target.read_bytes())
+                self.assertEqual([], list(self.worktree.parent.glob("validation-recovery-*.json")))
+
     def test_double_prepare_apply_and_inspect_are_idempotent(self):
         command = self.prepare()
         first = self.mediator.recover_validation(command, "PREPARE")
