@@ -188,6 +188,64 @@ del protocolo móvil.
 
 ## Límites operativos
 
+### Recuperación móvil privada v1
+
+`release-rescue-v1.py` se instala con el mismo installer del publicador. Está
+deshabilitado si no existe el manifiesto root-owned `rescue.json` en su directorio
+de configuración. El manifiesto cerrado `release-rescue-v1.operator.schema.json`
+fija una identidad humana de Tailscale y el origen HTTPS privado con puerto 8443;
+no acepta comandos, destinos ni recursos. No se deduce el operador del propietario
+de un servidor tagged. El operador prepara este manifiesto mediante el bootstrap
+privilegiado revisado; App y AgentRuns no pueden crearlo o alterarlo.
+
+El listener es exclusivamente `127.0.0.1:8792`. Tailscale Serve debe publicar
+**sólo dentro de la tailnet**, hacia ese listener, conservando el Host HTTPS.
+No configurar Funnel ni un reverse proxy público. Serve elimina cabeceras de
+identidad aportadas por el visitante e inserta la identidad de su conexión. Se
+rechazan identidades diferentes, dispositivos tagged sin identidad humana,
+Host/Origin ajenos, formularios sin CSRF, campos adicionales y acciones libres.
+La confianza en otros procesos locales del VPS es explícita; el listener no
+debe exponerse a LAN, tailnet directamente ni a un contenedor no confiable.
+
+Catálogo inicial: estado App/AX42; preparar, confirmar y consultar el reinicio
+de **la misma instancia** App PROD. No hace deploy, cambia imagen/configuración,
+publica APK, reinicia AX42 ni restaura PostgreSQL. La DB debe estar al menos en
+V99. El reinicio vuelve a comprobar contenedor/imagen/Compose/PG retenidos, cero
+AgentRuns/validaciones/publicaciones/reparaciones/actualizaciones activas, AX42
+sano y sin carga; conserva el advisory lock de admisión App y el lock del
+publicador durante el efecto. No depende del login, API, socket App ni DB de
+autorización de Spring. Sí depende de Docker, PostgreSQL, AX42 y la red privada:
+si no se puede comprobar una precondición se rechaza, nunca se fuerza.
+
+Los recibos root-owned van en `release-v1/rescue/<UUID>.json`, fuera del árbol
+de planes de publicación. Un doble envío conserva la intención. `ACCEPTED` se
+persiste antes de despachar; `APPLYING` antes del reinicio. Una respuesta perdida
+no autoriza otro reinicio: Consultar sólo puede confirmar `SUCCEEDED` mediante
+las mismas identidades, un arranque posterior y health sano. `ATTENTION` conserva
+la evidencia y bloquea nuevas mutaciones del publicador hasta su comprobación;
+no ofrece un botón para forzar o borrar ese estado. Una caída completa del VPS,
+Docker o la tailnet requiere el acceso independiente al proveedor y copias.
+Consultar también puede cerrar un despacho `ACCEPTED` que nunca llegó a iniciar
+el efecto, o registrar `FAILED` si Docker confirmó el reinicio pero App no
+recuperó salud con las identidades intactas. Ningún cierre inicia otro intento.
+
+Antes de habilitarlo: comprobar configuración Serve/Funnel actual, fuente exacta
+del publicador, ausencia de operaciones activas y listener libre; instalar y
+verificar mediante el installer; configurar Serve en 8443 sin sustituir otros
+puertos; verificar acceso autorizado, rechazo sin identidad y desde identidad
+ajena; añadir favorito al navegador Samsung. No provocar una caída PROD como
+prueba. La aceptación de reinicio se ensaya en un runtime efímero.
+
+### Compatibilidad de validación vinculada al artefacto
+
+Los artefactos App desde Flyway V99 y Android desde versionCode 157 incluyen
+`managedAndroidPolicySha256`: el hash del contrato de datos revisado en App.
+Antes de staging y otra vez antes de aplicar, el publicador consulta
+autenticadamente `GET /v1/project-workspaces/validation-policy` en AX42 y exige
+la misma política root-owned. Una discrepancia bloquea antes del efecto; no
+autoriza dependencias nuevas. Los recibos históricos sin ese campo siguen siendo
+consultables. Orden de rollout: publicador compatible, worker/política, App, APK.
+
 App cambia sólo el image ID de backend en la override. Hace dump consistente,
 SHA-256 y TOC PostgreSQL 16 antes de recrearlo; verifica SHA OCI, health local/
 público, Flyway esperado/sin fallos, worker autenticado y PG container/mounts

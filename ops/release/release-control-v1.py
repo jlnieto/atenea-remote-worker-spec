@@ -18,6 +18,7 @@ import itertools
 import json
 import os
 import re
+import runpy
 import shutil
 import socketserver
 import stat
@@ -223,7 +224,8 @@ class GitHubArtifacts:
                 with bundle.open(item) as source, (destination / item.filename).open("xb") as output:
                     shutil.copyfileobj(source, output)
         manifest = json.loads((destination / "manifest.json").read_bytes())
-        exact(manifest, {"protocol", "target", "sourceCommit", "payloadSha256", "versionCode", "versionName", "flywayVersion"})
+        fields = {"protocol", "target", "sourceCommit", "payloadSha256", "versionCode", "versionName", "flywayVersion"}
+        exact(manifest, fields | ({"managedAndroidPolicySha256"} if "managedAndroidPolicySha256" in manifest else set()))
         if (manifest["protocol"] != PROTOCOL or manifest["target"] != target
                 or manifest["sourceCommit"] != commit
                 or not isinstance(manifest["payloadSha256"], str) or not DIGEST.fullmatch(manifest["payloadSha256"])
@@ -233,6 +235,12 @@ class GitHubArtifacts:
             raise Rejected("ARTIFACT_MANIFEST_MISMATCH")
         if target != "APP_PROD" and manifest["flywayVersion"] is not None:
             raise Rejected("ARTIFACT_MANIFEST_MISMATCH")
+        policy = manifest.get("managedAndroidPolicySha256")
+        requires_policy = ((target == "APP_PROD" and isinstance(manifest["flywayVersion"], int) and manifest["flywayVersion"] >= 99)
+                           or (target == "ANDROID_STABLE" and isinstance(manifest["versionCode"], int) and manifest["versionCode"] >= 157))
+        if ((requires_policy and policy is None) or (policy is not None
+                and (target == "AX42_PLATFORM" or not isinstance(policy, str) or not DIGEST.fullmatch(policy)))):
+            raise Rejected("MANAGED_VALIDATION_POLICY_REQUIRED")
         return {**metadata, **manifest}
 
 
@@ -365,6 +373,24 @@ class PlatformTarget:
         save(CURRENT, receipt)
 
 
+def require_managed_validation_policy(artifact):
+    expected = artifact.get("managedAndroidPolicySha256")
+    if expected is None:
+        return  # Retained pre-contract artifacts remain inspectable; new CI must include the binding.
+    if not isinstance(expected, str) or not DIGEST.fullmatch(expected):
+        raise Rejected("MANAGED_VALIDATION_POLICY_REQUIRED")
+    request = urllib.request.Request("http://100.81.98.93:8787/v1/project-workspaces/validation-policy", headers={
+        "Authorization": "Bearer " + trusted(WORKER_TOKEN, 0o600).read_text().strip()})
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=5) as response:
+            observed = json.loads(response.read(4096))
+        exact(observed, {"protocolVersion", "workerId", "androidInputsSha256"})
+        if observed != {"protocolVersion": "managed-validation-policy/v1", "workerId": "ax42-01", "androidInputsSha256": expected}:
+            raise ValueError()
+    except (OSError, ValueError, Rejected):
+        raise Rejected("MANAGED_VALIDATION_POLICY_MISMATCH") from None
+
+
 class AppTarget:
     def __init__(self, config):
         self.config = config
@@ -452,6 +478,7 @@ class AppTarget:
         return {"sourceCommit": source, "imageId": image_id, "healthy": healthy, "instanceId": backend["Id"]}
 
     def stage(self, plan, directory):
+        require_managed_validation_policy(plan["artifact"])
         if not isinstance(plan["artifact"]["flywayVersion"], int) or isinstance(plan["artifact"]["flywayVersion"], bool) or plan["artifact"]["flywayVersion"] < 1:
             raise Rejected("FLYWAY_MANIFEST_REJECTED")
         with tarfile.open(directory / "image.tar") as archive:
@@ -478,6 +505,7 @@ class AppTarget:
         save(directory / "image.json", {"imageId": image["Id"]})
 
     def apply(self, plan, directory):
+        require_managed_validation_policy(plan["artifact"])
         restore_version = command(["/usr/bin/docker", "exec", "atenea-postgres-prod", "pg_restore", "--version"])
         version = command(["/usr/bin/docker", "exec", "atenea-postgres-prod", "pg_dump", "--version"])
         if not version.startswith(b"pg_dump (PostgreSQL) 16.") or not restore_version.startswith(b"pg_restore (PostgreSQL) 16."):
@@ -589,6 +617,7 @@ class AndroidTarget:
 
     def stage(self, plan, directory):
         artifact = plan["artifact"]
+        require_managed_validation_policy(artifact)
         if (not isinstance(artifact["versionCode"], int) or isinstance(artifact["versionCode"], bool)
                 or artifact["versionCode"] <= plan["predecessor"]["versionCode"]
                 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", artifact["versionName"])):
@@ -606,6 +635,7 @@ class AndroidTarget:
 
     def apply(self, plan, directory):
         artifact = plan["artifact"]
+        require_managed_validation_policy(artifact)
         base = self.channel(plan["predecessor"]["manifest"]["apkUrl"])
         signed = directory / "signed.apk"
         if file_digest(signed) != json.loads((directory / "signed.json").read_bytes())["sha256"]:
@@ -1159,6 +1189,13 @@ def main():
                 record=json.loads(trusted(path,0o600).read_bytes())
                 if record["state"] == "PREPARING" or (record["operationId"] and record["state"] not in TERMINAL):
                     raise Rejected("RELEASE_IN_PROGRESS")
+            for path in (ROOT / "rescue").glob("*.json"):
+                record=json.loads(trusted(path,0o600).read_bytes())
+                if record["state"] in {"ACCEPTED","APPLYING","ATTENTION"}:
+                    raise Rejected("RESCUE_REQUIRES_INSPECTION")
+        rescue_config = Path("/etc/atenea-release-v1/rescue.json")
+        if config["mode"] == "VPS" and (rescue_config.exists() or rescue_config.is_symlink()):
+            runpy.run_path(str(Path(__file__).with_name("release-rescue-v1.py")))["configuration"](sys.modules[__name__])
         print("Release installation preflight passed")
         return
     if arguments == ["--verify-config"]:
@@ -1193,8 +1230,16 @@ def main():
     peer = Peer() if config["mode"] == "VPS" else None
 
     peer_lock = threading.RLock()
+    rescue = None
 
     def dispatch(request):
+        if request.get("operation") in {"PLAN", "EXECUTE"} and rescue is not None:
+            with controller.lock:
+                rescue.require_settled()
+                return dispatch_settled(request)
+        return dispatch_settled(request)
+
+    def dispatch_settled(request):
         if peer and request.get("operation") == "OBSERVE_PLATFORM":
             exact(request,{"operation"})
             return peer.request(request)  # read only: never adds peer plan IDs or rewrites receipts
@@ -1268,6 +1313,10 @@ def main():
     os.chown(SOCKET, 0, 1001)
     SOCKET.chmod(0o660)
     controller.recover()
+    rescue_config = Path("/etc/atenea-release-v1/rescue.json")
+    if rescue_config.exists() or rescue_config.is_symlink():
+        helper = trusted(Path("/usr/local/libexec/atenea/release-rescue-v1.py"), 0o755)
+        rescue = runpy.run_path(str(helper))["start"](sys.modules[__name__], controller)
     server.serve_forever()
 
 

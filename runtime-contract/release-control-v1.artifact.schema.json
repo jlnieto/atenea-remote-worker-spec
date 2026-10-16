@@ -10,12 +10,19 @@
     "payloadSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
     "versionCode":{"type":["integer","null"],"minimum":1},
     "versionName":{"type":["string","null"],"pattern":"^[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "flywayVersion":{"type":["integer","null"],"minimum":1}
+    "flywayVersion":{"type":["integer","null"],"minimum":1},
+    "managedAndroidPolicySha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
   },
   "allOf":[{"if":{"properties":{"target":{"const":"ANDROID_STABLE"}}},
     "then":{"properties":{"versionCode":{"type":"integer"},"versionName":{"type":"string"}}},
     "else":{"properties":{"versionCode":{"type":"null"},"versionName":{"type":"null"}}}},
     {"if":{"properties":{"target":{"const":"APP_PROD"}}},
     "then":{"properties":{"flywayVersion":{"type":"integer"}}},
-    "else":{"properties":{"flywayVersion":{"type":"null"}}}}]
+    "else":{"properties":{"flywayVersion":{"type":"null"}}}},
+    {"if":{"properties":{"target":{"const":"AX42_PLATFORM"}}},
+     "then":{"not":{"required":["managedAndroidPolicySha256"]}}},
+    {"if":{"anyOf":[
+      {"properties":{"target":{"const":"APP_PROD"},"flywayVersion":{"type":"integer","minimum":99}}},
+      {"properties":{"target":{"const":"ANDROID_STABLE"},"versionCode":{"type":"integer","minimum":157}}}
+     ]},"then":{"required":["managedAndroidPolicySha256"]}}]
 }

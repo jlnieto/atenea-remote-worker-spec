@@ -1,0 +1,11 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/managed-validation-policy-v1.response.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["protocolVersion","workerId","androidInputsSha256"],
+  "properties":{
+    "protocolVersion":{"const":"managed-validation-policy/v1"},
+    "workerId":{"const":"ax42-01"},
+    "androidInputsSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+  }
+}

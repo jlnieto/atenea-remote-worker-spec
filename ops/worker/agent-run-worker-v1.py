@@ -56,10 +56,14 @@ DEVELOPMENT_CHANGE_PUBLICATION_PATH = "/v1/development-changes/branches/publish"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_CAPABILITY = "development-change-source-update/v1"
 DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY = "development-change-source-update/v2"
 DEVELOPMENT_CHANGE_SOURCE_RECOVERY_CAPABILITY = "development-change-source-recovery/v1"
+VALIDATION_RECOVERY_CAPABILITY = "development-change-validation-recovery/v1"
+VALIDATION_RECOVERY_PATH_PREFIX = "/v1/development-changes/validation-recovery/"
 DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX = "/v1/development-changes/source-updates/"
 DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY = "development-change-source-finalization/v1"
 DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_PATH_PREFIX = "/v1/development-changes/source-finalizations/"
 SOURCE_AUTHORITY_MEDIATOR = Path("/usr/local/libexec/atenea/development-change-workspace-v1.py")
+VALIDATION_POLICY_FILE = Path("/usr/local/libexec/atenea/atenea-android-inputs-v2.json")
+VALIDATION_POLICY_SHA256 = "913142dde01538c9de2a6e4926292870de3677dcf7667af6f60cddf55162ea95"
 CLOSED_VALIDATION_CAPABILITY = "closed-validation-broker/v1"
 CLOSED_VALIDATION_PATH_PREFIX = "/v1/project-workspaces/validations/"
 CODEX_CATALOG_SCHEMA = "codex-model-catalog-v1"
@@ -1326,6 +1330,7 @@ class WorkerState:
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_CONTINUATION_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_RECOVERY_CAPABILITY)
                 capabilities.append(DEVELOPMENT_CHANGE_SOURCE_FINALIZATION_CAPABILITY)
+                capabilities.append(VALIDATION_RECOVERY_CAPABILITY)
                 route = self._project_route(PROJECT_ID)
                 if route is not None and self._project_execution_enabled(route, False):
                     capabilities.append(PROJECT_V4_CAPABILITY)
@@ -1704,6 +1709,86 @@ class WorkerState:
             raise ProtocolError(HTTPStatus.BAD_GATEWAY, "source_update_response_invalid",
                                 "Source update response is not exact")
         return response
+
+    def validation_policy(self) -> dict[str, Any]:
+        try:
+            info = VALIDATION_POLICY_FILE.lstat()
+            raw = VALIDATION_POLICY_FILE.read_bytes()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                    or stat.S_IMODE(info.st_mode) != 0o644 or info.st_nlink != 1
+                    or hashlib.sha256(raw).hexdigest() != VALIDATION_POLICY_SHA256):
+                raise ValueError()
+        except (OSError, ValueError):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "validation_policy_unavailable",
+                                "Managed validation policy is not verifiable") from None
+        return {"protocolVersion": "managed-validation-policy/v1", "workerId": self.worker_id,
+                "androidInputsSha256": VALIDATION_POLICY_SHA256}
+
+    @release_admitted
+    def recover_validation_build(self, request: dict[str, Any], operation: str) -> dict[str, Any]:
+        operation = operation.upper()
+        try:
+            authority = load_source_authority()
+        except (OSError, ValueError):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "validation_recovery_unavailable",
+                                "Validation recovery authority is unavailable") from None
+        try:
+            exact = authority["validate_validation_recovery_request"](request, operation)
+        except (KeyError, ValueError, TypeError, authority["ContractError"]):
+            raise ProtocolError(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_recovery_request_invalid",
+                                "Validation recovery request is invalid") from None
+        if exact["workerId"] != self.worker_id:
+            raise ProtocolError(HTTPStatus.CONFLICT, "validation_recovery_owner_mismatch",
+                                "Validation recovery requires this exact worker")
+        mediator = self.development_change_workspace_mediator
+        if mediator is None or not mediator.is_file() or mediator.is_symlink() or not os.access(mediator, os.X_OK):
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "validation_recovery_unavailable",
+                                "Validation recovery capability is unavailable")
+        try:
+            with self.lock, self.workspace_lifecycle_lock():
+                if operation in {"PREPARE", "APPLY"} and (
+                        any(e.get("status") not in TERMINAL for e in self.executions.values())
+                        or any(v.get("state") not in VALIDATION_TERMINAL for v in self.validations.values())
+                        or self.codex_update_in_progress or self._recovery_activation_pending()):
+                    raise ProtocolError(HTTPStatus.CONFLICT, "validation_recovery_execution_active",
+                                        "Validation repair requires zero active executions")
+                completed = subprocess.run([str(mediator), operation.lower() + "-validation"],
+                    input=json.dumps(exact, sort_keys=True, separators=(",", ":")),
+                    capture_output=True, text=True, env=subprocess_environment(),
+                    timeout=self.development_change_workspace_timeout, check=False)
+        except subprocess.TimeoutExpired:
+            raise ProtocolError(HTTPStatus.GATEWAY_TIMEOUT, "validation_recovery_uncertain",
+                                "Inspect the same durable validation repair") from None
+        except OSError:
+            raise ProtocolError(HTTPStatus.SERVICE_UNAVAILABLE, "validation_recovery_unavailable",
+                                "Validation recovery mediator is unavailable") from None
+        if completed.returncode != 0:
+            raise ProtocolError(HTTPStatus.CONFLICT, "validation_recovery_rejected",
+                                "Validation recovery rejected a changed or unsupported source")
+        try:
+            result = strict_json_object(completed.stdout)
+        except (ValueError, UnicodeError):
+            raise ProtocolError(HTTPStatus.BAD_GATEWAY, "validation_recovery_response_invalid",
+                                "Validation recovery response is invalid") from None
+        if (set(result) != set(exact) | {"state", "recipeId", "resultFingerprintSha256", "receiptSha256", "valuesExposed"}
+                or any(result.get(key) != value for key, value in exact.items())
+                or result.get("valuesExposed") is not False
+                or result.get("state") not in {
+                    "DIAGNOSE": {"AVAILABLE", "UNSUPPORTED"},
+                    "PREPARE": {"READY", "APPLYING", "APPLIED"},
+                    "APPLY": {"APPLIED"}, "INSPECT": {"ABSENT", "READY", "APPLYING", "APPLIED"},
+                }[operation]
+                or result.get("recipeId") not in {None, "atenea-explicit-android-version-v1"}
+                or any(result.get(key) is not None and (not isinstance(result[key], str)
+                           or re.fullmatch(r"[0-9a-f]{64}", result[key]) is None)
+                       for key in ("resultFingerprintSha256", "receiptSha256"))
+                or (result["state"] in {"READY", "APPLYING", "APPLIED"} and result["receiptSha256"] is None)
+                or (result["state"] in {"AVAILABLE", "READY", "APPLYING", "APPLIED"}
+                    and result["recipeId"] != "atenea-explicit-android-version-v1")
+                or (result["state"] == "APPLIED" and result["resultFingerprintSha256"] is None)):
+            raise ProtocolError(HTTPStatus.BAD_GATEWAY, "validation_recovery_response_invalid",
+                                "Validation recovery response is not exact")
+        return result
 
     def _invoke_source_update_mediator(self, mediator: Path, request: dict[str, Any],
                                         operation: str, *, finalization: bool = False) -> subprocess.CompletedProcess[str]:
@@ -5425,6 +5510,9 @@ class AgentRunHandler(BaseHTTPRequestHandler):
             if path == "/v1/codex/catalog":
                 self._write(HTTPStatus.OK, self.server.state.codex_catalog())
                 return
+            if self.path == "/v1/project-workspaces/validation-policy":
+                self._write(HTTPStatus.OK, self.server.state.validation_policy())
+                return
             if path.startswith("/v1/codex/update/activate-recovery/"):
                 key = path.rsplit("/", 1)[-1]
                 self._write(HTTPStatus.OK, self.server.state.inspect_recovery_activation(key))
@@ -5464,6 +5552,12 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     self.server.state.publish_development_change_branch(body),
                 )
+                return
+            if path.startswith(VALIDATION_RECOVERY_PATH_PREFIX):
+                operation = path.removeprefix(VALIDATION_RECOVERY_PATH_PREFIX)
+                if operation not in {"diagnose", "prepare", "apply", "inspect"}:
+                    raise ProtocolError(HTTPStatus.NOT_FOUND, "not_found", "route does not exist")
+                self._write(HTTPStatus.OK, self.server.state.recover_validation_build(body, operation))
                 return
             if path.startswith(DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX):
                 operation = path.removeprefix(DEVELOPMENT_CHANGE_SOURCE_UPDATE_PATH_PREFIX)

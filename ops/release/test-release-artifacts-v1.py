@@ -17,10 +17,11 @@ SHA="1"*40
 
 
 class ArtifactTest(unittest.TestCase):
-    def bundle(self,extra=False,symlink=False):
+    def bundle(self,extra=False,symlink=False,metadata=None):
         result=io.BytesIO(); payload=b"reviewed fixture image"
         self.manifest={"protocol":r.PROTOCOL,"target":"APP_PROD","sourceCommit":SHA,
             "payloadSha256":hashlib.sha256(payload).hexdigest(),"versionCode":None,"versionName":None,"flywayVersion":84}
+        self.manifest.update(metadata or {})
         with zipfile.ZipFile(result,"w") as archive:
             archive.writestr("manifest.json",json.dumps(self.manifest))
             info=zipfile.ZipInfo("image.tar")
@@ -77,6 +78,14 @@ class ArtifactTest(unittest.TestCase):
         with self.assertRaises(r.Rejected) as error: client.prepare("APP_PROD",SHA,Path("/not-created"))
         self.assertEqual("RELEASE_BUILD_FAILED",error.exception.code)
         self.assertEqual(2,client.api.call_count)
+
+    def test_new_application_requires_a_closed_managed_validation_policy_binding(self):
+        with self.assertRaises(r.Rejected) as error:self.prepare(self.bundle(metadata={"flywayVersion":99}))
+        self.assertEqual("MANAGED_VALIDATION_POLICY_REQUIRED",error.exception.code)
+        value=self.prepare(self.bundle(metadata={"flywayVersion":99,"managedAndroidPolicySha256":"a"*64}))
+        self.assertEqual("a"*64,value["managedAndroidPolicySha256"])
+        for policy in ("/foreign",False,None):
+            with self.assertRaises(r.Rejected):self.prepare(self.bundle(metadata={"flywayVersion":99,"managedAndroidPolicySha256":policy}))
 
 
 if __name__=="__main__": unittest.main()

@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Closed validation recovery proof v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "protocolVersion": {
+      "const": "development-change-validation-recovery/v1"
+    },
+    "effect": {
+      "enum": [
+        "OBSERVE_ONLY",
+        "PREPARE_EXACT_REPAIR",
+        "APPLY_EXACT_REPAIR"
+      ]
+    },
+    "operationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "operation": {
+      "enum": [
+        "DIAGNOSE",
+        "PREPARE",
+        "APPLY",
+        "INSPECT"
+      ]
+    },
+    "changeKey": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "databaseProjectId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "projectId": {
+      "const": "atenea"
+    },
+    "repository": {
+      "const": "https://github.com/jlnieto/atenea.git"
+    },
+    "repositoryBranch": {
+      "const": "main"
+    },
+    "baseCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "workspaceBranch": {
+      "type": "string",
+      "pattern": "^atenea/change-[0-9a-f-]{36}$"
+    },
+    "workspaceIdentity": {
+      "type": "string",
+      "pattern": "^remote:ax42-01:change:[0-9a-f-]{36}$"
+    },
+    "workerId": {
+      "const": "ax42-01"
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sourceFingerprintSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "requestFingerprintSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "validationOperationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "state": {
+      "enum": [
+        "ABSENT",
+        "AVAILABLE",
+        "UNSUPPORTED",
+        "READY",
+        "APPLYING",
+        "APPLIED"
+      ]
+    },
+    "recipeId": {
+      "enum": [
+        "atenea-explicit-android-version-v1",
+        null
+      ]
+    },
+    "resultFingerprintSha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "receiptSha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "valuesExposed": {
+      "const": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "protocolVersion",
+    "effect",
+    "operationId",
+    "idempotencyKey",
+    "operation",
+    "changeKey",
+    "databaseProjectId",
+    "projectId",
+    "repository",
+    "repositoryBranch",
+    "baseCommit",
+    "sourceCommit",
+    "workspaceBranch",
+    "workspaceIdentity",
+    "workerId",
+    "sourceRevision",
+    "sourceFingerprintSha256",
+    "requestFingerprintSha256",
+    "validationOperationId",
+    "state",
+    "recipeId",
+    "resultFingerprintSha256",
+    "receiptSha256",
+    "valuesExposed"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {
+          "const": "DIAGNOSE"
+        },
+        "effect": {
+          "const": "OBSERVE_ONLY"
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "INSPECT"
+        },
+        "effect": {
+          "const": "OBSERVE_ONLY"
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "PREPARE"
+        },
+        "effect": {
+          "const": "PREPARE_EXACT_REPAIR"
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "APPLY"
+        },
+        "effect": {
+          "const": "APPLY_EXACT_REPAIR"
+        }
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "APPLIED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "resultFingerprintSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "receiptSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "recipeId": {
+            "const": "atenea-explicit-android-version-v1"
+          }
+        }
+      }
+    }
+  ]
+}

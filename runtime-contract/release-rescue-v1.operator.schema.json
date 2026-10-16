@@ -1,0 +1,11 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://atenea.yudri.es/contracts/release-rescue-v1.operator.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["protocol","allowedLogin","origin"],
+  "properties":{
+    "protocol":{"const":"atenea-rescue/v1"},
+    "allowedLogin":{"type":"string","pattern":"^[a-zA-Z0-9._+@-]{3,200}$"},
+    "origin":{"type":"string","pattern":"^https://[a-z0-9-]+\\.[a-z0-9-]+\\.ts\\.net:8443$"}
+  }
+}
