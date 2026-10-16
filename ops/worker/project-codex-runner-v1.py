@@ -42,6 +42,8 @@ GIT_COMMON_DIR = Path("/srv/atenea/repositories/atenea.git")
 CHANGE_WORKSPACE_PARENT = Path("/srv/atenea/workspaces/changes")
 CHANGE_WORKSPACE_OWNER = "atenea-worker"
 CHANGE_WORKSPACE_GROUP = "atenea"
+WORKSPACE_RUNNER_USER = "jose"
+WORKSPACE_EDITABLE_GROUP = CHANGE_WORKSPACE_GROUP
 INSTRUCTION_BUNDLE_REVISION = "atenea-reviewed-instruction-bundle-v1"
 PLATFORM_INSTRUCTION_PATH = Path(
     "/usr/local/share/atenea/codex-platform-instructions-v1.md"
@@ -1524,8 +1526,9 @@ def sandbox_command(
         "/usr/bin/systemd-run",
         "--wait", "--pipe", "--collect", "--quiet", "--service-type=exec",
         "--unit", "atenea-project-codex-" + execution_id.replace("-", ""),
-        "--property", "User=jose",
-        "--property", "Group=atenea",
+        "--property", "User=" + WORKSPACE_RUNNER_USER,
+        "--property", "Group=" + WORKSPACE_EDITABLE_GROUP,
+        "--property", "UMask=0007",
         "--property", "NoNewPrivileges=yes",
         "--property", "PrivateDevices=yes",
         # A private Bubblewrap proc mount supplies the user-namespace boundary.
