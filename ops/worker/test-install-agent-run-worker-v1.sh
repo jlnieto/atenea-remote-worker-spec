@@ -349,7 +349,7 @@ grep -F -- '--arg development_change_source_update_capability "development-chang
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \
   || fail "source update capability is not versioned"
 [[ "$(sha256sum "${SCRIPT_DIR}/development-change-workspace-v1.py" | cut -d' ' -f1)" \
-    == "48d24150234952692322e6b8223ee38a898dd41ee1b36df1e96047ab206ef7c8" ]] \
+    == "c45c15d4bf9e09d7fe3798a7d35903108c7b357cdd8ffb0f4d53e43ec8b2a61a" ]] \
   || fail "source update mediator provenance is not exact"
 grep -F -- '--arg development_change_source_finalization_capability "development-change-source-finalization/v1"' \
   "${SCRIPT_DIR}/install-agent-run-worker-v1.sh" >/dev/null \

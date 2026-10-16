@@ -675,7 +675,7 @@ class WorkspaceMediator:
                 regular_directory(parent, os.geteuid())
             info = target.lstat()
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
-                    or stat.S_IMODE(info.st_mode) not in {0o644, 0o664} or info.st_size > 65536):
+                    or stat.S_IMODE(info.st_mode) not in {0o644, 0o660, 0o664} or info.st_size > 65536):
                 raise ContractError("validation recovery source file is unsafe")
             raw = target.read_bytes()
             actual_hash = hashlib.sha256(raw).hexdigest()
