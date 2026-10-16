@@ -147,14 +147,16 @@ class MainRecoveryTest(fixtures.SourceContinuationTest):
         self.assertEqual("PUBLISHED",self.mediator.finalize_source(self.recovery(request),"RECOVER")["state"])
         self.assertEqual(2,len(list(self.path.parent.glob("source-main-recovery-*-v1.json"))))
 
-    def test_mirror_and_github_disagreement_rejects_before_effect(self):
+    def test_recovery_of_lagging_canonical_ref_keeps_approved_target(self):
         request=self.prepare_fixture();old=request["targetMainCommit"];self.advance_main()
         self._git(f"--git-dir={self.mirror}","update-ref","refs/remotes/origin/main",old)
         before=(self.worktree / "README.md").read_bytes()
-        with self.assertRaises(module.ContractError): self.mediator.update_source(self.recovery(request),"RECOVER")
-        self.assertEqual(before,(self.worktree / "README.md").read_bytes())
-        self.assertFalse(self.path.exists())
-        self.assertFalse(list(self.path.parent.glob("source-main-recovery-*-v1.json")))
+        result=self.mediator.update_source(self.recovery(request),"RECOVER")
+        self.assertEqual("NEEDS_RESOLUTION",result["state"])
+        self.assertEqual(old,result["targetMainCommit"])
+        self.assertEqual(old,self._git(f"--git-dir={self.mirror}","rev-parse","refs/remotes/origin/main",capture=True).strip())
+        self.assertFalse((self.worktree / "later-main.txt").exists())
+        self.assert_evidence(request,"PREPARATION")
 
     def test_newer_preparation_files_after_interruption_are_preserved(self):
         request=self.prepare_fixture()
@@ -208,6 +210,24 @@ class MainRecoveryTest(fixtures.SourceContinuationTest):
             Draft202012Validator.check_schema(schema)
             Draft202012Validator(schema,format_checker=FormatChecker()).validate(value)
         self.assert_evidence(request,"FINALIZATION")
+
+    def test_absent_target_fetch_conflict_resolution_and_publication_keep_canonical_pinned(self):
+        request=self.prepare_fixture(stale_mirror=True)
+        canonical=self.base_commit
+        original_target=self.target
+        prepared=self.mediator.update_source(request,"PREPARE")
+        (self.worktree / "README.md").write_text("ticket and main resolved\n")
+        final=self.finalization(request,prepared)
+        self.preparation_bytes=self.path.read_bytes()
+        self.final_path=self.path.parent / "source-finalization-v1.json"
+        published=self.mediator.finalize_source(final,"FINALIZE")
+        self.assertEqual("PUBLISHED",published["state"])
+        self.assertEqual(original_target,self._git(f"--git-dir={self.mirror}","rev-parse",published["publishedHeadSha"]+"^2",capture=True).strip())
+        self.assertEqual(canonical,self._git(f"--git-dir={self.mirror}","rev-parse","refs/remotes/origin/main",capture=True).strip())
+        self.assertEqual(self.owner,(self.path.parent / "workspace-v1.json").read_bytes())
+        self.assertEqual(self.publication,(self.path.parent / "branch-publication-v1.json").read_bytes())
+        self.assertEqual("ticket change\n",(self.worktree / "ticket.txt").read_text())
+        self.assertEqual(published,self.mediator.finalize_source(final,"FINALIZE"))
 
 
 if __name__=="__main__":

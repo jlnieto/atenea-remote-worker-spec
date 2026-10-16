@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atenea:development-change-source-target:v1:record",
+  "title": "Worker-owned immutable source target, not a client request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "state", "operationId", "idempotencyKey", "changeKey", "baseCommit", "sourceCommit", "targetMainCommit", "publicationReceiptSha256", "intentSha256", "ownerRecordSha256", "retainedCanonicalCommit", "observedMainCommit", "recordSha256"],
+  "properties": {
+    "protocolVersion": {"const": "development-change-source-target/v1"},
+    "state": {"const": "PINNED"},
+    "operationId": {"type": "string", "format": "uuid"},
+    "idempotencyKey": {"type": "string", "format": "uuid"},
+    "changeKey": {"type": "string", "format": "uuid"},
+    "baseCommit": {"$ref": "#/$defs/commit"},
+    "sourceCommit": {"$ref": "#/$defs/commit"},
+    "targetMainCommit": {"$ref": "#/$defs/commit"},
+    "publicationReceiptSha256": {"$ref": "#/$defs/hash"},
+    "intentSha256": {"$ref": "#/$defs/hash"},
+    "ownerRecordSha256": {"$ref": "#/$defs/hash"},
+    "retainedCanonicalCommit": {"$ref": "#/$defs/commit"},
+    "observedMainCommit": {"$ref": "#/$defs/commit"},
+    "recordSha256": {"$ref": "#/$defs/hash"}
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -47,6 +47,10 @@ PUBLICATION_OPERATION = "PUBLISH"
 SOURCE_UPDATE_PROTOCOL = "development-change-source-update/v1"
 SOURCE_CONTINUATION_PROTOCOL = "development-change-source-update/v2"
 SOURCE_UPDATE_OPERATIONS = {"PREPARE", "INSPECT", "RECONCILE", "RECOVER"}
+SOURCE_TARGET_PROTOCOL = "development-change-source-target/v1"
+SOURCE_TARGET_KEYS = {"protocolVersion", "state", "operationId", "idempotencyKey", "changeKey",
+    "baseCommit", "sourceCommit", "targetMainCommit", "publicationReceiptSha256", "intentSha256",
+    "ownerRecordSha256", "retainedCanonicalCommit", "observedMainCommit", "recordSha256"}
 SOURCE_FINALIZATION_PROTOCOL = "development-change-source-finalization/v1"
 SOURCE_FINALIZATION_OPERATIONS = {"FINALIZE", "INSPECT", "RECOVER"}
 VALIDATION_RECOVERY_PROTOCOL = "development-change-validation-recovery/v1"
@@ -993,6 +997,11 @@ class WorkspaceMediator:
             self._source_update_owner(exact)
             if operation != "INSPECT":
                 self._source_update_idle()
+            if not exists and operation in {"PREPARE", "RECOVER"}:
+                if not continuation and self._safe_update_git("status", "--porcelain=v2", "-z",
+                        "--untracked-files=all", cwd=self._worktree(exact["changeKey"])):
+                    raise ContractError("source update workspace is not clean")
+                self._ensure_source_target(exact, allow_descendant=operation == "RECOVER")
             recovery = self._retain_main_recovery(exact, "PREPARATION", {exact["sourceCommit"]}) if operation == "RECOVER" else None
             if exists:
                 record = self._read_sealed_record(path, record_keys)
@@ -1192,9 +1201,10 @@ class WorkspaceMediator:
             raise ContractError("source update workspace owner is incompatible")
         keys = self._git("config", "--name-only", "--list", cwd=worktree,
                          env_extra=self._update_git_environment()).decode().lower().splitlines()
-        if any(key.startswith(("filter.", "include.", "includeif."))
+        if any(key.startswith(("filter.", "include.", "includeif.", "url."))
                or (key.startswith("merge.") and key.endswith(".driver"))
-               or key in {"core.fsmonitor", "core.attributesfile", "core.worktree"}
+               or (key.startswith("remote.") and key.endswith((".uploadpack", ".receivepack")))
+               or key in {"core.fsmonitor", "core.attributesfile", "core.worktree", "core.sshcommand", "fetch.bundleuri"}
                for key in keys):
             raise ContractError("source update external Git configuration is forbidden")
         common = self._safe_update_git("rev-parse", "--git-common-dir", cwd=worktree).decode().strip()
@@ -1223,14 +1233,127 @@ class WorkspaceMediator:
             if key != "requestFingerprintSha256"})
         return normalized
 
+    def _source_target_id(self, request: dict[str, Any]) -> str:
+        return canonical_uuid(request.get("preparationOperationId", request["operationId"]))
+
+    def _source_target_ref(self, request: dict[str, Any]) -> str:
+        return f"refs/atenea/source-targets/{request['changeKey']}/{self._source_target_id(request)}"
+
+    def _source_observation_ref(self, request: dict[str, Any], commit: str) -> str:
+        if not GIT_COMMIT.fullmatch(commit):
+            raise ContractError("source target authority is invalid")
+        return f"refs/atenea/source-observations/{request['changeKey']}/{self._source_target_id(request)}/{commit}"
+
+    def _source_remote_refs(self, request: dict[str, Any]) -> dict[str, str]:
+        try:
+            lines = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
+                "refs/heads/main", self._branch_ref(request), git_dir=True, publication=True).decode().splitlines()
+        except ContractError as error:
+            raise ContractError("source target synchronization is unavailable") from error
+        refs = dict(line.split("\t", 1)[::-1] for line in lines if "\t" in line)
+        if (len(lines) != 2 or set(refs) != {"refs/heads/main", self._branch_ref(request)}
+                or any(not GIT_COMMIT.fullmatch(value) for value in refs.values())):
+            raise ContractError("source update retained main or published head moved")
+        return refs
+
+    def _pin_source_commit(self, commit: str, ref: str) -> None:
+        # Only internal callers construct these refs; no refspec, URL, path,
+        # command or fetch option is accepted from an App/AgentRun/package.
+        found = self._git_result(*self._update_git_options(), "show-ref", "--verify", "--quiet", ref,
+                                 git_dir=True, env_extra=self._update_git_environment())
+        if found.returncode == 0:
+            if self._safe_update_git("rev-parse", "--verify", ref + "^{commit}", git_dir=True).decode().strip() != commit:
+                raise ContractError("source target authority is invalid")
+            return
+        if found.returncode != 1:
+            raise ContractError("source target authority is invalid")
+        available = self._git_result(*self._update_git_options(), "cat-file", "-e", commit + "^{commit}",
+                                    git_dir=True, env_extra=self._update_git_environment())
+        if available.returncode != 0:
+            try:
+                self._safe_update_git("-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--no-tags",
+                    "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--refmap=",
+                    self.publication_transport, commit, git_dir=True, publication=True)
+            except ContractError as error:
+                raise ContractError("source target synchronization is unavailable") from error
+        if self._safe_update_git("rev-parse", "--verify", commit + "^{commit}", git_dir=True).decode().strip() != commit:
+            raise ContractError("source target authority is invalid")
+        # Never overwrite an unexpected ref, even if another actor races us.
+        self._safe_update_git("update-ref", ref, commit, "0" * len(commit), git_dir=True)
+
+    def _source_target_authority(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            return self._read_source_target_authority(request)
+        except (ContractError, OSError, KeyError, TypeError, ValueError) as error:
+            raise ContractError("source target authority is invalid") from error
+
+    def _read_source_target_authority(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        root = self._root(request["changeKey"])
+        operation_id = self._source_target_id(request)
+        path = root / f"source-target-{operation_id}-v1.json"
+        if not path.exists() and not path.is_symlink():
+            return None  # Existing legacy preparations retain their old checks.
+        record = sealed_source_record(path, SOURCE_TARGET_KEYS, os.geteuid(), root.stat().st_gid)
+        original = request
+        legacy = root / "source-update-v1.json"
+        if legacy.exists() or legacy.is_symlink():
+            first = self._read_sealed_record(legacy, SOURCE_UPDATE_RECORD_KEYS)
+            candidate = legacy if first["operationId"] == operation_id else root / f"source-update-{operation_id}-v2.json"
+            if candidate.exists() or candidate.is_symlink():
+                _, preparation = source_record(root, operation_id, os.geteuid(), root.stat().st_gid)
+                original = source_request(preparation)
+        expected = {key: original[key] for key in ("operationId", "idempotencyKey", "changeKey", "baseCommit",
+                    "sourceCommit", "targetMainCommit", "publicationReceiptSha256")}
+        if (record["protocolVersion"] != SOURCE_TARGET_PROTOCOL or record["state"] != "PINNED"
+                or any(record[key] != value for key, value in expected.items())
+                or record["operationId"] != operation_id or record["targetMainCommit"] != request["targetMainCommit"]
+                or record["intentSha256"] != source_update_intent(original)
+                or record["ownerRecordSha256"] != canonical_sha256(self._read_record(self._record_path(request["changeKey"])))
+                or any(not GIT_COMMIT.fullmatch(str(record[key])) for key in ("retainedCanonicalCommit", "observedMainCommit"))
+                or self._safe_update_git("rev-parse", "--verify", self._source_target_ref(request) + "^{commit}",
+                    git_dir=True).decode().strip() != request["targetMainCommit"]
+                or self._safe_update_git("rev-parse", "--verify", self._source_observation_ref(request, record["observedMainCommit"]) + "^{commit}",
+                    git_dir=True).decode().strip() != record["observedMainCommit"]):
+            raise ContractError("source target authority is invalid")
+        return record
+
+    def _ensure_source_target(self, request: dict[str, Any], *, allow_descendant: bool) -> None:
+        if self._source_target_authority(request) is not None:
+            return
+        canonical = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
+        refs = self._source_remote_refs(request)
+        observed = refs["refs/heads/main"]
+        if refs[self._branch_ref(request)] != request["sourceCommit"] or (not allow_descendant and observed != request["targetMainCommit"]):
+            raise ContractError("source update retained main or published head moved")
+        # Fetch only the authenticated fixed repository's observed commit. This
+        # cannot move origin/main, the runtime configuration or another Change.
+        self._pin_source_commit(observed, self._source_observation_ref(request, observed))
+        for before, after in ((request["baseCommit"], request["targetMainCommit"]),
+                              (request["targetMainCommit"], observed), (canonical, observed)):
+            if self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor", before, after,
+                    git_dir=True, env_extra=self._update_git_environment()).returncode != 0:
+                raise ContractError("source target authority is invalid")
+        if (self._source_remote_refs(request) != refs or self._safe_update_git("rev-parse", "--verify",
+                "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip() != canonical):
+            raise ContractError("source update retained main or published head moved")
+        self._pin_source_commit(request["targetMainCommit"], self._source_target_ref(request))
+        record = {key: request[key] for key in ("operationId", "idempotencyKey", "changeKey", "baseCommit",
+                  "sourceCommit", "targetMainCommit", "publicationReceiptSha256")}
+        record.update(protocolVersion=SOURCE_TARGET_PROTOCOL, state="PINNED", intentSha256=source_update_intent(request),
+            ownerRecordSha256=canonical_sha256(self._read_record(self._record_path(request["changeKey"]))),
+            retainedCanonicalCommit=canonical, observedMainCommit=observed)
+        self._save_source_update(self._root(request["changeKey"]) / f"source-target-{request['operationId']}-v1.json", record)
+
     def _retain_main_recovery(self, request: dict[str, Any], kind: str, allowed_heads: set[str]) -> dict[str, Any]:
         """Authenticated App reauthorizes its exact durable intent, never another target."""
         tip = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
-        remote = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
-            "refs/heads/main", self._branch_ref(request), git_dir=True, publication=True).decode().splitlines()
-        refs = dict(line.split("\t",1)[::-1] for line in remote if "\t" in line)
+        pinned = self._source_target_authority(request)
+        refs = self._source_remote_refs(request)
+        if pinned is not None:
+            tip = refs["refs/heads/main"]
+            self._pin_source_commit(tip, self._source_observation_ref(request, tip))
         observed_head = refs.get(self._branch_ref(request))
-        if (not GIT_COMMIT.fullmatch(tip) or len(remote)!=2 or set(refs)!={"refs/heads/main",self._branch_ref(request)}
+        if (not GIT_COMMIT.fullmatch(tip) or set(refs)!={"refs/heads/main",self._branch_ref(request)}
                 or refs["refs/heads/main"]!=tip or observed_head not in allowed_heads
                 or any(self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor", before, after,
                     git_dir=True, env_extra=self._update_git_environment()).returncode != 0
@@ -1255,12 +1378,10 @@ class WorkspaceMediator:
         observed = recovery["observedMainCommit"] if recovery else target
         if recovery and recovery["targetMainCommit"]!=target:
             raise ContractError("source recovery target changed")
-        local = self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
-        remote = self._safe_update_git("ls-remote", "--heads", self.publication_transport,
-                                       "refs/heads/main", self._branch_ref(request),
-                                       git_dir=True, publication=True).decode().splitlines()
-        refs = dict(line.split("\t", 1)[::-1] for line in remote if "\t" in line)
-        if (len(remote) != 2 or local != observed
+        pinned = self._source_target_authority(request)
+        local = target if pinned else self._safe_update_git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}", git_dir=True).decode().strip()
+        refs = self._source_remote_refs(request)
+        if ((pinned is None and local != observed)
                 or refs != {"refs/heads/main": observed, self._branch_ref(request): request["sourceCommit"]}):
             raise ContractError("source update retained main or published head moved")
         if self._git_result(*self._update_git_options(), "merge-base", "--is-ancestor",
@@ -2367,6 +2488,8 @@ def main() -> int:
                 "source update later edit requires attention": "SOURCE_UPDATE_LATER_EDIT",
                 "source update execution or validation is active": "SOURCE_UPDATE_EXECUTION_ACTIVE",
                 "source update durable identity is incompatible": "SOURCE_UPDATE_IDENTITY_CONFLICT",
+                "source target synchronization is unavailable": "SOURCE_UPDATE_TARGET_UNAVAILABLE",
+                "source target authority is invalid": "SOURCE_UPDATE_TARGET_INVALID",
             }.get(str(error), "SOURCE_UPDATE_REJECTED")
             print(json.dumps({"code": code}, separators=(",", ":")), file=sys.stderr)
         else:
