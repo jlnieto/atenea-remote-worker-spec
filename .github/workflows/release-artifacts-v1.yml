@@ -32,6 +32,10 @@ jobs:
           python3 ops/worker/test-atenea-workspace-release-v1.py
           python3 ops/worker/test-atenea-project-source-sync-v1.py
           python3 ops/worker/test-development-change-workspace-v1.py
+          python3 -B ops/worker/test-development-change-editable-actors-v1.py ActorContractTest
+          python3 -m venv "$RUNNER_TEMP/editable-actor-tests"
+          "$RUNNER_TEMP/editable-actor-tests/bin/python" -m pip install jsonschema==4.23.0
+          sudo "$RUNNER_TEMP/editable-actor-tests/bin/python" -B ops/worker/test-development-change-editable-actors-v1.py DistinctActorRecoveryTest
           python3 -B ops/worker/test-development-change-validation-recovery-v1.py
           python3 -B ops/worker/test-atenea-android-validation-v2.py
           python3 ops/worker/test-atenea-backend-test-v2.py

@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import grp
 import hashlib
 import json
 import os
+import pwd
 import re
 import shlex
 import stat
@@ -39,6 +41,11 @@ WORKSPACE_PARENT = Path("/srv/atenea/workspaces/changes")
 LOCK_FILE = Path("/srv/atenea/worker/agent-runs-v1/development-change-workspace-v1.lock")
 GIT_TIMEOUT_SECONDS = 30
 MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024
+# Installed Platform authority, not a request field or repository setting.
+# Keep in agreement with project-codex-runner-v1.py:sandbox_command.
+WORKSPACE_CONTROL_USER = "atenea-worker"
+WORKSPACE_RUNNER_USER = "jose"
+WORKSPACE_EDITABLE_GROUP = "atenea"
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -228,6 +235,26 @@ def regular_directory(path: Path, expected_uid: int | None = None) -> os.stat_re
     if expected_uid is not None and observed.st_uid != expected_uid:
         raise ContractError("required directory ownership is unsafe")
     return observed
+
+
+def managed_editable_actor_ids() -> tuple[frozenset[int], int]:
+    """Only the fixed mediator and sandbox writer may own retained Git files.
+
+    This authority never applies to roots, ownership records, journals, refs,
+    credentials or configuration. Those remain exclusively worker/root-owned.
+    """
+    try:
+        control = pwd.getpwnam(WORKSPACE_CONTROL_USER)
+        runner = pwd.getpwnam(WORKSPACE_RUNNER_USER)
+        group = grp.getgrnam(WORKSPACE_EDITABLE_GROUP)
+    except KeyError as error:
+        raise ContractError("source update editable actors are unavailable") from error
+    if (control.pw_uid != os.geteuid() or control.pw_gid != group.gr_gid
+            or control.pw_uid <= 0 or runner.pw_uid <= 0 or control.pw_uid == runner.pw_uid
+            or group.gr_gid <= 0
+            or (runner.pw_gid != group.gr_gid and WORKSPACE_RUNNER_USER not in group.gr_mem)):
+        raise ContractError("source update editable actors are incompatible")
+    return frozenset((control.pw_uid, runner.pw_uid)), group.gr_gid
 
 
 def validate_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
@@ -1449,11 +1476,12 @@ class WorkspaceMediator:
 
     def _require_update_files(self, worktree: Path, before: dict[str, tuple[str, str]],
                               after: dict[str, tuple[str, str]]) -> None:
+        actors, group = self._editable_actor_ids(worktree)
         actual = set()
         for directory, children, names in os.walk(worktree, followlinks=False):
-            regular_directory(Path(directory), os.geteuid())
+            self._require_editable_directory(Path(directory), actors, group)
             for child in children:
-                regular_directory(Path(directory) / child, os.geteuid())
+                self._require_editable_directory(Path(directory) / child, actors, group)
             for name in names:
                 candidate = Path(directory) / name
                 relative = candidate.relative_to(worktree).as_posix()
@@ -1462,16 +1490,49 @@ class WorkspaceMediator:
                 actual.add(relative)
                 info = candidate.lstat()
                 choices = [entry for entry in (before.get(relative), after.get(relative)) if entry]
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                        or info.st_nlink != 1 or info.st_size > MAX_GIT_OUTPUT_BYTES or not choices):
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid not in actors or info.st_gid != group
+                        or info.st_mode & 0o7002 or info.st_nlink != 1
+                        or info.st_size > MAX_GIT_OUTPUT_BYTES or not choices):
                     raise ContractError("source update unexpected retained file")
-                content = candidate.read_bytes()
+                # Validate the actual opened inode; never follow a replacement
+                # symlink between metadata inspection and reading its content.
+                descriptor = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as stream:
+                    opened = os.fstat(stream.fileno())
+                    identity = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                                              item.st_gid, item.st_nlink, item.st_size, item.st_mtime_ns,
+                                              item.st_ctime_ns)
+                    if identity(opened) != identity(info):
+                        raise ContractError("source update retained file changed during inspection")
+                    content = stream.read(MAX_GIT_OUTPUT_BYTES + 1)
+                    if (len(content) > MAX_GIT_OUTPUT_BYTES or identity(os.fstat(stream.fileno())) != identity(info)
+                            or identity(candidate.lstat()) != identity(info)):
+                        raise ContractError("source update retained file changed during inspection")
                 if not any(bool(info.st_mode & 0o111) == (mode == "100755")
                            and content == self._safe_update_git("cat-file", "blob", blob, git_dir=True)
                            for mode, blob in choices):
                     raise ContractError("source update later edit requires attention")
         if not (set(before) & set(after)).issubset(actual):
             raise ContractError("source update retained file is missing")
+
+    def _editable_actor_ids(self, worktree: Path) -> tuple[frozenset[int], int]:
+        # Even with two editable actors, the worktree root is still exclusively
+        # worker-owned and bound to the immutable Change by _source_update_owner.
+        root = regular_directory(worktree, os.geteuid())
+        if self.test_mode:
+            return frozenset((os.geteuid(),)), root.st_gid
+        actors, group = managed_editable_actor_ids()
+        if root.st_gid != group:
+            raise ContractError("source update editable group is incompatible")
+        return actors, group
+
+    @staticmethod
+    def _require_editable_directory(path: Path, actors: frozenset[int], group: int) -> None:
+        info = regular_directory(path)
+        # setgid on the managed tree is expected; setuid/sticky/world-writable
+        # paths or an unrelated owner/group do not become trusted.
+        if info.st_uid not in actors or info.st_gid != group or info.st_mode & 0o5002:
+            raise ContractError("source update editable directory authority is incompatible")
 
     def _save_source_update(self, path: Path, record: dict[str, Any]) -> None:
         body = {key: value for key, value in record.items() if key != "recordSha256"}
