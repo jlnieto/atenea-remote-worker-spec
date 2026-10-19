@@ -271,8 +271,8 @@ class RetentionTest(unittest.TestCase):
 
     def test_capacity_failure_exposes_missing_bytes_without_any_publication(self):
         self.free_bytes = ret.GIB
-        record = self.apps[0]
-        record["state"] = "PREPARING"
+        record = self.plan("APP_PROD", 6, state="PREPARING")
+        record["operationId"] = None
         r.save(self.controller.path(record["planId"]) / "operation.json", record)
         with self.assertRaises(r.Rejected) as error:
             self.retention.capacity(record, ret.GIB)
@@ -352,6 +352,18 @@ class RetentionTest(unittest.TestCase):
         value=self.retention.storage(self.apps[0],"CHECKING_SPACE")
         jsonschema.validate(value,schema)
         with self.assertRaises(jsonschema.ValidationError):jsonschema.validate({**value,"command":"foreign"},schema)
+
+    def test_missing_recovery_image_or_apk_cannot_erase_its_remaining_archive(self):
+        del self.images[self.image_id(3)]
+        with self.assertRaises(r.Rejected) as error:self.controller.maintain("OPERATOR")
+        self.assertEqual("RETENTION_RECOVERY_CONTENT_MISSING",error.exception.code)
+        self.assertTrue((self.controller.path(self.apps[2]["planId"])/"image.tar").exists())
+
+    def test_missing_protected_apk_cannot_expire_its_signed_recovery_copy(self):
+        (self.apk/"releases/103/atenea-debug.apk").unlink()
+        with self.assertRaises(r.Rejected) as error:self.controller.maintain("OPERATOR")
+        self.assertEqual("RETENTION_RECOVERY_CONTENT_MISSING",error.exception.code)
+        self.assertTrue((self.controller.path(self.apks[2]["planId"])/"signed.apk").exists())
 
 
 if __name__ == "__main__":

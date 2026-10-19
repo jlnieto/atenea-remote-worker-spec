@@ -118,7 +118,10 @@ class Retention:
         if record["target"] == "APP_PROD":
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt.get("imageId", "")):
                 self.reject()
-        elif (receipt.get("versionCode") != record["artifact"].get("versionCode")
+        elif (type(receipt.get("versionCode")) is not int or receipt["versionCode"] <= 0
+                or receipt.get("versionCode") != record["artifact"].get("versionCode")
+                or receipt.get("manifest", {}).get("versionCode") != receipt["versionCode"]
+                or receipt.get("manifest", {}).get("sourceCommit") != record["sourceCommit"]
                 or receipt.get("manifest", {}).get("sha256") != record.get("resultSha256")
                 or not self.r.DIGEST.fullmatch(record.get("resultSha256", ""))):
             self.reject()
@@ -145,6 +148,7 @@ class Retention:
         if any(record["state"] in ACTIVE and record["planId"] != preparing for record in records):
             self.reject("RETENTION_BUSY")
         image_pins = self.rescue_pins()
+        required_images = set(image_pins)
         container_pins, available = self.docker_snapshot()
         image_pins |= container_pins
         app = self.controller.targets["APP_PROD"].observe_current()
@@ -152,6 +156,7 @@ class Retention:
         if app.get("healthy") is not True:
             self.reject("RETENTION_PRODUCTION_NOT_HEALTHY")
         image_pins.add(app["imageId"])
+        required_images.add(app["imageId"])
         apk_pins = {android["versionCode"]}
         previous = android["manifest"].get("previousRelease")
         if previous:
@@ -171,17 +176,31 @@ class Retention:
                 if rec["finishedAt"] <= anchor and item != current and item not in previous_values:
                     previous_values.append(item)
             pins.update(previous_values[:count])
+            if target == "APP_PROD":
+                required_images.update(previous_values[:count])
         for record in records:
             if record["state"] not in self.r.TERMINAL:
                 if record["target"] == "APP_PROD":
                     image_pins.add(record["predecessor"]["imageId"])
+                    required_images.add(record["predecessor"]["imageId"])
                     path = self.controller.path(record["planId"]) / "image.json"
                     if path.exists():
                         image_pins.add(self.read(path)["imageId"])
+                        required_images.add(self.read(path)["imageId"])
                 elif record["target"] == "ANDROID_STABLE":
                     apk_pins.add(record["predecessor"]["versionCode"])
                     if record.get("versionCode"):
                         apk_pins.add(record["versionCode"])
+        if not required_images <= available:
+            self.reject("RETENTION_RECOVERY_CONTENT_MISSING")
+        for rec, receipt in verified:
+            if rec["target"] == "ANDROID_STABLE" and receipt["versionCode"] in apk_pins:
+                path = self.controller.targets["ANDROID_STABLE"].APK_ROOT / "releases" / str(receipt["versionCode"]) / "atenea-debug.apk"
+                if receipt["versionCode"] == android["versionCode"] and not path.exists():
+                    path = self.controller.targets["ANDROID_STABLE"].APK_ROOT / "atenea-debug.apk"
+                if not path.exists() and not path.is_symlink():
+                    self.reject("RETENTION_RECOVERY_CONTENT_MISSING")
+                self.check_file(path, receipt["manifest"]["sha256"], 0o644)
         actions, apk_seen = {}, {}
         now = int(time.time())
         ledger_path = self.root / "inventory.json"
@@ -201,7 +220,10 @@ class Retention:
             archive_hash = artifact.get("archiveSha256")
             if archive_hash is None and download.exists():
                 attempted = self.read(download)
-                if attempted.get("target") != record["target"] or attempted.get("sourceCommit") != record["sourceCommit"]:
+                self.r.exact(attempted, {"target", "sourceCommit", "expectedSha256", "actualSha256", "sizeBytes"})
+                if (attempted.get("target") != record["target"] or attempted.get("sourceCommit") != record["sourceCommit"]
+                        or type(attempted["sizeBytes"]) is not int or not 0 <= attempted["sizeBytes"] <= POLICY["maximumPayloadBytes"]
+                        or not self.r.DIGEST.fullmatch(attempted["expectedSha256"])):
                     self.reject()
                 archive_hash = attempted["actualSha256"]
             for name, expected in (("artifact.zip", archive_hash),
