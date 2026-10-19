@@ -1,18 +1,58 @@
 #!/usr/bin/env python3
 """Target tests use ephemeral fixtures and substitute all external commands."""
 import copy
+import gzip
+import hashlib
 import importlib.util
 import io
 import json
 import tempfile
+import tarfile
 import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 spec=importlib.util.spec_from_file_location("targets",Path(__file__).with_name("release-control-v1.py"))
 r=importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 OLD="1"*40; NEW="2"*40; CERT="3"*64
+
+
+class ImageCapacityTest(unittest.TestCase):
+    def stage(self, *, free=30*1024**3, layer=None, limit=None, wrong_id=False):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name)
+            config=json.dumps({"config":{"Labels":{"org.opencontainers.image.revision":NEW}}}).encode()
+            image_id="sha256:"+hashlib.sha256(config).hexdigest()
+            layer=gzip.compress(b"expanded image bytes"*100) if layer is None else layer
+            with tarfile.open(root/"image.tar","w") as archive:
+                for filename,data in (("config.json",config),("layer.tar.gz",layer),("manifest.json",json.dumps([
+                    {"RepoTags":["atenea-app:"+NEW],"Config":"config.json","Layers":["layer.tar.gz"]}]).encode())):
+                    entry=tarfile.TarInfo(filename);entry.size=len(data);archive.addfile(entry,io.BytesIO(data))
+            command=Mock(side_effect=[b"loaded",json.dumps([{"Id":"sha256:"+"f"*64 if wrong_id else image_id}]).encode()])
+            with patch.object(r,"ROOT",root),patch.object(r,"command",command), \
+                    patch.object(r.shutil,"disk_usage",return_value=SimpleNamespace(free=free)), \
+                    patch.object(r,"IMAGE_EXPANSION_LIMIT",limit or 6*1024**3):
+                try:
+                    r.AppTarget({}).stage({"sourceCommit":NEW,"artifact":{"flywayVersion":84}},root)
+                except r.Rejected:
+                    self.assertFalse((root/"image.json").exists())
+                    raise
+            self.assertEqual(image_id,json.loads((root/"image.json").read_bytes())["imageId"])
+            self.assertEqual(["/usr/bin/docker","image","load","--input",str(root/"image.tar")],command.call_args_list[0].args[0])
+
+    def test_verified_bounded_image_is_imported_and_exact_config_identity_is_bound(self):
+        self.stage()
+        with self.assertRaises(r.Rejected) as error:self.stage(wrong_id=True)
+        self.assertEqual("IMAGE_IDENTITY_MISMATCH",error.exception.code)
+
+    def test_capacity_expansion_and_unsupported_compression_reject_before_loading(self):
+        for args,code in (({"free":1},"RELEASE_STORAGE_INSUFFICIENT"),
+                          ({"limit":1024},"IMAGE_EXPANSION_BOUND_EXCEEDED"),
+                          ({"layer":b"\x28\xb5\x2f\xfd"+b"x"*100},"IMAGE_LAYER_ENCODING_REJECTED")):
+            with self.subTest(args=args),self.assertRaises(r.Rejected) as error:self.stage(**args)
+            self.assertEqual(code,error.exception.code)
 
 class AndroidTargetTest(unittest.TestCase):
     def setUp(self):

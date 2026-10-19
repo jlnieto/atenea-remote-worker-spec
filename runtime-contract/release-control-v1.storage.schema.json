@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.yudri.es/contracts/release-control-v1.storage.schema.json",
+  "description": "Read-only publisher storage phase, never execution authority or a publication receipt.",
+  "type": "object", "additionalProperties": false,
+  "required": ["protocol", "planId", "target", "sourceCommit", "phase", "observedAt", "freeBytes", "requiredBytes", "missingBytes", "reclaimedBytes"],
+  "properties": {
+    "protocol": {"const": "atenea-release-storage/v1"},
+    "planId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "target": {"enum": ["APP_PROD", "ANDROID_STABLE"]},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "phase": {"enum": ["CHECKING_SPACE", "RECLAIMING", "SPACE_READY", "DOWNLOADING", "EXTRACTING", "STAGING", "READY", "INSUFFICIENT_SPACE", "ATTENTION"]},
+    "observedAt": {"type": "integer", "minimum": 1},
+    "freeBytes": {"$ref": "#/$defs/bytes"}, "requiredBytes": {"$ref": "#/$defs/bytes"},
+    "missingBytes": {"$ref": "#/$defs/bytes"}, "reclaimedBytes": {"$ref": "#/$defs/bytes"}
+  },
+  "$defs": {"bytes": {"type": "integer", "minimum": 0, "maximum": 1125899906842624}}
+}

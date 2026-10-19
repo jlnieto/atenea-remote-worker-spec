@@ -25,6 +25,7 @@ jobs:
           python3 ops/release/test-release-admission-v1.py
           python3 ops/release/test-release-targets-v1.py
           python3 ops/release/test-release-artifacts-v1.py
+          python3 -B ops/release/test-release-retention-v1.py
           python3 ops/release/test-install-release-control-v1.py
           python3 -B ops/release/test-release-plans-authority-v1.py
           node --test ops/worker/test-atenea-playwright-http-v1.js
