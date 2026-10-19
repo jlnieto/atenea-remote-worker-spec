@@ -1807,12 +1807,14 @@ def read_diagnostic(arguments: list[str]) -> dict:
         reject()
     identity = durable_identity(arguments)
     directory = JOURNAL_ROOT
+    journal_gid = grp.getgrnam("atenea").gr_gid
     for index, name in enumerate((None, identity["sessionId"], identity["operationId"])):
         if name is not None:
             directory = directory / name
         observed = directory.lstat()
         if (not stat_module.S_ISDIR(observed.st_mode) or observed.st_uid != 0
-                or observed.st_gid != 0 or observed.st_mode & 0o7777 != (0o750 if index == 0 else 0o700)):
+                or observed.st_gid != (journal_gid if index == 0 else 0)
+                or observed.st_mode & 0o7777 != (0o750 if index == 0 else 0o700)):
             reject()
     record = load_operation(directory, identity)
     if record is None or record["state"] not in DURABLE_TERMINAL:
