@@ -93,8 +93,8 @@ PROJECT_REF="refs/remotes/origin/${PROJECT_BRANCH}"
 PROJECT_WORKSPACES_ROOT="/srv/atenea/workspaces/sessions"
 SERVICE_TEMPLATE_SHA256="0028eda39a04ee91ecc6a8ca4888e9d26b8a3506c76500b7fe727ab2c2c0bdf7"
 MATERIALIZATION_SERVICE_TEMPLATE_SHA256="df3a3fa0d75472d8aaf6847c58b4bace6e7ed2f7d532f1f86c8c562cda2387a6"
-PROGRAM_SHA256="5caaca7d791c1a263bdfcccdabc82e0f5ad0dfb0d63b2a472324e253dd42569b"
-VALIDATION_MEDIATOR_SHA256="927dcdd41f4af4c03b796935fd339d44f8992e114a29d9a52e68eb1e49c58e03"
+PROGRAM_SHA256="960412e9ddac6c49e27c71acd9a89f645fe4add285ce61ee5613a0e6b27fb319"
+VALIDATION_MEDIATOR_SHA256="1cc005b9a1fd7fc274be9069164bba43d012abef41846c2351cb51cf734563af"
 BACKEND_TEST_DOCKERFILE_SHA256="8e9464d3cf93e8100b60deec53ee91974dca2565bb15002b88cedfa41e551fa4"
 BACKEND_TEST_PREPARER_SHA256="0dc8b1856a67e13c3eb35fb4c3637dd7f19a1df3049db7051da8747b8b7c790f"
 WEB_VALIDATION_DOCKERFILE_SHA256="e8d0a10e39aea1ecf49869cc7596717bf54cdf472d19dd28a8f725d2f6d9c34f"
@@ -274,9 +274,18 @@ verify_project_runner_sudoers() {
     || fail "project runner sudo authority is not exact"
 }
 
+validation_diagnostic_sudoers_content() {
+  local uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  local definition
+  for definition in BACKEND_TEST WEB_BUILD ANDROID_BUILD PLAYWRIGHT_ACCEPTANCE; do
+    printf 'atenea-worker ALL=(root) NOPASSWD: %s ^diagnostic %s %s (remote:ax42-01:change:%s )?[0-9a-f]{64} %s$\n' \
+      "$VALIDATION_MEDIATOR" "$definition" "$uuid" "$uuid" "$uuid"
+  done
+}
+
 verify_validation_sudoers() {
   mapfile -t validation_rules < <(grep -F -- "$VALIDATION_MEDIATOR" "$SUDOERS_FILE")
-  [[ "${#validation_rules[@]}" -eq 16 \
+  [[ "${#validation_rules[@]}" -eq 20 \
       && "${validation_rules[0]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR BACKEND_TEST *" \
       && "${validation_rules[1]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR WEB_BUILD *" \
       && "${validation_rules[2]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR ANDROID_BUILD *" \
@@ -294,6 +303,11 @@ verify_validation_sudoers() {
       && "${validation_rules[14]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR inspect PLAYWRIGHT_ACCEPTANCE *" \
       && "${validation_rules[15]}" == "atenea-worker ALL=(root) NOPASSWD: $VALIDATION_MEDIATOR cancel PLAYWRIGHT_ACCEPTANCE *" ]] \
     || fail "validation sudo authority is not exact"
+  mapfile -t diagnostic_rules < <(validation_diagnostic_sudoers_content)
+  for index in 0 1 2 3; do
+    [[ "${validation_rules[$((16 + index))]}" == "${diagnostic_rules[$index]}" ]] \
+      || fail "validation diagnostic sudo authority is not exact"
+  done
 }
 
 verify_runtime_admission_file() {
@@ -1610,6 +1624,7 @@ apply_install() {
       printf 'atenea-worker ALL=(root) NOPASSWD: %s inspect %s *\n' "$VALIDATION_MEDIATOR" "$validation_definition"
       printf 'atenea-worker ALL=(root) NOPASSWD: %s cancel %s *\n' "$VALIDATION_MEDIATOR" "$validation_definition"
     done
+    validation_diagnostic_sudoers_content
     printf 'atenea-worker ALL=(root) NOPASSWD: %s ensure *\n' "$ROLE_MEDIATOR"
     printf 'atenea-worker ALL=(root) NOPASSWD: %s\n' "$CODEX_RECONCILE_MEDIATOR"
     recovery_activation_sudoers_content

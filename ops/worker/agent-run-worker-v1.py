@@ -3526,6 +3526,37 @@ class WorkerState:
         with self.lock:
             return self._public_validation(self.validations[validation["operationId"]])
 
+    def validation_diagnostic(self, request: dict[str, Any]) -> dict[str, Any]:
+        # Authentication is shared with all worker POST operations. Exact retained
+        # ownership, not caller paths or a current workspace guess, selects evidence.
+        validation = self._exact_validation(request)
+        if validation["state"] not in VALIDATION_TERMINAL:
+            raise ProtocolError(HTTPStatus.CONFLICT, "validation_not_terminal", "A terminal validation is required")
+        try:
+            result = self._validation_mediator_observation("diagnostic", validation)
+            diagnostic = result.get("diagnostic", {})
+            if (set(result) != {"schemaVersion", "protocolVersion", "workspaceIdentity", "projectId",
+                    "artifactManifestSha256", "diagnosticSha256", "failureDetailsState", "diagnostic", "valuesExposed"}
+                    or result.get("schemaVersion") != 1
+                    or result.get("protocolVersion") != "closed-validation-diagnostic/v1"
+                    or result.get("workspaceIdentity") != validation["workspaceIdentity"]
+                    or result.get("projectId") != validation["projectId"]
+                    or result.get("artifactManifestSha256") != validation.get("artifactManifestSha256")
+                    or re.fullmatch(r"[0-9a-f]{64}", str(result.get("diagnosticSha256"))) is None
+                    or result.get("failureDetailsState") not in {"RECORDED", "NOT_RECORDED"}
+                    or result.get("valuesExposed") is not False
+                    or not isinstance(diagnostic, dict)
+                    or any(diagnostic.get(k) != validation[v] for k, v in (
+                        ("operationId", "operationId"), ("sessionId", "sessionId"),
+                        ("operation", "validationDefinition"), ("definitionRevision", "definitionRevision"),
+                        ("sourceTreeFingerprintSha256", "sourceTreeFingerprintSha256")))
+                    or diagnostic.get("valuesExposed") is not False):
+                raise ValueError("foreign diagnostic")
+            return result
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            raise ProtocolError(HTTPStatus.CONFLICT, "validation_diagnostic_unavailable",
+                                "Sealed diagnostic evidence is unavailable or conflicting") from error
+
     def cancel_validation(self, request: dict[str, Any]) -> dict[str, Any]:
         validation = self._exact_validation(request)
         operation_id = validation["operationId"]
@@ -3892,6 +3923,8 @@ class WorkerState:
             observation = strict_json_object(completed.stdout)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
             raise ValueError("validation mediator response is invalid") from error
+        if action == "diagnostic":
+            return observation
         required = {
             "schemaVersion", "protocolVersion", "operationId", "sessionId",
             "operation", "definitionRevision", "sourceTreeFingerprintSha256",
@@ -5615,6 +5648,9 @@ class AgentRunHandler(BaseHTTPRequestHandler):
                 return
             if path == CLOSED_VALIDATION_PATH_PREFIX + "inspect":
                 self._write(HTTPStatus.OK, self.server.state.inspect_validation(body))
+                return
+            if path == CLOSED_VALIDATION_PATH_PREFIX + "diagnostic":
+                self._write(HTTPStatus.OK, self.server.state.validation_diagnostic(body))
                 return
             if path == CLOSED_VALIDATION_PATH_PREFIX + "cancel":
                 self._write(HTTPStatus.OK, self.server.state.cancel_validation(body))
