@@ -107,7 +107,10 @@ SELECT json_build_object(
  'runs',(SELECT count(*) FROM agent_run WHERE status NOT IN ('SUCCEEDED','FAILED','CANCELLED')),
  'validations',(SELECT count(*) FROM validation_operation WHERE status='RUNNING'),
  'publications',(SELECT count(*) FROM mobile_delivery_operation WHERE kind='RELEASE' AND state NOT IN ('SUCCEEDED','ROLLED_BACK','FAILED','BLOCKED')),
- 'updates',(SELECT count(*) FROM mobile_source_update_operation WHERE state NOT IN ('PUBLISHED','FAILED','BLOCKED')),
+ -- These two states are completed source preparations, not running work.
+ -- Preserve them and their receipts; unknown/new states still block admission.
+ 'updates',(SELECT count(*) FROM mobile_source_update_operation WHERE state NOT IN
+    ('PUBLISHED','FAILED','BLOCKED','RESOLVER_COMPLETED','READY_TO_FINALIZE')),
  'repairs',(SELECT count(*) FROM mobile_validation_recovery WHERE kind='REPAIR' AND state IN ('PREPARE_REQUESTED','PREPARING','APPLY_REQUESTED','APPLYING','ATTENTION'))); ROLLBACK;"""
         raw=self.r.command(self.psql(),input=query.encode(),timeout=10)
         value=json.loads(raw)

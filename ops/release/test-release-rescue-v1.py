@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -113,6 +114,26 @@ class RescueTest(unittest.TestCase):
                 self.assertEqual(self.model.psql(),command.call_args.args[0])
                 sql=command.call_args.kwargs["input"].decode()
                 self.assertTrue(sql.startswith("BEGIN READ ONLY;"));self.assertNotIn("UPDATE ",sql)
+
+    def test_idle_guard_counts_running_or_unknown_source_states_not_completed_preparations(self):
+        idle=m.Rescue.require_idle.__get__(self.model)
+        good={"schema":105,"flywayFailures":0,"runs":0,"validations":0,"publications":0,"updates":0,"repairs":0}
+        with patch.object(r,"command",return_value=json.dumps(good).encode()) as command:
+            idle()
+        sql=command.call_args.kwargs["input"].decode()
+        predicate=re.search(r"FROM mobile_source_update_operation WHERE (state NOT IN\s*\([^)]*\))",sql)[1]
+        with sqlite3.connect(":memory:") as database:
+            database.execute("CREATE TABLE source_operation(state TEXT NOT NULL)")
+            for state in ("PUBLISHED","FAILED","BLOCKED","RESOLVER_COMPLETED","READY_TO_FINALIZE"):
+                database.execute("INSERT INTO source_operation VALUES (?)",(state,))
+            self.assertEqual(0,database.execute("SELECT count(*) FROM source_operation WHERE "+predicate).fetchone()[0])
+            for state in ("QUEUED","PREPARE_CLAIMED","UNCERTAIN","READY_TO_RESOLVE","RESOLVING","ATTENTION","RETRY_REQUESTED","FUTURE_STATE"):
+                database.execute("INSERT INTO source_operation VALUES (?)",(state,))
+                self.assertEqual(1,database.execute("SELECT count(*) FROM source_operation WHERE "+predicate).fetchone()[0],state)
+                database.execute("DELETE FROM source_operation WHERE state=?",(state,))
+        # A retained RUNNING validation remains a real blocker for rescue.
+        with patch.object(r,"command",return_value=json.dumps({**good,"validations":1}).encode()):
+            with self.assertRaises(r.Rejected):idle()
 
     def server(self):
         server=m.http.server.ThreadingHTTPServer(("127.0.0.1",0),m.handler(self.model))
