@@ -1492,6 +1492,11 @@ def persist_diagnostic(
     failures = sorted(set(re.findall(
         r"\bcom\.atenea\.[A-Za-z0-9_.]{1,160}(?:Test|Tests)\b", output
     )))[:8]
+    # A failed test may precede many successful tests. Do not lose its location
+    # merely because the old symbolic summary reads only the last 64 KiB.
+    # The input remains bounded, and only symbols (never this text) survive.
+    with output_path.open("rb") as stream:
+        failure_symbols = test_failure_symbols(stream.read(16 * 1024 * 1024).decode("utf-8", errors="replace"))
     diagnostic = {
         "schemaVersion": 1, "operationId": validation_id, "sessionId": session_id,
         "operation": operation, "definitionRevision": definition.revision,
@@ -1500,7 +1505,7 @@ def persist_diagnostic(
         "failureClass": outcome.failure_class, "exitCode": outcome.exit_code,
         "durationMillis": duration, "outputSha256": sha256_file(output_path),
         "testClasses": failures, "valuesExposed": False,
-        "testFailures": test_failure_symbols(output),
+        "testFailures": failure_symbols,
     }
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":")).encode("utf-8")
     destination = parent / (validation_id + "-diagnostic-v1.json")

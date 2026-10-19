@@ -55,7 +55,7 @@ class ReceiptReadTest(unittest.TestCase):
         self.output=self.root/'output';self.output.write_text('''[ERROR] com.atenea.FooTest.broken -- Time elapsed: 0.1 s <<< FAILURE!
 org.opentest4j.AssertionFailedError: SECRET
     at com.atenea.FooTest.broken(FooTest.java:42)
-''')
+'''+('[INFO] Subsequent successful test\n'*5000))
         digest=m.persist_diagnostic(self.artifacts/self.session,self.args,m.DEFINITIONS['BACKEND_TEST'],
             m.RunOutcome(1,'TESTS','TESTS_FAILED','CANDIDATE'),self.output,50)
         manifest=hashlib.sha256('\0'.join((self.operation,m.DEFINITIONS['BACKEND_TEST'].revision,'a'*64,'1','50',m.sha256_file(self.output),digest)).encode()).hexdigest()
