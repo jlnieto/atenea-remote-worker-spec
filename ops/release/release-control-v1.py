@@ -11,6 +11,7 @@ import contextlib
 import copy
 import fcntl
 import grp
+import gzip
 import hashlib
 import hmac
 import http.server
@@ -53,6 +54,7 @@ TARGETS = {"APP_PROD": "jlnieto/atenea", "ANDROID_STABLE": "jlnieto/atenea",
 TERMINAL = {"SUCCEEDED", "ROLLED_BACK", "FAILED", "BLOCKED", "ROLLBACK_FAILED"}
 HEX = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
+IMAGE_EXPANSION_LIMIT = 6 * 1024**3
 
 
 class Rejected(Exception):
@@ -152,6 +154,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class GitHubArtifacts:
     """The fixed workflow/run/artifact identity, plus GitHub's archive digest."""
+    def __init__(self):
+        self.capacity = None
+        self.phase = None
+
     def api(self, path):
         token = trusted(GITHUB_TOKEN, 0o600).read_text().strip()
         request = urllib.request.Request("https://api.github.com" + path, headers={
@@ -186,6 +192,12 @@ class GitHubArtifacts:
         artifact = matches[0]
         metadata = {"runId": run["id"], "artifactId": artifact["id"],
                     "archiveSha256": artifact["digest"][7:]}
+        if self.capacity is not None:
+            size = artifact.get("size_in_bytes")
+            if type(size) is not int or not 0 < size <= 6 * 1024**3:
+                raise Rejected("ARTIFACT_BOUND_EXCEEDED")
+            self.capacity(destination.name, size)
+            self.phase(destination.name, "DOWNLOADING")
         token = trusted(GITHUB_TOKEN, 0o600).read_text().strip()
         request = urllib.request.Request(
             f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact['id']}/zip",
@@ -203,15 +215,33 @@ class GitHubArtifacts:
                         or parsed.hostname.endswith(".githubusercontent.com"))):
             raise Rejected("ARTIFACT_REDIRECT_REJECTED")
         archive = destination / "artifact.zip"
-        with urllib.request.build_opener(NoRedirect).open(location, timeout=60) as response, archive.open("xb") as output:
-            count = 0
-            while block := response.read(1024 * 1024):
-                count += len(block)
-                if count > 6 * 1024**3:
-                    raise Rejected("ARTIFACT_BOUND_EXCEEDED")
-                output.write(block)
+        written = False
+        try:
+            with urllib.request.build_opener(NoRedirect).open(location, timeout=60) as response, archive.open("xb") as output:
+                written = True
+                os.fchmod(output.fileno(), 0o600)
+                count = 0
+                while block := response.read(1024 * 1024):
+                    count += len(block)
+                    if count > 6 * 1024**3 or (self.capacity is not None and count > size):
+                        raise Rejected("ARTIFACT_BOUND_EXCEEDED")
+                    output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            if self.capacity is not None and count != size:
+                raise Rejected("ARTIFACT_DOWNLOAD_INCOMPLETE")
+        finally:
+            if self.capacity is not None and written:
+                # Exact publisher-written bytes; interrupted legacy downloads with
+                # no such evidence are pinned, never adopted by age alone.
+                trusted(archive, 0o600)
+                save(destination / "download.json", {"target": target, "sourceCommit": commit,
+                    "expectedSha256": metadata["archiveSha256"], "actualSha256": file_digest(archive),
+                    "sizeBytes": archive.stat().st_size})
         if file_digest(archive) != metadata["archiveSha256"]:
             raise Rejected("ARTIFACT_DIGEST_MISMATCH")
+        if self.phase is not None:
+            self.phase(destination.name, "EXTRACTING")
         payload = {"APP_PROD": "image.tar", "ANDROID_STABLE": "app-unsigned.apk",
                    "AX42_PLATFORM": "platform.tar"}[target]
         with zipfile.ZipFile(archive) as bundle:
@@ -497,11 +527,41 @@ class AppTarget:
             item = archive.getmember(config_name)
             if not item.isfile() or item.size > 1024**2:
                 raise Rejected("IMAGE_ARCHIVE_REJECTED")
-            image_config = json.load(archive.extractfile(item))
+            config_bytes = archive.extractfile(item).read()
+            image_config = json.loads(config_bytes)
             if image_config["config"]["Labels"].get("org.opencontainers.image.revision") != plan["sourceCommit"]:
                 raise Rejected("IMAGE_REVISION_MISMATCH")
+            expanded = 0
+            layers = manifest[0].get("Layers")
+            if not isinstance(layers, list) or len(layers) > 2048 or any(not isinstance(name, str) for name in layers):
+                raise Rejected("IMAGE_ARCHIVE_REJECTED")
+            for name in layers:
+                layer = archive.getmember(name)
+                if not layer.isfile():
+                    raise Rejected("IMAGE_ARCHIVE_REJECTED")
+                with archive.extractfile(layer) as source:
+                    prefix = source.read(6)
+                    if prefix.startswith((b"\x28\xb5\x2f\xfd", b"BZh", b"\xfd7zXZ")):
+                        raise Rejected("IMAGE_LAYER_ENCODING_REJECTED")
+                    compressed = prefix.startswith(b"\x1f\x8b")
+                    source.seek(0)
+                    stream = gzip.GzipFile(fileobj=source) if compressed else source
+                    try:
+                        while block := stream.read(1024**2):
+                            expanded += len(block)
+                            if expanded > IMAGE_EXPANSION_LIMIT:
+                                raise Rejected("IMAGE_EXPANSION_BOUND_EXCEEDED")
+                    finally:
+                        if compressed:
+                            stream.close()
+            # Import can temporarily need both content store and extracted layers.
+            free = min(shutil.disk_usage(ROOT).free, shutil.disk_usage("/var/lib/docker").free)
+            if free < 2 * expanded + 2 * 1024**3:
+                raise Rejected("RELEASE_STORAGE_INSUFFICIENT")
         command(["/usr/bin/docker", "image", "load", "--input", str(directory / "image.tar")], timeout=300)
         image = json.loads(command(["/usr/bin/docker", "image", "inspect", "atenea-app:" + plan["sourceCommit"]]))[0]
+        if image.get("Id") != "sha256:" + hashlib.sha256(config_bytes).hexdigest():
+            raise Rejected("IMAGE_IDENTITY_MISMATCH")
         save(directory / "image.json", {"imageId": image["Id"]})
 
     def apply(self, plan, directory):
@@ -709,6 +769,47 @@ class Controller:
         self.root, self.artifacts, self.targets = root, artifacts, targets
         self.lock = threading.RLock()
         self.execution_lock = threading.Lock()
+        self.lifecycle_lock = threading.RLock()
+        self.retention = None
+
+    def attach_retention(self, release):
+        helper = trusted(Path(__file__).with_name("release-retention-v1.py"), 0o755)
+        self.retention = runpy.run_path(str(helper))["attach"](release, self)
+        self.artifacts.capacity = lambda plan_id, size: self.retention.capacity(self.read(plan_id), size)
+        self.artifacts.phase = lambda plan_id, phase: self.retention.storage(self.read(plan_id), phase)
+
+    def maintain(self, reason, *, preparing=None):
+        if self.retention is None:
+            return None
+        if not self.lifecycle_lock.acquire(blocking=False):
+            raise Rejected("RETENTION_BUSY")
+        try:
+            if not self.execution_lock.acquire(blocking=False):
+                raise Rejected("RETENTION_BUSY")
+            try:
+                with self.lock:
+                    self.retention.expire()
+                    return self.retention.collect(reason, preparing=preparing)
+            finally:
+                self.execution_lock.release()
+        finally:
+            self.lifecycle_lock.release()
+
+    def start_retention(self):
+        if self.retention is None:
+            return
+        def nightly():
+            while True:
+                try:
+                    path = self.retention.root / "last.json"
+                    last = self.retention.read(path) if path.exists() else None
+                    if last is None or int(time.time()) // 86400 > last["finishedAt"] // 86400:
+                        self.maintain("NIGHTLY")
+                except Exception as error:
+                    # Busy is not failure; exact durable ATTENTION is never forced.
+                    print("RETENTION_DEFERRED " + (error.code if isinstance(error, Rejected) else "RETENTION_FAILED"), flush=True)
+                time.sleep(60)
+        threading.Thread(target=nightly, daemon=True).start()
 
     def path(self, plan_id):
         return self.root / "plans" / identity(plan_id)
@@ -726,6 +827,13 @@ class Controller:
             "versionCode", "versionName", "createdAt", "expiresAt", "finishedAt", "effectiveSourceCommit", "resultSha256")}
 
     def dispatch(self, request):
+        if request.get("operation") == "OBSERVE_STORAGE":
+            exact(request, {"operation", "planId"})
+            record = self.read(request["planId"])
+            path = self.path(record["planId"]) / "storage.json"
+            if self.retention is None or not path.exists():
+                raise Rejected("RELEASE_STORAGE_NOT_OBSERVED")
+            return self.retention.observe(record)
         if request.get("operation") == "OBSERVE_PLATFORM":
             exact(request, {"operation"})
             return self.observe_platform()
@@ -934,6 +1042,10 @@ class Controller:
             return self.public(record)
 
     def prepare(self, plan_id):
+        with self.lifecycle_lock:
+            self._prepare(plan_id)
+
+    def _prepare(self, plan_id):
         record, path = self.read(plan_id), self.path(plan_id)
         try:
             deadline = int(time.time()) + 2700
@@ -952,11 +1064,17 @@ class Controller:
                           versionName=artifact["versionName"],errorCode=None)
             record["planSha256"] = digest({key: record[key] for key in
                 ("protocol", "planId", "target", "sourceCommit", "artifact", "predecessor", "expiresAt")})
+            if self.retention is not None:
+                self.retention.storage(record, "STAGING")
             self.targets[record["target"]].stage(record, path)
             record["state"] = "READY"
+            if self.retention is not None:
+                self.retention.storage(record, "READY")
         except Exception as error:
             record.update(state="BLOCKED", errorCode=error.code if isinstance(error, Rejected)
                           else "ARTIFACT_PREPARATION_FAILED", finishedAt=int(time.time()))
+            if self.retention is not None and (path / "storage.json").exists():
+                self.retention.storage(record, "INSUFFICIENT_SPACE" if record["errorCode"] == "RELEASE_STORAGE_INSUFFICIENT" else "ATTENTION")
         save(path / "operation.json", record)
 
     def accept(self, request):
@@ -996,6 +1114,16 @@ class Controller:
             return self.public(record)
 
     def execute(self, plan_id, *, recovered=False):
+        with self.lifecycle_lock:
+            self._execute(plan_id, recovered=recovered)
+            if self.read(plan_id)["state"] == "SUCCEEDED" and self.retention is not None:
+                try:
+                    self.maintain("AFTER_PUBLICATION")
+                except Exception as error:
+                    # Publication receipt remains true even if housekeeping needs attention.
+                    print("RETENTION_DEFERRED " + (error.code if isinstance(error, Rejected) else "RETENTION_FAILED"), flush=True)
+
+    def _execute(self, plan_id, *, recovered=False):
         with self.execution_lock:
             record = self.read(plan_id)
             if record["state"] in TERMINAL:
@@ -1060,6 +1188,8 @@ class Controller:
             elif record["state"] == "PREPARING":
                 record.update(state="BLOCKED", errorCode="PREPARATION_INTERRUPTED", finishedAt=int(time.time()))
                 save(path, record)
+                if self.retention is not None and (path.parent / "storage.json").exists():
+                    self.retention.storage(record, "ATTENTION")
 
 
 def configuration():
@@ -1193,6 +1323,13 @@ def main():
                 record=json.loads(trusted(path,0o600).read_bytes())
                 if record["state"] in {"ACCEPTED","APPLYING","ATTENTION"}:
                     raise Rejected("RESCUE_REQUIRES_INSPECTION")
+            maintenance = ROOT / "retention/active.json"
+            if maintenance.exists() or maintenance.is_symlink():
+                value = json.loads(trusted(maintenance, 0o600).read_bytes())
+                exact(value, {"runId"})
+                run = ROOT / "retention/runs" / (identity(value["runId"]) + ".json")
+                if json.loads(trusted(run, 0o600).read_bytes()).get("state") != "SUCCEEDED":
+                    raise Rejected("RETENTION_REQUIRES_INSPECTION")
         rescue_config = Path("/etc/atenea-release-v1/rescue.json")
         if config["mode"] == "VPS" and (rescue_config.exists() or rescue_config.is_symlink()):
             runpy.run_path(str(Path(__file__).with_name("release-rescue-v1.py")))["configuration"](sys.modules[__name__])
@@ -1221,12 +1358,23 @@ def main():
             raise Rejected("SOCKET_AUTHORITY_INVALID")
         print("Release runtime verified")
         return
+    if arguments == ["--retention-inspect"]:
+        if config["mode"] != "VPS":
+            raise Rejected("TARGET_REJECTED")
+        targets = {"APP_PROD": AppTarget(config), "ANDROID_STABLE": AndroidTarget(config)}
+        controller = Controller(ROOT, GitHubArtifacts(), targets)
+        controller.attach_retention(sys.modules[__name__])
+        # Root/operator only, read-only; no expiry, enrollment or collection.
+        print(canonical(controller.retention.inventory()).decode())
+        return
     if arguments:
         raise Rejected("CLOSED_COMMAND_REQUIRED")
     trusted_directory(ROOT, 0o700)
     trusted_directory(SOCKET.parent, 0o755)
     targets = {"APP_PROD": AppTarget(config), "ANDROID_STABLE": AndroidTarget(config)} if config["mode"] == "VPS" else {"AX42_PLATFORM": PlatformTarget()}
     controller = Controller(ROOT, GitHubArtifacts(), targets)
+    if config["mode"] == "VPS":
+        controller.attach_retention(sys.modules[__name__])
     peer = Peer() if config["mode"] == "VPS" else None
 
     peer_lock = threading.RLock()
@@ -1317,6 +1465,7 @@ def main():
     if rescue_config.exists() or rescue_config.is_symlink():
         helper = trusted(Path("/usr/local/libexec/atenea/release-rescue-v1.py"), 0o755)
         rescue = runpy.run_path(str(helper))["start"](sys.modules[__name__], controller)
+    controller.start_retention()
     server.serve_forever()
 
 

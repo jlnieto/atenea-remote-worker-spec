@@ -17,6 +17,66 @@ Las solicitudes son PLAN, INSPECT, EXECUTE, OBSERVE_APP, OBSERVE_ANDROID y OBSER
 hosts, versiones, claves de firma, servicios o enlaces. Los schemas cerrados
 están en `runtime-contract/release-control-v1.*.schema.json`.
 
+## Retención automática del publicador VPS
+
+`release-retention-v1.py` contiene la política cerrada/revisada v1. No acepta
+política, rutas, comandos, versiones o IDs Docker del cliente. El installer del
+**publicador VPS** instala el módulo root:root 0755. No requiere instalar worker,
+reiniciar App, migraciones, permisos nuevos ni un runtime DEV.
+
+La retención se ejecuta antes de descargar un artefacto, después de una publicación
+correcta y una vez por día UTC desde el daemon independiente. Si el daemon estaba
+apagado, comprueba el vencimiento al arrancar. Se serializa con preparación,
+ejecución y rescate. Una operación activa o rollback ambiguo aplaza la limpieza;
+nunca se cierra una operación por su edad. Sólo un READY ya caducado y sin EXECUTE
+puede cerrarse por la caducidad normal (`BLOCKED / PLAN_EXPIRED`).
+
+* Backend: imagen realmente ejecutada y dos predecesoras **verificadas**, más
+  cualquier imagen usada por un contenedor (también detenido), un plan pendiente
+  o un rescate. Sólo imágenes vinculadas a un recibo SUCCEEDED y al source exacto
+  son retirables; aliases ajenos o imágenes no registradas quedan fuera.
+* APK: actual, dos anteriores verificadas y referencias pendientes. Las generaciones
+  antiguas tienen al menos siete días de gracia desde su primer inventario y desde
+  su última protección. Los manifests/recibos no caducan. El canal actual no cambia.
+  Una URL antigua fuera de la política puede dejar de servir el binario; el manifest
+  actual sigue indicando la descarga vigente. Un descriptor ya abierto sigue siendo
+  válido tras unlink en Linux. No se promete una lease de descarga inexistente.
+* ZIP y payload privado de planes SUCCEEDED: se verifican de nuevo sus hashes antes
+  de retirar las copias. Para fallos cerrados se esperan siete días. Un parcial
+  necesita el hash de los bytes realmente escritos por el publicador; los parciales
+  antiguos sin evidencia, o imágenes fallidas sin recibo verificable, no se adoptan.
+* Nunca se borran planes, recibos, backups PostgreSQL, datos, conversaciones,
+  workspaces, caché de builds, volúmenes, releases Codex ni árboles Platform.
+  No se utiliza `prune`, eliminación recursiva ni `image rm --force`.
+
+Cada limpieza guarda intención antes del efecto, estado por recurso y resultado
+en `retention/runs/<UUID>.json`, root:root 0600. Un corte después del unlink se
+reconcilia usando **esa misma** intención; un hash/propietario/enlace inesperado
+falla cerrado. ATTENTION no se fuerza ni se convierte en éxito. El inventario y
+los tombstones son separados: jamás se reescribe el plan/hash/recibo original.
+
+La admisión de capacidad utiliza el menor espacio de los filesystems del journal
+y Docker. Antes de descargar exige al menos 20 GiB, o un presupuesto mayor para
+ZIP + payload de hasta 6 GiB + dos copias de imagen expandida de hasta 6 GiB +
+2 GiB de reserva. La expansión gzip se cuenta y limita antes de `docker load`;
+codificaciones comprimidas no soportadas se rechazan. Si la retención permitida
+no basta, `RELEASE_STORAGE_INSUFFICIENT` termina la preparación sin desplegar.
+
+`{"operation":"OBSERVE_STORAGE","planId":"<UUID>"}` sólo consulta la fase y
+capacidad observadas de ese plan (`atenea-release-storage/v1`). No dispara ninguna
+limpieza ni autoriza publicar; no expone rutas, identidades Docker o secretos.
+App/Android pueden presentar comprobación, retención, descarga, extracción y stage,
+con la edad de la última lectura y sin porcentajes ni ETA inventados. Un publicador
+anterior simplemente no ofrece esta proyección opcional.
+
+Antes del primer rollout, el operador ejecuta `--retention-inspect` desde una copia
+revisada/root-controlled del nuevo publicador. Es inventario **read-only**, no
+expira planes ni crea registros. Revisa sus candidatos exactos y conserva el informe;
+después usa el installer `plan`, `apply`, `verify`. El primer ciclo automático conserva
+su propio recibo. Comprueba health, imagen/contenedores PostgreSQL, manifest Android,
+workspaces y estado Codex antes/después. Si hay drift de un recurso candidato se
+detiene, no se adopta ni se amplía la política para conseguir espacio.
+
 `OBSERVE_APP` acepta únicamente `{"operation":"OBSERVE_APP"}` en el VPS.
 Es una lectura de identidad de la imagen realmente ejecutada, health local
 y recibo root-owned de una publicación APP_PROD terminada correctamente.

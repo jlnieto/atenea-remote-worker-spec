@@ -3,6 +3,8 @@
   "$id": "https://atenea.yudri.es/contracts/release-control-v1.request.schema.json",
   "title": "Atenea fixed-target release request v1",
   "oneOf": [
+    {"type":"object","additionalProperties":false,"required":["operation","planId"],
+     "properties":{"operation":{"const":"OBSERVE_STORAGE"},"planId":{"$ref":"#/$defs/id"}}},
     {"type":"object","additionalProperties":false,"required":["operation"],
      "properties":{"operation":{"const":"OBSERVE_PLATFORM"}}},
     {"type":"object","additionalProperties":false,"required":["operation"],

@@ -79,6 +79,22 @@ class ArtifactTest(unittest.TestCase):
         self.assertEqual("RELEASE_BUILD_FAILED",error.exception.code)
         self.assertEqual(2,client.api.call_count)
 
+    def test_capacity_is_checked_before_requesting_a_download_or_creating_any_file(self):
+        bundle=self.bundle()
+        client=self.client(bundle)
+        original=client.api.side_effect
+        values=list(original)
+        values[-1]["artifacts"][0]["size_in_bytes"]=len(bundle)
+        client.api.side_effect=values
+        client.capacity=Mock(side_effect=r.Rejected("RELEASE_STORAGE_INSUFFICIENT"))
+        client.phase=Mock()
+        with tempfile.TemporaryDirectory() as name,patch.object(r.urllib.request,"build_opener") as network:
+            with self.assertRaises(r.Rejected) as error:
+                client.prepare("APP_PROD",SHA,Path(name))
+            self.assertEqual("RELEASE_STORAGE_INSUFFICIENT",error.exception.code)
+            self.assertEqual([],list(Path(name).iterdir()));network.assert_not_called()
+        client.capacity.assert_called_once()
+
     def test_new_application_requires_a_closed_managed_validation_policy_binding(self):
         with self.assertRaises(r.Rejected) as error:self.prepare(self.bundle(metadata={"flywayVersion":99}))
         self.assertEqual("MANAGED_VALIDATION_POLICY_REQUIRED",error.exception.code)

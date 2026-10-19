@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROGRAM=/usr/local/libexec/atenea/release-control-v1.py
 RESCUE=/usr/local/libexec/atenea/release-rescue-v1.py
+RETENTION=/usr/local/libexec/atenea/release-retention-v1.py
 SERVICE=/etc/systemd/system/atenea-release-control-v1.service
 
 unit_content() {
@@ -47,6 +48,7 @@ main() {
       mode="$(/usr/bin/python3 "${SCRIPT_DIR}/release-control-v1.py" --installation-mode)"
       install -o root -g root -m 0755 "${SCRIPT_DIR}/release-control-v1.py" "$PROGRAM"
       install -o root -g root -m 0755 "${SCRIPT_DIR}/release-rescue-v1.py" "$RESCUE"
+      install -o root -g root -m 0755 "${SCRIPT_DIR}/release-retention-v1.py" "$RETENTION"
       install -d -o root -g root -m 0700 /srv/atenea/release-v1
       unit_content "$mode" >"$SERVICE"
       chown root:root "$SERVICE"; chmod 0644 "$SERVICE"
@@ -61,6 +63,8 @@ main() {
       mode="$(/usr/bin/python3 "${SCRIPT_DIR}/release-control-v1.py" --installation-mode)"
       cmp --silent "${SCRIPT_DIR}/release-control-v1.py" "$PROGRAM"
       cmp --silent "${SCRIPT_DIR}/release-rescue-v1.py" "$RESCUE"
+      cmp --silent "${SCRIPT_DIR}/release-retention-v1.py" "$RETENTION"
+      [[ "$(stat -c '%u:%g:%a' "$RETENTION")" == 0:0:755 ]]
       [[ "$(stat -c '%u:%g:%a' "$RESCUE")" == 0:0:755 ]]
       cmp --silent <(unit_content "$mode") "$SERVICE"
       [[ "$(stat -c '%u:%g:%a' "$PROGRAM")" == 0:0:755 ]]
