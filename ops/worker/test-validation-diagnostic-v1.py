@@ -3,6 +3,7 @@
 import hashlib,importlib.util,json,os,sys,tempfile,unittest,uuid
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 spec=importlib.util.spec_from_file_location('diagnostic_mediator',Path(__file__).with_name('atenea-validation-v1.py'))
 m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
@@ -43,6 +44,9 @@ class ReceiptReadTest(unittest.TestCase):
         self.args=['BACKEND_TEST',self.session,'remote:ax42-01:change:'+self.change,'a'*64,self.operation]
         self.identity=m.durable_identity(self.args)
         self.journal=self.root/'journal';self.journal.mkdir(mode=0o750)
+        # Match install_exact_directory root atenea 0750, not a synthetic root:root parent.
+        os.chown(self.journal,0,98888)
+        self.enterContext(mock.patch.object(m.grp,'getgrnam',return_value=SimpleNamespace(gr_gid=98888)))
         self.artifacts=self.root/'artifacts';self.artifacts.mkdir(mode=0o750)
         (self.artifacts/self.session).mkdir(mode=0o750)
         self.enterContext(mock.patch.object(m,'JOURNAL_ROOT',self.journal))
@@ -51,7 +55,7 @@ class ReceiptReadTest(unittest.TestCase):
         self.output=self.root/'output';self.output.write_text('''[ERROR] com.atenea.FooTest.broken -- Time elapsed: 0.1 s <<< FAILURE!
 org.opentest4j.AssertionFailedError: SECRET
     at com.atenea.FooTest.broken(FooTest.java:42)
-''')
+'''+('[INFO] Subsequent successful test\n'*5000))
         digest=m.persist_diagnostic(self.artifacts/self.session,self.args,m.DEFINITIONS['BACKEND_TEST'],
             m.RunOutcome(1,'TESTS','TESTS_FAILED','CANDIDATE'),self.output,50)
         manifest=hashlib.sha256('\0'.join((self.operation,m.DEFINITIONS['BACKEND_TEST'].revision,'a'*64,'1','50',m.sha256_file(self.output),digest)).encode()).hexdigest()
@@ -89,6 +93,14 @@ org.opentest4j.AssertionFailedError: SECRET
         self.path.chmod(0o600);self.path.unlink();self.path.symlink_to(self.output)
         with self.assertRaises(OSError):m.read_diagnostic(self.args)
         self.record['state']='RUNNING';m.write_operation(self.directory,self.record)
+        with self.assertRaises(m.Rejected):m.read_diagnostic(self.args)
+
+    def test_only_installer_journal_group_and_root_private_children_are_accepted(self):
+        for gid in (0,98887):
+            os.chown(self.journal,0,gid)
+            with self.assertRaises(m.Rejected):m.read_diagnostic(self.args)
+        os.chown(self.journal,0,98888)
+        os.chown(self.directory,0,98888)
         with self.assertRaises(m.Rejected):m.read_diagnostic(self.args)
 
 if __name__=='__main__':unittest.main()

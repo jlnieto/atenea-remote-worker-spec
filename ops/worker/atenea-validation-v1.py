@@ -1492,6 +1492,11 @@ def persist_diagnostic(
     failures = sorted(set(re.findall(
         r"\bcom\.atenea\.[A-Za-z0-9_.]{1,160}(?:Test|Tests)\b", output
     )))[:8]
+    # A failed test may precede many successful tests. Do not lose its location
+    # merely because the old symbolic summary reads only the last 64 KiB.
+    # The input remains bounded, and only symbols (never this text) survive.
+    with output_path.open("rb") as stream:
+        failure_symbols = test_failure_symbols(stream.read(16 * 1024 * 1024).decode("utf-8", errors="replace"))
     diagnostic = {
         "schemaVersion": 1, "operationId": validation_id, "sessionId": session_id,
         "operation": operation, "definitionRevision": definition.revision,
@@ -1500,7 +1505,7 @@ def persist_diagnostic(
         "failureClass": outcome.failure_class, "exitCode": outcome.exit_code,
         "durationMillis": duration, "outputSha256": sha256_file(output_path),
         "testClasses": failures, "valuesExposed": False,
-        "testFailures": test_failure_symbols(output),
+        "testFailures": failure_symbols,
     }
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":")).encode("utf-8")
     destination = parent / (validation_id + "-diagnostic-v1.json")
@@ -1807,12 +1812,14 @@ def read_diagnostic(arguments: list[str]) -> dict:
         reject()
     identity = durable_identity(arguments)
     directory = JOURNAL_ROOT
+    journal_gid = grp.getgrnam("atenea").gr_gid
     for index, name in enumerate((None, identity["sessionId"], identity["operationId"])):
         if name is not None:
             directory = directory / name
         observed = directory.lstat()
         if (not stat_module.S_ISDIR(observed.st_mode) or observed.st_uid != 0
-                or observed.st_gid != 0 or observed.st_mode & 0o7777 != (0o750 if index == 0 else 0o700)):
+                or observed.st_gid != (journal_gid if index == 0 else 0)
+                or observed.st_mode & 0o7777 != (0o750 if index == 0 else 0o700)):
             reject()
     record = load_operation(directory, identity)
     if record is None or record["state"] not in DURABLE_TERMINAL:
