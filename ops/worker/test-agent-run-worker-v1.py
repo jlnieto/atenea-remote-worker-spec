@@ -1398,6 +1398,32 @@ print(json.dumps({"sessionId": session,
     def exact_validation(request):
         return {key: request[key] for key in MODULE.VALIDATION_EXACT_KEYS}
 
+    def test_diagnostic_read_requires_exact_terminal_owner_and_sealed_manifest(self):
+        request=self.durable_validation_request()
+        self.state.start_validation(request)
+        exact=self.exact_validation(request)
+        with mock.patch.object(self.state,'_validation_mediator_observation') as mediator:
+            with self.assertRaises(MODULE.ProtocolError):self.state.validation_diagnostic(exact)
+            mediator.assert_not_called()
+        validation=self.state.validations[request['operationId']]
+        validation.update(state='CANDIDATE_FAILED',artifactManifestSha256='a'*64)
+        proof={'schemaVersion':1,'protocolVersion':'closed-validation-diagnostic/v1',
+            'workspaceIdentity':request['workspaceIdentity'],'projectId':'atenea',
+            'artifactManifestSha256':'a'*64,'diagnosticSha256':'b'*64,'failureDetailsState':'NOT_RECORDED','valuesExposed':False,
+            'diagnostic':{k:request[k] for k in ('operationId','sessionId','operation','definitionRevision','sourceTreeFingerprintSha256')}}
+        proof['diagnostic']['valuesExposed']=False
+        with mock.patch.object(self.state,'_validation_mediator_observation',return_value=proof) as mediator:
+            before=json.dumps(self.state.validations,sort_keys=True)
+            self.assertEqual(proof,self.state.validation_diagnostic(exact))
+            self.assertEqual(before,json.dumps(self.state.validations,sort_keys=True))
+            mediator.assert_called_once_with('diagnostic',validation)
+            for key in ('sessionId','workspaceIdentity','projectId'):
+                with self.assertRaises(MODULE.ProtocolError):self.state.validation_diagnostic({**exact,key:'foreign'})
+            for key in ('path','command','shell'):
+                with self.assertRaises(MODULE.ProtocolError):self.state.validation_diagnostic({**exact,key:'foreign'})
+            proof['artifactManifestSha256']='c'*64
+            with self.assertRaises(MODULE.ProtocolError):self.state.validation_diagnostic(exact)
+
     @staticmethod
     def mediator_observation(request, state, cause="NONE", exit_code=None):
         artifact = None

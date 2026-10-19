@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atenea.local/contracts/closed-validation-diagnostic-v1.response.schema.json",
+  "title": "Sealed diagnostic projection, never stdout or arbitrary messages",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "protocolVersion", "workspaceIdentity", "projectId", "artifactManifestSha256", "diagnosticSha256", "failureDetailsState", "diagnostic", "valuesExposed"],
+  "properties": {
+    "schemaVersion": {"const": 1}, "protocolVersion": {"const": "closed-validation-diagnostic/v1"},
+    "workspaceIdentity": {"type": "string", "pattern": "^remote:ax42-01:(change|work-session):[0-9a-f-]{36}$"},
+    "projectId": {"const": "atenea"},
+    "artifactManifestSha256": {"$ref": "#/$defs/hash"}, "diagnosticSha256": {"$ref": "#/$defs/hash"},
+    "failureDetailsState": {"enum": ["RECORDED", "NOT_RECORDED"]}, "valuesExposed": {"const": false},
+    "diagnostic": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "sessionId", "operation", "definitionRevision", "sourceTreeFingerprintSha256", "phase", "errorCode", "failureClass", "exitCode", "durationMillis", "outputSha256", "testClasses", "testFailures", "valuesExposed"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "operationId": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]{36}$"},
+        "sessionId": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]{36}$"},
+        "operation": {"enum": ["BACKEND_TEST", "WEB_BUILD", "ANDROID_BUILD", "PLAYWRIGHT_ACCEPTANCE"]},
+        "definitionRevision": {"enum": ["atenea-backend-test-v1", "atenea-backend-test-v2", "atenea-web-build-v1", "atenea-android-build-v1", "atenea-android-build-v2", "atenea-playwright-acceptance-v1"]},
+        "sourceTreeFingerprintSha256": {"$ref": "#/$defs/hash"}, "outputSha256": {"$ref": "#/$defs/hash"},
+        "phase": {"type": "string", "pattern": "^[A-Z_]{1,80}$"},
+        "errorCode": {"type": "string", "pattern": "^[A-Z_]{1,80}$"},
+        "failureClass": {"enum": ["NONE", "CANDIDATE", "INFRASTRUCTURE", "POLICY", "VALIDATION", "OWNERSHIP"]},
+        "exitCode": {"type": "integer"}, "durationMillis": {"type": "integer", "minimum": 0},
+        "testClasses": {"description": "Mentioned identities; not proof these tests failed", "type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/testClass"}},
+        "testFailures": {"type": "array", "maxItems": 16, "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["testClass", "testMethod", "failureType", "sourceLine"],
+          "properties": {
+            "testClass": {"$ref": "#/$defs/testClass"}, "testMethod": {"type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]{0,120}$"},
+            "failureType": {"type": ["string", "null"], "pattern": "^(org\\.(opentest4j|junit|mockito|springframework)|java\\.lang|jakarta|com\\.atenea)\\.[A-Za-z0-9_.$]{1,180}$"},
+            "sourceLine": {"type": ["integer", "null"], "minimum": 1, "maximum": 999999}
+          }
+        }},
+        "valuesExposed": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "testClass": {"type": "string", "pattern": "^com\\.atenea\\.[A-Za-z0-9_.$]{1,180}$"}
+  }
+}

@@ -1,5 +1,29 @@
 # Atenea Codex worker bootstrap
 
+## Closed validation diagnostic read
+
+`POST /v1/project-workspaces/validations/diagnostic` uses the authenticated
+worker API and the exact retained operation/session/workspace/project identity.
+It only reads terminal evidence; it cannot start, reconcile, cancel or retry a
+validation, create directories, or change a workspace. The fixed root mediator
+verifies root authority, file type/mode, immutable request, diagnostic hash and
+artifact manifest. No caller path, command, credentials or arbitrary arguments
+are accepted. Sudo permits only the typed diagnostic command for the four
+existing definitions and canonical identities/hashes.
+
+New diagnostics additionally retain bounded failing test class/method, exception
+type and test source line parsed from Maven failure headers. Assertion messages,
+expected/actual values, parameters, stdout and host paths are never retained or
+returned. `testClasses` in older reports means **mentioned**, not failed.
+`failureDetailsState=NOT_RECORDED` truthfully represents historical or
+unrecognised output: reading cannot recreate a missing assertion or rerun tests.
+The old receipt bytes/hashes remain unchanged. The response is versioned by
+`closed-validation-diagnostic/v1` and the adjacent Draft 2020-12 contracts.
+
+Run `test-validation-diagnostic-v1.py` both normally and as root in the local
+test environment, the worker's `RetainedDraftFingerprintTest`, and the installer
+test. App must be deployed only after Platform supports this read.
+
 This directory contains the versioned, staged bootstrap for the Ubuntu 24.04
 AX42 worker. It intentionally does not install Docker, Codex, project
 repositories, application secrets, or Tailscale enrollment credentials.

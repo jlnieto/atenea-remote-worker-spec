@@ -1461,6 +1461,26 @@ def normalize_inherited_artifact_directory(path: Path, observed: os.stat_result)
         reject()
 
 
+def test_failure_symbols(output: str) -> list[dict]:
+    """Extract identities/locations, never messages, expected values or stdout."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    header = re.compile(
+        r"^\[ERROR\] (com\.atenea\.[A-Za-z0-9_.$]{1,180})\.([A-Za-z_$][A-Za-z0-9_$]{0,120})"
+        r"(?:\([^\r\n]{0,160}\))?\s+--[^\r\n]*<<< (?:FAILURE|ERROR)!", re.M
+    )
+    matches = list(header.finditer(clean))
+    result = []
+    for index, found in enumerate(matches[:16]):
+        cls, method = found.group(1, 2)
+        block = clean[found.end():matches[index + 1].start() if index + 1 < len(matches) else len(clean)]
+        error = re.search(r"^(?:(?:org\.(?:opentest4j|junit|mockito|springframework)|java\.lang|jakarta|com\.atenea)\.[A-Za-z0-9_.$]{1,180})(?=:|\s*$)", block, re.M)
+        line = re.search(r"\bat " + re.escape(cls + "." + method) + r"\([A-Za-z0-9_$]+\.java:([1-9][0-9]{0,5})\)", block)
+        result.append({"testClass": cls, "testMethod": method,
+                       "failureType": error.group(0) if error else None,
+                       "sourceLine": int(line.group(1)) if line else None})
+    return result
+
+
 def persist_diagnostic(
     parent: Path, arguments: list[str], definition: Definition,
     outcome: RunOutcome, output_path: Path, duration: int,
@@ -1480,6 +1500,7 @@ def persist_diagnostic(
         "failureClass": outcome.failure_class, "exitCode": outcome.exit_code,
         "durationMillis": duration, "outputSha256": sha256_file(output_path),
         "testClasses": failures, "valuesExposed": False,
+        "testFailures": test_failure_symbols(output),
     }
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":")).encode("utf-8")
     destination = parent / (validation_id + "-diagnostic-v1.json")
@@ -1778,6 +1799,77 @@ def operation_directory(identity: dict[str, str]) -> Path:
         ):
             reject()
     return current
+
+
+def read_diagnostic(arguments: list[str]) -> dict:
+    """Read a sealed terminal receipt without mkdir, locks, reconcile or execution."""
+    if os.geteuid() != 0:
+        reject()
+    identity = durable_identity(arguments)
+    directory = JOURNAL_ROOT
+    for index, name in enumerate((None, identity["sessionId"], identity["operationId"])):
+        if name is not None:
+            directory = directory / name
+        observed = directory.lstat()
+        if (not stat_module.S_ISDIR(observed.st_mode) or observed.st_uid != 0
+                or observed.st_gid != 0 or observed.st_mode & 0o7777 != (0o750 if index == 0 else 0o700)):
+            reject()
+    record = load_operation(directory, identity)
+    if record is None or record["state"] not in DURABLE_TERMINAL:
+        reject()
+    for parent in (ARTIFACT_ROOT, ARTIFACT_ROOT / identity["sessionId"]):
+        if artifact_directory_state(parent, -1)[0] != "CURRENT":
+            reject()
+    path = ARTIFACT_ROOT / identity["sessionId"] / (identity["operationId"] + "-diagnostic-v1.json")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        observed = os.fstat(descriptor)
+        if (not stat_module.S_ISREG(observed.st_mode) or observed.st_uid != 0 or observed.st_gid != 0
+                or observed.st_mode & 0o7777 != 0o600 or observed.st_nlink != 1 or observed.st_size > 32768):
+            reject()
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            encoded = stream.read(32769)
+    finally:
+        os.close(descriptor)
+    value = json.loads(encoded)
+    fields = {"schemaVersion", "operationId", "sessionId", "operation", "definitionRevision",
+              "sourceTreeFingerprintSha256", "phase", "errorCode", "failureClass", "exitCode",
+              "durationMillis", "outputSha256", "testClasses", "valuesExposed"}
+    if (not isinstance(value, dict) or set(value) not in (fields, fields | {"testFailures"})
+            or value["schemaVersion"] != 1 or value["valuesExposed"] is not False
+            or any(value[k] != record[k] for k in ("operationId", "sessionId", "operation", "definitionRevision", "sourceTreeFingerprintSha256"))
+            or not isinstance(value["exitCode"], int) or isinstance(value["exitCode"], bool)
+            or not isinstance(value["durationMillis"], int) or isinstance(value["durationMillis"], bool) or value["durationMillis"] < 0
+            or SHA256_RE.fullmatch(str(value["outputSha256"])) is None
+            or value["failureClass"] not in {"NONE", "CANDIDATE", "INFRASTRUCTURE", "POLICY", "VALIDATION", "OWNERSHIP"}
+            or any(re.fullmatch(r"[A-Z_]{1,80}", str(value[k])) is None for k in ("phase", "errorCode"))):
+        reject()
+    classes = value["testClasses"]
+    symbol = r"com\.atenea\.[A-Za-z0-9_.$]{1,180}"
+    if (not isinstance(classes, list) or len(classes) > 8
+            or any(not isinstance(c, str) or re.fullmatch(symbol, c) is None for c in classes)):
+        reject()
+    failures = value.get("testFailures", [])
+    if not isinstance(failures, list) or len(failures) > 16:
+        reject()
+    for item in failures:
+        if (not isinstance(item, dict) or set(item) != {"testClass", "testMethod", "failureType", "sourceLine"}
+                or re.fullmatch(symbol, str(item["testClass"])) is None
+                or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]{0,120}", str(item["testMethod"])) is None
+                or item["failureType"] is not None and re.fullmatch(r"(?:org\.(?:opentest4j|junit|mockito|springframework)|java\.lang|jakarta|com\.atenea)\.[A-Za-z0-9_.$]{1,180}", str(item["failureType"])) is None
+                or item["sourceLine"] is not None and (type(item["sourceLine"]) is not int or not 1 <= item["sourceLine"] <= 999999)):
+            reject()
+    digest = hashlib.sha256(encoded).hexdigest()
+    manifest = hashlib.sha256("\0".join((value["operationId"], value["definitionRevision"],
+        value["sourceTreeFingerprintSha256"], str(value["exitCode"]), str(value["durationMillis"]),
+        value["outputSha256"], digest)).encode("ascii")).hexdigest()
+    if manifest != record.get("artifactManifestSha256"):
+        reject()
+    return {"schemaVersion": 1, "protocolVersion": "closed-validation-diagnostic/v1",
+            "workspaceIdentity": identity["workspaceIdentity"], "projectId": "atenea",
+            "artifactManifestSha256": manifest, "diagnosticSha256": digest,
+            "failureDetailsState": "RECORDED" if failures else "NOT_RECORDED",
+            "diagnostic": {**value, "testFailures": failures}, "valuesExposed": False}
 
 
 @contextmanager
@@ -2180,11 +2272,12 @@ def main() -> int:
             return sandbox_supervise(sys.argv[2])
         if len(sys.argv) in {6, 7} and sys.argv[1] == "--durable-execute":
             return execute_durable(sys.argv[2:])
-        if len(sys.argv) in {6, 7} and sys.argv[1] in {"start", "inspect", "cancel"}:
+        if len(sys.argv) in {6, 7} and sys.argv[1] in {"start", "inspect", "cancel", "diagnostic"}:
             result = {
                 "start": start_durable,
                 "inspect": inspect_durable,
                 "cancel": cancel_durable,
+                "diagnostic": read_diagnostic,
             }[sys.argv[1]](sys.argv[2:])
             print(json.dumps(result, separators=(",", ":")))
             return 0

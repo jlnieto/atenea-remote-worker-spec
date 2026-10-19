@@ -36,6 +36,9 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/editable-actor-tests"
           "$RUNNER_TEMP/editable-actor-tests/bin/python" -m pip install jsonschema==4.23.0
           sudo "$RUNNER_TEMP/editable-actor-tests/bin/python" -B ops/worker/test-development-change-editable-actors-v1.py DistinctActorRecoveryTest
+          python3 -B ops/worker/test-validation-diagnostic-v1.py SymbolsTest
+          sudo "$RUNNER_TEMP/editable-actor-tests/bin/python" -B ops/worker/test-validation-diagnostic-v1.py ReceiptReadTest
+          python3 -B ops/worker/test-agent-run-worker-v1.py RetainedDraftFingerprintTest
           python3 -B ops/worker/test-development-change-validation-recovery-v1.py
           python3 -B ops/worker/test-atenea-android-validation-v2.py
           python3 ops/worker/test-atenea-backend-test-v2.py

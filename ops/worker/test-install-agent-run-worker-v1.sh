@@ -107,7 +107,7 @@ install_exact_directory "$(id -un)" "$(id -gn)" 0750 "${MODE_FIXTURE}/release"
 [[ "$(sha256sum "${SCRIPT_DIR}/agent-run-worker-v1.py" | cut -d' ' -f1)" \
     == "${PROGRAM_SHA256}" ]] || fail "worker program fingerprint is stale"
 [[ "${PROGRAM_SHA256}" \
-    == "5caaca7d791c1a263bdfcccdabc82e0f5ad0dfb0d63b2a472324e253dd42569b" ]] \
+    == "960412e9ddac6c49e27c71acd9a89f645fe4add285ce61ee5613a0e6b27fb319" ]] \
   || fail "worker validation admission fingerprint is not exact"
 PROMOTED_PROGRAM="${TEST_ROOT}/libexec/agent-run-worker-v1.py"
 mkdir -p "$(dirname -- "${PROMOTED_PROGRAM}")"
@@ -605,7 +605,20 @@ printf '%s\n' \
   "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} inspect PLAYWRIGHT_ACCEPTANCE *" \
   "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} cancel PLAYWRIGHT_ACCEPTANCE *" \
   >"${SUDOERS_FILE}"
+validation_diagnostic_sudoers_content >>"${SUDOERS_FILE}"
 verify_validation_sudoers
+validation_diagnostic_sudoers_content >"${TEST_ROOT}/diagnostic.sudoers"
+/usr/sbin/visudo -cf "${TEST_ROOT}/diagnostic.sudoers" >/dev/null \
+  || fail "validation diagnostic sudo rules are invalid"
+python3 - "${TEST_ROOT}/diagnostic.sudoers" <<'PY'
+import re,sys
+rules=[line.split(' ^',1)[1].rstrip('\n') for line in open(sys.argv[1])]
+uid='11111111-1111-4111-8111-111111111111'
+request=f'diagnostic BACKEND_TEST {uid} remote:ax42-01:change:{uid} '+('a'*64)+f' {uid}'
+assert any(re.fullmatch(rule,request) for rule in rules)
+for changed in (request+' extra',request.replace('diagnostic','execute'),request.replace(uid,'../foreign'),request.replace('BACKEND_TEST','ARBITRARY')):
+    assert not any(re.fullmatch(rule,changed) for rule in rules)
+PY
 printf '%s\n' \
   "atenea-worker ALL=(root) NOPASSWD: ${VALIDATION_MEDIATOR} ARBITRARY *" \
   >>"${SUDOERS_FILE}"
