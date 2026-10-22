@@ -8,6 +8,7 @@ No source builds, caller commands, caller paths or general SSH authority.
 from __future__ import annotations
 
 import contextlib
+import concurrent.futures
 import copy
 import fcntl
 import grp
@@ -751,9 +752,66 @@ class AndroidTarget:
         pass
 
 
+class ObservationReads:
+    """Bounded read coordination, never a cache, plan, lease or publication authority."""
+    WAIT_SECONDS = 12
+    BUSY = {"APP_PROD": "APP_OBSERVATION_BUSY", "ANDROID_STABLE": "ANDROID_OBSERVATION_BUSY",
+            "AX42_PLATFORM": "PLATFORM_OBSERVATION_BUSY"}
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._serial = threading.Lock()
+        self._flights = {}
+
+    def read(self, target, load):
+        if target not in self.BUSY:
+            raise Rejected("TARGET_REJECTED")
+        with self._lock:
+            future = self._flights.get(target)
+            leader = future is None
+            if leader:
+                future = concurrent.futures.Future()
+                self._flights[target] = future
+        if not leader:
+            try:
+                return copy.deepcopy(future.result(timeout=self.WAIT_SECONDS))
+            except concurrent.futures.TimeoutError:
+                raise Rejected(self.BUSY[target]) from None
+        try:
+            # Different local targets wait instead of contending with each other
+            # for execution_lock. A real effect still owns that unchanged lock.
+            if not self._serial.acquire(timeout=self.WAIT_SECONDS):
+                raise Rejected(self.BUSY[target])
+            try:
+                value = load()
+            finally:
+                self._serial.release()
+        except BaseException as error:
+            with self._lock:
+                del self._flights[target]
+                future.set_exception(error)
+            raise
+        else:
+            with self._lock:
+                # Completed observations are not retained, even after an error.
+                del self._flights[target]
+                future.set_result(value)
+            return copy.deepcopy(value)
+
+
 class Peer:
     """VPS to AX42 only. The worker holds no VPS/PROD credentials."""
+    def __init__(self):
+        self.observations = ObservationReads()
+
     def request(self, value):
+        if value.get("operation") == "OBSERVE_PLATFORM":
+            exact(value, {"operation"})
+            # The remote wait must not hold the VPS local observation gate.
+            return self.observations.read("AX42_PLATFORM", lambda: self._request(value))
+        return self._request(value)
+
+    def _request(self, value):
         token = trusted(PEER_TOKEN, 0o600).read_text().strip()
         request = urllib.request.Request("http://100.81.98.93:8791/v1/release", data=canonical(value),
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
@@ -769,6 +827,7 @@ class Controller:
         self.root, self.artifacts, self.targets = root, artifacts, targets
         self.lock = threading.RLock()
         self.execution_lock = threading.Lock()
+        self.observations = ObservationReads()
         self.lifecycle_lock = threading.RLock()
         self.retention = None
 
@@ -853,6 +912,9 @@ class Controller:
         raise Rejected("CLOSED_REQUEST_REQUIRED")
 
     def observe_app(self):
+        return self.observations.read("APP_PROD", self._observe_app)
+
+    def _observe_app(self):
         """Verify an installation without creating/adopting a publication operation."""
         if "APP_PROD" not in self.targets:
             raise Rejected("TARGET_REJECTED")
@@ -912,6 +974,9 @@ class Controller:
             self.execution_lock.release()
 
     def observe_android(self):
+        return self.observations.read("ANDROID_STABLE", self._observe_android)
+
+    def _observe_android(self):
         """Read the signed channel and its existing durable receipt, never publish."""
         if "ANDROID_STABLE" not in self.targets:
             raise Rejected("TARGET_REJECTED")
@@ -973,6 +1038,9 @@ class Controller:
             self.execution_lock.release()
 
     def observe_platform(self):
+        return self.observations.read("AX42_PLATFORM", self._observe_platform)
+
+    def _observe_platform(self):
         if "AX42_PLATFORM" not in self.targets:
             raise Rejected("TARGET_REJECTED")
         if not self.execution_lock.acquire(blocking=False):
