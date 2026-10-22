@@ -113,6 +113,28 @@ por separado la salud autenticada del worker. Sirve a la vista global Novedades,
 sin dar autoridad de publicación a esa pantalla. Requiere actualizar ambos
 publicadores mediante sus installers soportados.
 
+### Coordinación de lecturas
+
+Las lecturas simultáneas del mismo destino comparten una única verificación en
+vuelo, con copias independientes de la respuesta. Las lecturas de distintos
+destinos locales esperan de forma acotada en vez de competir por el lock de
+ejecución. El reenvío fijo OBSERVE_PLATFORM tiene su propio coordinador: esperar
+a AX42 no bloquea la lectura local de App o Android en el VPS.
+
+No se conservan respuestas completadas ni errores como caché. La siguiente
+lectura vuelve a verificar runtime, recibos y hashes. El límite de espera es
+12 segundos; agotarlo devuelve el BUSY existente sin cancelar ni duplicar la
+lectura original. Una publicación, retención o evidencia ambigua conserva su
+exclusión anterior y puede impedir la observación. Consultar no admite,
+reconcilia ni repite efectos; PLAN y EXECUTE no se agrupan. El contrato cerrado
+de solicitudes y respuestas no cambia.
+
+Las regresiones focales están en
+`ops/release/test-release-observation-coordination-v1.py`: lectores concurrentes,
+espera entre destinos, ausencia de escrituras y efectos, copia independiente,
+error sin caché, timeout de un lector y reenvío fijo a AX42. El rollout requiere
+los installers existentes de ambos publicadores, no un despliegue del worker.
+
 El artefacto debe ser del último run push/main exitoso de
 `.github/workflows/release-artifacts-v1.yml`, para el SHA exacto de main y el
 repositorio fijo. Se verifican digest ZIP GitHub, estructura cerrada,

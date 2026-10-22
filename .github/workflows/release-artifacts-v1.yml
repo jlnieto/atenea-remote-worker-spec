@@ -21,6 +21,7 @@ jobs:
           python3 ops/release/test-release-rescue-v1.py
           python3 ops/release/test-managed-validation-policy-v1.py
           python3 -B ops/release/test-android-observation-v1.py
+          python3 -B ops/release/test-release-observation-coordination-v1.py
           python3 -B ops/worker/test-worksession-attachment-worker-v1.py
           python3 ops/release/test-release-admission-v1.py
           python3 ops/release/test-release-targets-v1.py
